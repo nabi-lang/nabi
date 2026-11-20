@@ -1,0 +1,38 @@
+# cargo-deny: what Cargo.lock may hold (`cargo deny --locked check`, ci
+# lint). Nabi's own crates are MIT OR Apache-2.0; every crate it depends
+# on must allow the same use.
+
+[graph]
+all-features = true
+
+[licenses]
+# The licenses a dependency may be under: the project's own. A new
+# dependency under another permissive license (BSD-2-Clause, ISC,
+# Unicode-3.0, ...) adds it here in the same change, with its
+# THIRD-PARTY-NOTICES entry if it ships.
+allow = ["MIT", "Apache-2.0"]
+confidence-threshold = 0.93
+
+[licenses.private]
+# The workspace crates are not published; their license is the workspace's.
+ignore = true
+
+[advisories]
+# Every RustSec advisory fails, unmaintained and unsound included; an
+# accepted one goes in `ignore` with its id and why.
+version = 2
+yanked = "deny"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+# The workspace crates depend on each other by path with no version (a
+# "wildcard"); the crates.io ones have versions and Cargo.lock pins them.
+wildcards = "allow"
+
+[sources]
+# crates.io only: no git dependencies, no other registry.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

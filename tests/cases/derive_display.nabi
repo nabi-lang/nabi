@@ -1,0 +1,9 @@
+// expect-error: cannot derive `Display` for `P`: its text is the type's own choice: write it with `#[display("..")]` or an `impl Display`
+// `Display` is not derivable.
+#[derive(Display)]
+struct P { x: i32; }
+
+fn main() -> i32 {
+    return 0;
+}
+

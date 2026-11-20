@@ -1,0 +1,2 @@
+pub fn geo(x: i32) -> i32 { x }
+pub fn area(x: i32) -> i32 { geo(x) }

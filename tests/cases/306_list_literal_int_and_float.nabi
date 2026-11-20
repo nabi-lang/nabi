@@ -1,0 +1,14 @@
+// expect-exit: 0
+// expect-stdout: [0.0, 1.5] [1.5, 2.0, -3.0] [[0.0, 1.0], [0.5, 2.0]] 0.0 [1, 2]
+
+// With no type to meet, a list literal of number literals holding a
+// float literal is a list of floats: its integer literals are typed as
+// floats (`0` is `0.0`), as `let x: f64 = 0` types one.
+fn main() {
+    let a = [0, 1.5];
+    let b = [1.5, 2, -3];
+    let c = [[0, 1], [0.5, 2]];
+    let d = [1, 2];
+    let z: f64 = a[0];
+    println(f"{a:?} {b:?} {c:?} {z:?} {d:?}");
+}

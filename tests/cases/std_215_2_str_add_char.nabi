@@ -1,0 +1,22 @@
+// expect-exit: 0
+// expect-stdout:
+// abc abc
+// xéy
+// k!
+// [a,b]
+
+// `s + c` appends a `char` as `s += c` does; both make a new `str`.
+const K: str = "k" + '!';
+
+fn wrap(s: str, open: char, close: char) -> str { f"{open}" + s + close }
+
+fn main() {
+    let s = "ab";
+    let t = s + 'c';
+    let u = s;
+    u += 'c';
+    println(f"{t} {u}");
+    println("x" + 'é' + "y");
+    println(K);
+    println("" + wrap("a,b", '[', ']'));
+}

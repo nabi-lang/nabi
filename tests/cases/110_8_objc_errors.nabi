@@ -1,0 +1,49 @@
+// needs: objc fs
+// expect-exit: 0
+// expect-stdout:
+// missing: NSCocoaErrorDomain 260
+// listed true
+// made true
+// again: NSCocoaErrorDomain 516
+// propagated: true
+
+// A last `NSError **` is `throws (objc::Error)`: a `BOOL` method returns
+// nothing, an object one its object, and `try` / `catch` handle the
+// error as any other.
+use bare::ffi::objc;
+use bare::ffi::objc::{Id, NSObject, NSString, ns};
+
+#[link(name = "Foundation", kind = "framework")]
+#[objc::class(NSFileManager)]
+extern "objc" {
+    fn defaultManager() -> Id<Self>;
+    fn contentsOfDirectoryAtPath_error(self, path: Id<NSString>) throws (objc::Error) -> Id<NSArray>;
+    fn createDirectoryAtPath_withIntermediateDirectories_attributes_error(self, path: Id<NSString>, deep: bool, attrs: Id<NSObject> | none) throws (objc::Error);
+    fn removeItemAtPath_error(self, path: Id<NSString>) throws (objc::Error);
+}
+
+#[objc::class(NSArray)]
+extern "objc" {
+    fn count(self) -> usize;
+}
+
+fn count(path: str) throws -> usize {
+    try NSFileManager::defaultManager().contentsOfDirectoryAtPath_error(ns(path)).count()
+}
+
+fn main() {
+    let fm = NSFileManager::defaultManager();
+    let n = try fm.contentsOfDirectoryAtPath_error(ns("/nabi-no-such-dir")).count()
+        catch e: objc::Error { println(f"missing: {e.domain()} {e.code()}"); 0 };
+    println(f"listed {try! fm.contentsOfDirectoryAtPath_error(ns("/")).count() > 0 && n == 0}");
+    let dir = f"{std::env::temp_dir()}/nabi-objc-errors-{std::process::id()}";
+    try! fm.createDirectoryAtPath_withIntermediateDirectories_attributes_error(ns(dir), false, none);
+    println(f"made {std::fs::exists(dir)}");
+    try fm.createDirectoryAtPath_withIntermediateDirectories_attributes_error(ns(dir), false, none)
+        catch e: objc::Error { println(f"again: {e.domain()} {e.code()}"); };
+    try! fm.removeItemAtPath_error(ns(dir));
+    let ok = try count("/nabi-no-such-dir") == 99
+        catch e: objc::Error { e.code() == 260 }
+        catch e { false };
+    println(f"propagated: {ok}");
+}

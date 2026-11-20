@@ -1,0 +1,209 @@
+//! core::collections::heap - `BinaryHeap<T>`, a priority queue
+//! over a `List` laid out as an implicit binary tree. `new()` pops the
+//! greatest item first; `by_ordering(cmp)` pops the greatest by `cmp`.
+
+/// A priority queue: `new()` pops the greatest item first,
+/// `by_ordering(cmp)` the greatest by `cmp`.
+pub struct BinaryHeap<T> {
+    items: List<T>;
+    cmp: fn(T, T) -> core::cmp::Ordering + Send;
+}
+
+// Shares its buffer like `List`. The comparator is
+// `Send`, so a heap is `Send` when `T` is.
+impl<T> !Sync for BinaryHeap<T> {}
+
+impl<T: Ord> BinaryHeap<T> {
+    /// A max-heap.
+    pub const fn new() -> BinaryHeap<T> {
+        BinaryHeap { items: List::new(), cmp: |a: T, b: T| a.cmp(b) }
+    }
+}
+
+impl<T> BinaryHeap<T> {
+    /// A heap whose top is the greatest item by `cmp`, as `new()` is by
+    /// `Ord::cmp`: `by_ordering(|a, b| b.cmp(a))` pops the least first.
+    pub const fn by_ordering(cmp: fn(T, T) -> core::cmp::Ordering + Send) -> BinaryHeap<T> {
+        BinaryHeap { items: List::new(), cmp }
+    }
+
+    /// The number of items.
+    pub const fn len(self) -> usize {
+        self.items.len()
+    }
+
+    /// `true` when the heap holds no item.
+    pub const fn is_empty(self) -> bool {
+        self.items.len() == 0
+    }
+
+    /// The top item.
+    pub const fn peek(self) -> T | none {
+        self.items.get(0)
+    }
+
+    /// Add `x`; O(log n).
+    pub const fn push(self, x: T) {
+        let xs = self.items;
+        xs.push(x);
+        let i = xs.len() - 1;
+        while i > 0 {
+            let p = (i - 1) / 2;
+            if !self.before(xs[i], xs[p]) {
+                break;
+            }
+            self.swap(i, p);
+            i = p;
+        }
+    }
+
+    /// Remove and return the top item; O(log n).
+    #[discardable]
+    pub const fn pop(self) -> T | none {
+        let xs = self.items;
+        let n = xs.len();
+        if n == 0 {
+            return none;
+        }
+        self.swap(0, n - 1);
+        let top = xs.pop();
+        self.sift_down(0);
+        top
+    }
+
+    /// Drop every item.
+    pub const fn clear(self) {
+        self.items.clear();
+    }
+
+    /// Keep only the items `keep` accepts, in place; O(n).
+    pub const fn retain(self, keep: fn(T) -> bool) {
+        let xs = self.items;
+        let n = xs.len();
+        let w: usize = 0;
+        for r in 0..n {
+            let x = xs[r];
+            if keep(x) {
+                xs[w] = x;
+                w += 1;
+            }
+        }
+        xs.truncate(w);
+        self.heapify();
+    }
+
+    /// Every item, in no particular order.
+    pub const fn iter(self) -> HeapIter<T> {
+        HeapIter { it: self.items.iter() }
+    }
+
+    /// `a` ranks above `b`.
+    const fn before(self, a: T, b: T) -> bool {
+        (self.cmp)(a, b).is_gt()
+    }
+
+    const fn swap(self, i: usize, j: usize) {
+        let xs = self.items;
+        let t = xs[i];
+        xs[i] = xs[j];
+        xs[j] = t;
+    }
+
+    /// Restore the heap order over the whole list; O(n).
+    const fn heapify(self) {
+        let i = self.items.len() / 2;
+        while i > 0 {
+            i -= 1;
+            self.sift_down(i);
+        }
+    }
+
+    const fn sift_down(self, from: usize) {
+        let xs = self.items;
+        let n = xs.len();
+        let i = from;
+        loop {
+            let l = 2 * i + 1;
+            let r = l + 1;
+            let m = i;
+            if l < n && self.before(xs[l], xs[m]) {
+                m = l;
+            }
+            if r < n && self.before(xs[r], xs[m]) {
+                m = r;
+            }
+            if m == i {
+                break;
+            }
+            self.swap(i, m);
+            i = m;
+        }
+    }
+}
+
+/// The items of a heap, in no particular order.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct HeapIter<T> {
+    it: ListIter<T>;
+}
+
+impl<T> Debug for HeapIter<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("HeapIter") }
+}
+
+impl<T> Iterator for HeapIter<T> {
+    type Item = T;
+    const fn next(ref self) -> T | none {
+        self.it.next()
+    }
+
+    const fn exact_len(self) -> usize | none { self.it.len() }
+
+    const fn count(self) -> usize { self.it.len() }
+}
+
+impl<T> ExactSizeIterator for HeapIter<T> {
+    const fn len(self) -> usize {
+        self.it.len()
+    }
+}
+
+/// `for x in h`, in no particular order.
+impl<T> IntoIterator for BinaryHeap<T> {
+    type IntoIter = HeapIter<T>;
+    type Item = T;
+    const fn into_iter(self) -> HeapIter<T> {
+        self.iter()
+    }
+}
+
+/// An empty max-heap.
+impl<T: Ord> Default for BinaryHeap<T> {
+    fn default() -> BinaryHeap<T> { BinaryHeap::new() }
+}
+
+/// A new heap with every item cloned and the same order.
+impl<T: Clone> Clone for BinaryHeap<T> {
+    const fn clone(self) -> BinaryHeap<T> {
+        BinaryHeap { items: self.items.clone(), cmp: self.cmp }
+    }
+}
+
+/// `it.collect()` into a max-heap; O(n).
+impl<T: Ord> FromIterator<T> for BinaryHeap<T> {
+    const fn from_iter<I: IntoIterator<Item = T>>(it: I) -> BinaryHeap<T> {
+        let h: BinaryHeap<T> = BinaryHeap::new();
+        for x in it {
+            h.items.push(x);
+        }
+        h.heapify();
+        h
+    }
+}
+
+/// `[a, b, ..]` in storage order (the top first).
+impl<T: Debug> Debug for BinaryHeap<T> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try Debug::fmt(self.items, ref f)
+    }
+}

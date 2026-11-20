@@ -1,0 +1,49 @@
+// expect-exit: 0
+// expect-stdout:
+// 3.5 7 0.5
+// -15 -3 15
+// [1, 2, 3, 4] 10 [9, 2, 3, 4]
+
+// Constant tables passed by value: each call sees its own table, a
+// callee that writes its copy changes only that copy, and a call from
+// a loop or through a recursive callee keeps its arguments.
+const A: [f64; 4] = [0.5, 1.0, 1.5, 0.5];
+const B: [f64; 4] = [1.0, 2.0, 3.0, 1.0];
+const C: [i64; 6] = [1, -2, 3, -4, 5, -6];
+const D: [i64; 4] = [1, 2, 3, 4];
+
+#[inline(never)]
+fn sum(t: [f64; 4], r: f64) -> f64 {
+    let s = 0.0;
+    for i in 0..4 {
+        s += t[i] * r;
+    }
+    s
+}
+
+#[inline(never)]
+fn pick(t: [i64; 6], k: usize) -> i64 { t[k] }
+
+#[inline(never)]
+fn alt(t: [i64; 6], n: usize) -> i64 {
+    if n == 0 { return 0; }
+    t[n % 6] + alt(t, n - 1)
+}
+
+#[inline(never)]
+fn bump(t: [i64; 4]) -> [i64; 4] {
+    t[0] = 9;
+    t
+}
+
+fn main() {
+    println(f"{sum(A, 1.0)} {sum(B, 1.0)} {sum(A, 1.0) - sum(B, 0.5) + 0.5}");
+    let s = 0i64;
+    for k in 0..6usize {
+        s += pick(C, k) * if k % 2 == 0 { 1 } else { 2 };
+    }
+    println(f"{s} {alt(C, 3)} {sum(B, 2.0) + 1.0}");
+    let d = D;
+    let e = bump(D);
+    println(f"{d:?} {d[0] + d[1] + d[2] + d[3]} {e:?}");
+}

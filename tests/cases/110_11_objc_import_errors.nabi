@@ -1,0 +1,13 @@
+// needs: objc
+// expect-error: Objective-C headers: no header `NoSuchKit/NoSuchKit.h` in the SDK
+// expect-error: expected a header path string (`"AppKit/AppKit.h"`), found
+
+// `ffi::objc::import` names headers as `Framework/Header.h`.
+mod a {
+    ffi::objc::import { "NoSuchKit/NoSuchKit.h" }
+}
+mod b {
+    ffi::objc::import { Foundation }
+}
+
+fn main() {}

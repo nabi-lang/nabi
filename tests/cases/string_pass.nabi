@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout: hi from nabi
+
+extern "C" {
+    fn puts(s: str) -> i32;
+}
+
+fn greet(name: str) -> i32 {
+    return unsafe { puts(name) };
+}
+
+fn main() {
+    let _ = greet("hi from nabi");
+}
+

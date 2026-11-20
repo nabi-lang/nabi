@@ -1,0 +1,76 @@
+// expect-error: 29:14: expected `{`, found identifier `and`
+// expect-error: help: Nabi writes `and` as `&&`: `a && b`
+// expect-error: 33:14: expected `{`, found identifier `or`
+// expect-error: help: Nabi writes `or` as `||`: `a || b`
+// expect-error: 37:8: expected `{`, found identifier `done`
+// expect-error: help: Nabi writes `not` as `!`: `!done`
+// expect-error: 41:13: Nabi has no `is not` operator
+// expect-error: help: write `x != none`
+// expect-error: 45:15: Nabi has no `a if c else b` expression
+// expect-error: help: `if` is an expression: `if c { 1 } else { 2 }`
+// expect-error: 49:13: expected `;`, found identifier `x`
+// expect-error: help: a closure is written `|x| x + 1`
+// expect-error: 53:14: Nabi has no list comprehensions
+// expect-error: help: chain iterator methods: `xs.filter(|x| x > 1).map(|x| x * x).to_list()`
+// expect-error: 57:13: Nabi has no dict comprehensions
+// expect-error: help: chain iterator methods: `xs.map(|x| (x, x * x)).to_dict()`
+// expect-error: 61:13: Nabi has no set comprehensions
+// expect-error: help: chain iterator methods: `xs.map(|x| x % 3).to_set()`
+// expect-error: 65:19: Nabi has no list comprehensions
+// expect-error: help: chain iterator methods: `(0..10).map(|i| i * i).to_list()`
+// expect-error: 69:19: a named argument is written with `:`, not `=`
+// expect-error: help: write `end: ""`
+// expect-error: 73:17: Nabi has no `!r` conversion
+// expect-error: help: write `{x:?}`: `:?` formats with `Debug`, as `repr` does
+
+// Python habits in expressions: each error names the Nabi form.
+
+fn and_word(a: i32) {
+    if a > 0 and a < 10 { println("in"); }
+}
+
+fn or_word(a: i32) {
+    if a < 0 or a > 10 { println("out"); }
+}
+
+fn not_word(done: bool) {
+    if not done { println("todo"); }
+}
+
+fn is_not(x: i32 | none) {
+    if x is not none { println("set"); }
+}
+
+fn ternary(c: bool) {
+    let y = 1 if c else 2;
+}
+
+fn lambda_word() {
+    let f = lambda x: x + 1;
+}
+
+fn list_comp(xs: List<i32>) {
+    let ys = [x * x for x in xs if x > 1];
+}
+
+fn dict_comp(xs: List<i32>) {
+    let d = {x: x * x for x in xs};
+}
+
+fn set_comp(xs: List<i32>) {
+    let s = {x % 3 for x in xs};
+}
+
+fn range_comp() {
+    let squares = [i * i for i in range(10)];
+}
+
+fn named_eq() {
+    print("x", end="");
+}
+
+fn repr_conv(x: i32) {
+    println(f"{x!r}");
+}
+
+fn main() {}

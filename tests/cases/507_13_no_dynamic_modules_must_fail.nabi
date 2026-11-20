@@ -1,0 +1,10 @@
+// expect-error: cannot find function `m::bar` in this scope
+
+// The module part of a path is static - a variable holding a
+// module's name is not a module.
+mod foo { pub fn bar() {} }
+
+fn main() {
+    let m = "foo";
+    m::bar();
+}

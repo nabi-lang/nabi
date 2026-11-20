@@ -1,0 +1,64 @@
+// `core::simd` vectors over 1M-element lists, 200 times: an `f32` dot
+// product in `f32x4` lanes (a float sum the loop vectorizer leaves in
+// order), `a * x + y` stored back, and a ReLU through a mask and
+// `select`; then the same dot product as a scalar loop to compare.
+use core::simd::{f32x4, Simd};
+
+fn vdot(xs: List<f32>, ys: List<f32>) -> f32 {
+    let acc = f32x4::splat(0.0);
+    let i = 0;
+    let n = xs.len();
+    while i + 4 <= n {
+        acc += f32x4::load(xs, i) * f32x4::load(ys, i);
+        i += 4;
+    }
+    acc.reduce_sum()
+}
+
+fn sdot(xs: List<f32>, ys: List<f32>) -> f32 {
+    let s: f32 = 0.0;
+    for i in 0..xs.len() {
+        s += xs[i] * ys[i];
+    }
+    s
+}
+
+fn saxpy(a: f32, xs: List<f32>, ys: List<f32>) {
+    let i = 0;
+    let n = xs.len();
+    while i + 4 <= n {
+        (f32x4::load(xs, i) * a + f32x4::load(ys, i)).store(ys, i);
+        i += 4;
+    }
+}
+
+fn relu(xs: List<f32>) {
+    let zero = f32x4::splat(0.0);
+    let i = 0;
+    let n = xs.len();
+    while i + 4 <= n {
+        let v = f32x4::load(xs, i);
+        (v .> zero).select(v, zero).store(xs, i);
+        i += 4;
+    }
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 20;
+    let xs: List<f32> = List::filled(n, 0.0);
+    let ys: List<f32> = List::filled(n, 0.0);
+    for i in 0..n {
+        xs[i] = (i % 100) as f32 * 0.01 - 0.25;
+        ys[i] = (i % 37) as f32 * 0.5;
+    }
+    let v: f64 = 0.0;
+    let s: f64 = 0.0;
+    for _ in 0..200 {
+        v += vdot(xs, ys) as f64;
+        s += sdot(xs, ys) as f64;
+    }
+    saxpy(0.5, xs, ys);
+    relu(xs);
+    println(f"{v:.1} {s:.1} {ys[12345]:.3} {xs[7]:.3} {xs[50]:.3}");
+    return 0;
+}

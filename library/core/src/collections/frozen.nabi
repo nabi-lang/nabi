@@ -1,0 +1,367 @@
+//! core::collections::frozen - `FrozenList`, `FrozenDict` and
+//! `FrozenSet`: a collection that no one can change any more, shared
+//! between threads without a lock and without a copy.
+//!
+//! `xs.freeze()` takes the collection's storage over in O(1) and leaves
+//! `xs` empty, so a handle the compiler did not see (code in `unsafe`)
+//! changes a new, empty collection, never what the readers read. Only
+//! elements that are `Send + Sync` themselves can be frozen, so nothing
+//! reached from a frozen collection can change either.
+
+use core::hash::{BuildHasher, RandomState};
+
+/// A list that never changes: `Sync`, so threads share one without a
+/// lock (a `par` closure may capture it, a `static` may hold it, a
+/// hand-off leaves it shared). Made by `List::freeze`; `to_list` gives
+/// a list to change.
+pub struct FrozenList<T> {
+    pub(pkg) xs: List<T>;
+}
+
+// Read only: nothing changes the list once it is frozen.
+unsafe impl<T: Send + Sync> Sync for FrozenList<T> {}
+
+impl<T: Send + Sync> FrozenList<T> {
+    /// An empty frozen list.
+    pub const fn new() -> FrozenList<T> {
+        FrozenList { xs: List::with_capacity(0) }
+    }
+}
+
+impl<T> FrozenList<T> {
+    /// The number of elements.
+    pub const fn len(self) -> usize {
+        self.xs.len()
+    }
+
+    /// `true` when the list has no element.
+    pub const fn is_empty(self) -> bool {
+        self.xs.len() == 0
+    }
+
+    /// Element `i`, or `none` out of bounds.
+    pub const fn get(self, i: usize) -> T | none {
+        self.xs.get(i)
+    }
+
+    /// The first element; `none` when empty.
+    pub const fn first(self) -> T | none {
+        self.xs.first()
+    }
+
+    /// The last element; `none` when empty.
+    pub const fn last(self) -> T | none {
+        self.xs.last()
+    }
+
+    /// The elements front to back.
+    pub const fn iter(self) -> ListIter<T> {
+        self.xs.iter()
+    }
+
+    /// Views of `[0, mid)` and `[mid, len)`; panics if `mid` is past the
+    /// length.
+    #[track_caller]
+    pub const fn split_at(self, mid: usize) -> (Slice<T>, Slice<T>) {
+        self.xs.split_at(mid)
+    }
+
+    /// Views of `size` consecutive elements, sliding by one (`size` > 0).
+    #[track_caller]
+    pub const fn windows(self, size: usize) -> slice::Windows<T> {
+        self.xs.windows(size)
+    }
+
+    /// Views of `size` elements in order, the last one shorter
+    /// (`size` > 0): `par::map(xs.chunks(n), ..)` reads them in parallel.
+    #[track_caller]
+    pub const fn chunks(self, size: usize) -> slice::Chunks<T> {
+        self.xs.chunks(size)
+    }
+
+    /// A new list holding the elements, free to change.
+    pub const fn to_list(self) -> List<T> {
+        let out: List<T> = List::with_capacity(self.xs.len());
+        for x in self.xs {
+            out.push(x);
+        }
+        out
+    }
+}
+
+impl<T: PartialEq> FrozenList<T> {
+    /// `true` when an element equals `x`.
+    pub const fn contains(self, x: T) -> bool {
+        self.xs.contains(x)
+    }
+}
+
+impl<T: Ord> FrozenList<T> {
+    /// The index of `x` in the sorted list, or `none`.
+    pub const fn binary_search(self, x: T) -> usize | none {
+        self.xs.binary_search(x)
+    }
+}
+
+/// `xs[i]`; panics out of bounds.
+impl<T> Index<usize> for FrozenList<T> {
+    type Output = T;
+    #[track_caller]
+    const fn index(self, i: usize) -> T {
+        self.xs[i]
+    }
+}
+
+/// `xs[a:b]`: a read-only view, no copy.
+impl<T> Sliceable<Range<usize>> for FrozenList<T> {
+    type Output = Slice<T>;
+    const fn slice(self, r: Range<usize>) -> Slice<T> {
+        self.xs.slice(r)
+    }
+}
+
+impl<T> IntoIterator for FrozenList<T> {
+    type IntoIter = ListIter<T>;
+    type Item = T;
+    const fn into_iter(self) -> ListIter<T> {
+        self.xs.iter()
+    }
+}
+
+impl<T: Send + Sync> Default for FrozenList<T> {
+    const fn default() -> FrozenList<T> { FrozenList::new() }
+}
+
+/// The same list: it cannot change, so sharing it is as good as a copy.
+impl<T> Clone for FrozenList<T> {
+    const fn clone(self) -> FrozenList<T> { self }
+}
+
+impl<T: PartialEq> PartialEq for FrozenList<T> {
+    const fn eq(self, rhs: FrozenList<T>) -> bool { self.xs == rhs.xs }
+    const fn ne(self, rhs: FrozenList<T>) -> bool { self.xs != rhs.xs }
+}
+
+impl<T: Eq> Eq for FrozenList<T> {}
+
+impl<T: Hash> Hash for FrozenList<T> {
+    const fn hash<H: Hasher>(self, ref h: H) {
+        self.xs.hash(ref h);
+    }
+}
+
+impl<T: Debug> Debug for FrozenList<T> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try Debug::fmt(self.xs, ref f)
+    }
+}
+
+/// A dict that never changes: `Sync`, so threads share one without a
+/// lock. Made by `Dict::freeze`; `to_dict` gives a dict to change.
+pub struct FrozenDict<K, V, S = RandomState> {
+    pub(pkg) d: Dict<K, V, S>;
+}
+
+// Read only: the hashes were made at run time before it froze, so a
+// lookup writes nothing.
+unsafe impl<K: Send + Sync, V: Send + Sync, S: Send + Sync> Sync for FrozenDict<K, V, S> {}
+
+impl<K: Hash + Send + Sync, V: Send + Sync> FrozenDict<K, V> {
+    /// An empty frozen dict.
+    pub fn new() -> FrozenDict<K, V> {
+        let d: Dict<K, V> = Dict::new();
+        d.freeze()
+    }
+}
+
+impl<K: Hash, V, S: BuildHasher> FrozenDict<K, V, S> {
+    /// The number of entries.
+    pub const fn len(self) -> usize {
+        self.d.len()
+    }
+
+    /// `true` when the dict has no entry.
+    pub const fn is_empty(self) -> bool {
+        self.d.is_empty()
+    }
+
+    /// The value under `k`; `none` when `k` is absent.
+    pub const fn get(self, k: K) -> V | none {
+        self.d.get(k)
+    }
+
+    /// The value under `k`; `default` when `k` is absent.
+    pub const fn get_or(self, k: K, default: V) -> V {
+        self.d.get_or(k, default)
+    }
+
+    /// `true` when `k` has an entry.
+    pub const fn contains_key(self, k: K) -> bool {
+        self.d.contains_key(k)
+    }
+
+    /// The keys, in insertion order.
+    pub const fn keys(self) -> Keys<K, V, S> {
+        self.d.keys()
+    }
+
+    /// The values, in insertion order.
+    pub const fn values(self) -> Values<K, V, S> {
+        self.d.values()
+    }
+
+    /// The `(key, value)` pairs, in insertion order.
+    pub const fn iter(self) -> DictIter<K, V, S> {
+        self.d.iter()
+    }
+
+    /// What builds the dict's hashers.
+    pub const fn hasher(self) -> S {
+        self.d.hasher()
+    }
+
+    /// A new dict holding the entries, free to change.
+    pub const fn to_dict(self) -> Dict<K, V, S> {
+        let out: Dict<K, V, S> = Dict::with_capacity_and_hasher(self.d.len(), self.d.hasher());
+        for (k, v) in self.d {
+            out.insert(k, v);
+        }
+        out
+    }
+}
+
+/// `d[k]`; panics when the key is absent.
+impl<K: Hash, V, S: BuildHasher> Index<K> for FrozenDict<K, V, S> {
+    type Output = V;
+    #[track_caller]
+    const fn index(self, k: K) -> V {
+        self.d[k]
+    }
+}
+
+/// `for (k, v) in d`.
+impl<K: Hash, V, S: BuildHasher> IntoIterator for FrozenDict<K, V, S> {
+    type IntoIter = DictIter<K, V, S>;
+    type Item = (K, V);
+    const fn into_iter(self) -> DictIter<K, V, S> {
+        self.d.iter()
+    }
+}
+
+impl<K: Hash + Send + Sync, V: Send + Sync> Default for FrozenDict<K, V> {
+    fn default() -> FrozenDict<K, V> { FrozenDict::new() }
+}
+
+/// The same dict: it cannot change, so sharing it is as good as a copy.
+impl<K, V, S> Clone for FrozenDict<K, V, S> {
+    const fn clone(self) -> FrozenDict<K, V, S> { self }
+}
+
+impl<K: Hash, V: PartialEq, S: BuildHasher> PartialEq for FrozenDict<K, V, S> {
+    const fn eq(self, rhs: FrozenDict<K, V, S>) -> bool { self.d == rhs.d }
+    const fn ne(self, rhs: FrozenDict<K, V, S>) -> bool { self.d != rhs.d }
+}
+
+impl<K: Hash + Debug, V: Debug, S: BuildHasher> Debug for FrozenDict<K, V, S> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try Debug::fmt(self.d, ref f)
+    }
+}
+
+/// A set that never changes: `Sync`, so threads share one without a
+/// lock. Made by `Set::freeze`; `to_set` gives a set to change.
+pub struct FrozenSet<T, S = RandomState> {
+    pub(pkg) d: Dict<T, bool, S>;
+}
+
+unsafe impl<T: Send + Sync, S: Send + Sync> Sync for FrozenSet<T, S> {}
+
+impl<T: Hash + Send + Sync> FrozenSet<T> {
+    /// An empty frozen set.
+    pub fn new() -> FrozenSet<T> {
+        let s: Set<T> = Set::new();
+        s.freeze()
+    }
+}
+
+impl<T: Hash, S: BuildHasher> FrozenSet<T, S> {
+    /// The number of members.
+    pub const fn len(self) -> usize {
+        self.d.len()
+    }
+
+    /// `true` when the set has no member.
+    pub const fn is_empty(self) -> bool {
+        self.d.is_empty()
+    }
+
+    /// `true` when `x` is a member.
+    pub const fn contains(self, x: T) -> bool {
+        self.d.contains_key(x)
+    }
+
+    /// The members, in insertion order.
+    pub const fn iter(self) -> Keys<T, bool, S> {
+        self.d.keys()
+    }
+
+    /// What builds the set's hashers.
+    pub const fn hasher(self) -> S {
+        self.d.hasher()
+    }
+
+    /// A new set holding the members, free to change.
+    pub const fn to_set(self) -> Set<T, S> {
+        let out: Set<T, S> = Set::with_capacity_and_hasher(self.d.len(), self.d.hasher());
+        for x in self.d.keys() {
+            out.insert(x);
+        }
+        out
+    }
+}
+
+/// `for x in s`.
+impl<T: Hash, S: BuildHasher> IntoIterator for FrozenSet<T, S> {
+    type IntoIter = Keys<T, bool, S>;
+    type Item = T;
+    const fn into_iter(self) -> Keys<T, bool, S> {
+        self.d.keys()
+    }
+}
+
+impl<T: Hash + Send + Sync> Default for FrozenSet<T> {
+    fn default() -> FrozenSet<T> { FrozenSet::new() }
+}
+
+/// The same set: it cannot change, so sharing it is as good as a copy.
+impl<T, S> Clone for FrozenSet<T, S> {
+    const fn clone(self) -> FrozenSet<T, S> { self }
+}
+
+impl<T: Hash, S: BuildHasher> PartialEq for FrozenSet<T, S> {
+    const fn eq(self, rhs: FrozenSet<T, S>) -> bool {
+        if self.d.len() != rhs.d.len() {
+            return false;
+        }
+        for x in self.d.keys() {
+            if !rhs.d.contains_key(x) {
+                return false;
+            }
+        }
+        true
+    }
+    const fn ne(self, rhs: FrozenSet<T, S>) -> bool { !self.eq(rhs) }
+}
+
+/// `{a, b, ..}`, as a `Set`.
+impl<T: Hash + Debug, S: BuildHasher> Debug for FrozenSet<T, S> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("{");
+        let first = true;
+        for x in self.d.keys() {
+            try f.debug_entry("", x, first, false);
+            first = false;
+        }
+        try f.debug_close("}", first, false)
+    }
+}

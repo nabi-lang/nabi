@@ -1,0 +1,12 @@
+// needs: threads
+// expect-error: `a` shares the value the `Mutex` protects (`g.get()`)
+// A local stored into the locked value, kept after the block.
+use std::thread;
+static M: Mutex<List<List<i32>>> = Mutex::new([]);
+fn main() {
+    let a: List<i32> = [];
+    using g = M.lock() { g.get().push(a); }
+    let t = thread::spawn(|| { using g = M.lock() { if let l: List<i32> = g.get().pop() { g.get().push(l); } } 0 });
+    let _ = try! t.join();
+    println(f"len {a.len()}");
+}

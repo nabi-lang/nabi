@@ -1,0 +1,7 @@
+// expect-error: interface `a:b/calc` is both imported and exported
+
+// One component cannot import and export an interface.
+ffi::wit::import { "calc.wit" }
+ffi::wit::export { "calc.wit" }
+
+fn main() {}

@@ -1,0 +1,7 @@
+# Cases an iOS app cannot run, one per line: <case> <why>. Corpus.m
+# reports them skipped, not failed. Only for what the app sandbox or the
+# in-process run lacks; a compiler or library bug is a failure.
+std_306_3_kill_on_drop starts itself as a child process (std::process::Command); an iOS app can neither fork nor spawn
+gc_log_and_heap_dump reruns itself as a child process with NABIR_GC_LOG and NABIR_HEAP_DUMP set; an iOS app can neither fork nor spawn
+110_9_objc_dispatch calls dispatch_main, which ends the calling thread and must run on the process's main thread; in the XCTest host that thread is XCTest's
+909_6_panic_backtrace backtraces read the function table only nabi's linker writes; the case dylibs are linked by Apple's (cc.sh), as nabi's cannot link a program into a loadable library yet

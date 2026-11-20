@@ -1,0 +1,23 @@
+{
+  "_comment": "The eight release targets, the single source read by release-build.yml (build matrix), release/publish.sh (archives to verify), and check/targets.sh (install-script lists). Fields: runs-on (the runner image); kind (native=dist/native.sh, gnu/musl=the container scripts, freebsd=dist/freebsd.sh, a FreeBSD VM on a Linux runner with KVM); archive (file set: unix, win). build-targets: the Supported build targets, whose runtime every archive ships under lib/nabi/targets/<triple>/ (its own triple's may be lib/'s); Apple ones only the Apple hosts' archives (scripts/check/archive.sh).",
+  "targets": [
+    { "name": "macos",            "triple": "aarch64-apple-darwin",       "runs-on": "macos-26",         "kind": "native",  "archive": "unix" },
+    { "name": "windows",          "triple": "x86_64-pc-windows-msvc",     "runs-on": "windows-2022",     "kind": "native",  "archive": "win"  },
+    { "name": "windows-arm64",    "triple": "aarch64-pc-windows-msvc",    "runs-on": "windows-11-arm",   "kind": "native",  "archive": "win"  },
+    { "name": "linux-gnu-x64",    "triple": "x86_64-unknown-linux-gnu",   "runs-on": "ubuntu-24.04",     "kind": "gnu",     "archive": "unix" },
+    { "name": "linux-gnu-arm64",  "triple": "aarch64-unknown-linux-gnu",  "runs-on": "ubuntu-24.04-arm", "kind": "gnu",     "archive": "unix" },
+    { "name": "linux-musl-x64",   "triple": "x86_64-unknown-linux-musl",  "runs-on": "ubuntu-24.04",     "kind": "musl",    "archive": "unix" },
+    { "name": "linux-musl-arm64", "triple": "aarch64-unknown-linux-musl", "runs-on": "ubuntu-24.04-arm", "kind": "musl",    "archive": "unix" },
+    { "name": "freebsd-x64",      "triple": "x86_64-unknown-freebsd",     "runs-on": "ubuntu-24.04",     "kind": "freebsd", "archive": "unix" }
+  ],
+  "build-targets": [
+    "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl",
+    "aarch64-apple-darwin", "aarch64-apple-ios-sim",
+    "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc",
+    "i686-unknown-linux-gnu", "i686-pc-windows-msvc",
+    "armv7-unknown-linux-gnueabihf", "armv7-unknown-linux-musleabihf",
+    "x86_64-unknown-freebsd",
+    "x86_64-linux-android",
+    "wasm32-unknown-unknown", "wasm32-wasip2", "wasm32-wasip1-threads"
+  ]
+}

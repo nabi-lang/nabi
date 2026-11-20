@@ -1,0 +1,13 @@
+// expect-error: diag_let_rules.nabi:9:1: `total` is not declared; a variable is created only by `let`
+// expect-error: help: write `let total = 0;`
+// forbid-error: cannot find value
+// forbid-error: spec variant
+
+// Only `let` declares; a second `let` of a name is a new binding. The
+// fix uses the program's names; a name assigned undeclared is not
+// reported again where it is read.
+total = 0;
+println(f"{total}");
+let x = "5";
+let x: i32 = try! x.parse();
+println(f"{x}");

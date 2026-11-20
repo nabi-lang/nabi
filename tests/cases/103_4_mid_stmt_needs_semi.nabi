@@ -1,0 +1,12 @@
+// expect-error: 8:21: expected `;`, found identifier `x`
+// expect-error: 9:25: expected `;`, found keyword `let`
+// expect-error: 10:14: expected `;`, found identifier `x`
+
+// Only the last statement before `}` may omit its `;`.
+fn main() -> i32 {
+    let x = 0;
+    if true { x = 1 x = 2 }
+    if true { let y = 1 let z = 2 }
+    { x += 1 x += 2 }
+    return 0;
+}

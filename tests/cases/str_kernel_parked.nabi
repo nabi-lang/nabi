@@ -1,0 +1,42 @@
+// needs: threads
+// expect-exit: 0
+// gc-stress: 5000
+// expect-stdout:
+// collected while searching
+// -1 67108864
+
+// A long `str` search runs parked: collections do not wait for it.
+
+extern "C" {
+    fn nabi_gc_collect();
+    fn nabi_parked_marks() -> usize;
+}
+
+// Two collections once the search has started: whether they ended with
+// it still running (the marks unchanged), and its result.
+fn attempt(big: str) -> (bool, isize) {
+    let m0 = unsafe { nabi_parked_marks() };
+    let t = std::thread::spawn(|| {
+        let at = big.find("zz");
+        if let i: usize = at { i as isize } else { -1 }
+    });
+    let m = m0;
+    while m == m0 { m = unsafe { nabi_parked_marks() }; }
+    for _ in 0..2 { unsafe { nabi_gc_collect() }; }
+    let during = m == m0 + 1 && unsafe { nabi_parked_marks() } == m;
+    let at = try! t.join();
+    (during, at)
+}
+
+fn main() {
+    let big = "abcdefgh".repeat(8388608);
+    let r = attempt(big);
+    let tries = 1;
+    while !r.0 && tries < 5 {
+        r = attempt(big);
+        tries += 1;
+    }
+    let (during, at) = r;
+    println(if during { "collected while searching" } else { "the collections waited for the search" });
+    println(f"{at} {big.len()}");
+}

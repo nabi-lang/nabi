@@ -1,0 +1,30 @@
+// nabic-arg: --extern r1=tests/cases/209_same_leaf_dep_a --extern r2=tests/cases/209_same_leaf_dep_b
+// expect-exit: 0
+// expect-stdout:
+// 2 3 0 2 2 3
+
+// Two packages with types of the same names: a trait default method
+// (`map`) of one type is not the other's.
+mod a {
+    pub struct Iter { pub n: usize; }
+    impl Iterator for Iter {
+        type Item = usize;
+        fn next(ref self) -> usize? { if self.n == 0 { return none; } self.n -= 1; self.n }
+    }
+}
+
+mod b {
+    pub struct Iter { pub n: usize; }
+    impl Iterator for Iter {
+        type Item = usize;
+        fn next(ref self) -> usize? { if self.n == 0 { return none; } self.n -= 1; self.n + 1 }
+    }
+}
+
+fn main() {
+    let x: List<usize> = r1::Regex::new("ab").find_iter("abab").map(|m| m.start()).collect();
+    let y: List<usize> = r2::Regex::new("ab").find_iter("ababab").map(|m| m.start()).collect();
+    let p: List<usize> = a::Iter { n: 2 }.map(|v| v * 2).collect();
+    let q: List<usize> = b::Iter { n: 2 }.map(|v| v * 2).collect();
+    println(f"{x.len()} {y.len()} {p[1]} {p[0]} {q[1]} {y[1] + 1}");
+}

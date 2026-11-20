@@ -1,0 +1,53 @@
+// expect-exit: 0
+// expect-stdout:
+// V3 V3 V3
+// D<f32> D
+
+// An unsuffixed literal filling a parameter that declares a default takes
+// that default as its type: `V3<T = f32>` makes the literals `f32`, and
+// integer literals fill a float default too.
+
+use core::ops::{Add, AddAssign, Mul};
+use core::num::Num;
+
+struct V3<T = f32> { x: T; y: T; z: T; }
+
+impl<T: Num> V3<T> {
+    fn new(x: T, y: T, z: T) -> V3<T> { V3 { x: x, y: y, z: z } }
+}
+
+impl<T: Num> Add for V3<T> {
+    type Output = V3<T>;
+    fn add(self, o: V3<T>) -> V3<T> { V3 { x: self.x + o.x, y: self.y + o.y, z: self.z + o.z } }
+}
+
+impl<T: Num> AddAssign for V3<T> {
+    fn add_assign(ref self, o: V3<T>) {
+        self.x = self.x + o.x;
+        self.y = self.y + o.y;
+        self.z = self.z + o.z;
+    }
+}
+
+impl<T: Num> Mul<T> for V3<T> {
+    type Output = V3<T>;
+    fn mul(self, k: T) -> V3<T> { V3 { x: self.x * k, y: self.y * k, z: self.z * k } }
+}
+
+impl V3<f32> { const X: V3<f32> = V3 { x: 1.0, y: 0.0, z: 0.0 }; }
+impl V3<f64> { const X: V3<f64> = V3 { x: 1.0, y: 0.0, z: 0.0 }; }
+
+struct D<T = f64> { v: T; }
+
+impl<T: Num> D<T> { fn new(v: T) -> D<T> { D { v: v } } }
+
+fn name<T>(x: T) -> str { x.type_name_of_val() }
+
+fn main() {
+    let a = V3::new(1.0, 2.0, 3.0);
+    let b = V3 { x: 1.0, y: 2.0, z: 3.0 };
+    let c = V3::new(1, 2, 3);
+    println(f"{name(a)} {name(b)} {name(c)}");
+    let d: D<f32> = D::new(1.5);
+    println(f"{name(d)} {name(D::new(2))}");
+}

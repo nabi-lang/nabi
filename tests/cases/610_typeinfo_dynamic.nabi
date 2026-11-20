@@ -1,0 +1,84 @@
+// expect-exit: 0
+// expect-stdout:
+// hp=100 speed=1.5
+// true 7 false
+// true 250
+// built ann 9 1
+// error: `User` needs field `id`: it has no default
+// default orc 100
+// ["a", "b"] 2 b
+// [1, 2, 3]
+// {"x": 1}
+// Enemy true User
+// found Enemy, none
+// ["hp", "speed", "name"] skip=false
+
+// Dynamic access through `TypeInfo`: typed and `any` field get / set, a
+// value built from named fields, list and dict items, and the type of
+// a value held in `any`. `#[inspect(skip)]` hides a field.
+use core::reflect::{Field, cast, find, info, info_of};
+
+#[derive(Inspect)]
+struct Enemy { hp: i32 = 100; speed: f64 = 1.5; #[inspect(skip)] secret: i32 = 7; name: str = "orc"; }
+
+#[derive(Inspect)]
+struct User { id: u64; name: str; level: i32 = 1; }
+
+// `?` on `T | none` returns `none` from a function that may.
+fn run() -> i32 | none {
+    let e = Enemy { };
+    let t = Enemy::type_info();
+    let held: any = e;
+    let (hpf, spf) = (t.field("hp")?, t.field("speed")?);
+    println(f"hp={hpf.get_as::<i32>(held) ?? 0} speed={spf.get_as::<f64>(held) ?? 0.0}");
+    let hp: Field = t.field("hp") ?? panic("hp");
+    println(f"{hp.set(ref held, 7)} {hp.get_as::<i32>(held) ?? 0} {hp.set(ref held, "no")}");
+    let e2 = cast::<Enemy>(held) ?? panic("enemy");
+    println(f"{e2.set_field("hp", 250)} {e2.hp}");
+    let parts: Dict<str, any> = Dict::new();
+    parts.insert("id", 9);
+    parts.insert("name", "ann");
+    let u = try User::type_info().build(parts) catch e { panic(f"{e}") };
+    let u = cast::<User>(u) ?? panic("user");
+    println(f"built {u.name} {u.id} {u.level}");
+    let bad = try User::type_info().build(Dict::new()) catch e { println(f"error: {e}"); none };
+    let _ = bad;
+    match t.new_default() {
+        v: any => {
+            let d = cast::<Enemy>(v) ?? panic("default");
+            println(f"default {d.name} {d.hp}");
+        },
+        none => println("no default"),
+    }
+    let lt = info::<List<str>>();
+    let xs: any = ["a", "b"];
+    match lt.list_items(xs) {
+        items: List<any> => {
+            let names: List<str> = List::new();
+            for x in items {
+                names.push(cast::<str>(x) ?? "");
+            }
+            println(f"{names:?} {lt.list_len(xs)} {cast::<str>(lt.list_get(xs, 1) ?? "") ?? ""}");
+        },
+        none => println("not a list"),
+    }
+    let li = info::<List<i32>>();
+    let made: List<any> = [1, 2, 3];
+    let back = try li.list_from(made) catch e { panic(f"{e}") };
+    println(f"{cast::<List<i32>>(back) ?? []:?}");
+    let di = info::<Dict<str, i32>>();
+    let k: any = "x";
+    let x: any = 1;
+    let pairs: List<(any, any)> = List::new();
+    pairs.push((k, x));
+    let d = try di.dict_from(pairs) catch e { panic(f"{e}") };
+    println(f"{cast::<Dict<str, i32>>(d) ?? Dict::new():?}");
+    let u2: any = User { id: 1, name: "b" };
+    let (ie, iu, fe) = (info_of(held)?, info_of(u2)?, find("Enemy")?);
+    println(f"{ie.name()} {ie == t} {iu.name()}");
+    println(f"found {fe.name()}, {if find("nope") is none { "none" } else { "some" }}");
+    println(f"{Enemy::field_names():?} skip={!(t.field("secret") is none)}");
+    return 0;
+}
+
+let _ = run() ?? panic("a lookup failed");

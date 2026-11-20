@@ -1,0 +1,39 @@
+// expect-exit: 0
+// expect-stdout: 0.5 [0.5, 0.5, 0.5] [0.5, 0.5] 0.5 int 3 str x
+
+// `s.tilde(x)` picks among the impls of one trait over different
+// arguments as the operator form `s ∼ x` does: by the argument's type,
+// then by the impls whose bounds it meets.
+pub trait Distribution { type Value; fn draw(self) -> Value; }
+pub struct Normal {}
+impl Distribution for Normal { type Value = f64; fn draw(self) -> f64 { 0.5 } }
+pub struct Iid<D> { d: D; n: usize; }
+pub struct S {}
+
+pub trait Tilde<Rhs> {
+    type Output;
+    #[infix("∼", like = "==")]
+    fn tilde(self, rhs: Rhs) -> Output;
+}
+impl<D: Distribution> Tilde<D> for S {
+    type Output = D::Value;
+    fn tilde(self, d: D) -> D::Value { d.draw() }
+}
+impl<D: Distribution> Tilde<Iid<D>> for S {
+    type Output = List<D::Value>;
+    fn tilde(self, d: Iid<D>) -> List<D::Value> { List::from_fn(d.n, |_| d.d.draw()) }
+}
+
+trait Show<A> { fn show(self, a: A) -> str; }
+impl Show<i32> for S { fn show(self, a: i32) -> str { f"int {a}" } }
+impl Show<str> for S { fn show(self, a: str) -> str { f"str {a}" } }
+
+fn main() {
+    let s = S {};
+    let one = s ∼ Normal {};
+    let many = s ∼ Iid { d: Normal {}, n: 3 };
+    let two = s.tilde(Iid { d: Normal {}, n: 2 });
+    let o = s.tilde(Normal {});
+    let x = "x";
+    println(f"{one} {many:?} {two:?} {o} {s.show(3)} {s.show(x)}");
+}

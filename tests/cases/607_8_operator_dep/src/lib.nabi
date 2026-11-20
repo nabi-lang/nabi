@@ -1,0 +1,47 @@
+// A library whose traits register operator tokens.
+pub struct M { pub v: i64; }
+
+pub trait MatMul<Rhs = Self> {
+    type Output;
+    #[infix("@", like = "*")]
+    fn matmul(self, rhs: Rhs) -> Output;
+}
+
+pub trait Pipe<F> {
+    type Output;
+    #[infix("<~", like = "|")]
+    fn pipe(self, f: F) -> Output;
+}
+
+pub trait Conv<Rhs = Self> {
+    type Output;
+    #[infix("⊛", like = "*")]
+    fn conv(self, rhs: Rhs) -> Output;
+}
+
+// Not `pub`: `<-` lexes in this package only.
+trait Send2 {
+    #[infix("<-", like = "+")]
+    fn send2(self, v: i64) -> i64;
+}
+
+impl MatMul for M {
+    type Output = M;
+    fn matmul(self, rhs: M) -> M { M { v: self.v * rhs.v + 1 } }
+}
+
+impl Pipe<fn(i64) -> i64> for i64 {
+    type Output = i64;
+    fn pipe(self, f: fn(i64) -> i64) -> i64 { f(self) }
+}
+
+impl Conv for i64 {
+    type Output = i64;
+    fn conv(self, rhs: i64) -> i64 { self * rhs + 1 }
+}
+
+impl Send2 for i64 {
+    fn send2(self, v: i64) -> i64 { self * 10 + v }
+}
+
+pub fn own() -> i64 { 1 <- 2 }

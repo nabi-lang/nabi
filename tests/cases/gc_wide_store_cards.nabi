@@ -1,0 +1,332 @@
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// 0-0 0-70 39-139
+// 5600 5600
+
+// A value wider than a card (its strings span three or more cards) stored
+// into an old carded list: every card it spans is dirtied, so the young
+// strings in the middle ones survive minors and follow evacuation.
+extern "C" {
+    fn nabi_gc_collect();
+    fn nabi_gc_collect_young();
+}
+
+struct Wide {
+    a: i64;
+    f0: str;
+    f1: str;
+    f2: str;
+    f3: str;
+    f4: str;
+    f5: str;
+    f6: str;
+    f7: str;
+    f8: str;
+    f9: str;
+    f10: str;
+    f11: str;
+    f12: str;
+    f13: str;
+    f14: str;
+    f15: str;
+    r#f16: str;
+    f17: str;
+    f18: str;
+    f19: str;
+    f20: str;
+    f21: str;
+    f22: str;
+    f23: str;
+    f24: str;
+    f25: str;
+    f26: str;
+    f27: str;
+    f28: str;
+    f29: str;
+    f30: str;
+    f31: str;
+    f32: str;
+    f33: str;
+    f34: str;
+    f35: str;
+    f36: str;
+    f37: str;
+    f38: str;
+    f39: str;
+    f40: str;
+    f41: str;
+    f42: str;
+    f43: str;
+    f44: str;
+    f45: str;
+    f46: str;
+    f47: str;
+    f48: str;
+    f49: str;
+    f50: str;
+    f51: str;
+    f52: str;
+    f53: str;
+    f54: str;
+    f55: str;
+    f56: str;
+    f57: str;
+    f58: str;
+    f59: str;
+    f60: str;
+    f61: str;
+    f62: str;
+    f63: str;
+    f64: str;
+    f65: str;
+    f66: str;
+    f67: str;
+    f68: str;
+    f69: str;
+    f70: str;
+    f71: str;
+    f72: str;
+    f73: str;
+    f74: str;
+    f75: str;
+    f76: str;
+    f77: str;
+    f78: str;
+    f79: str;
+    f80: str;
+    f81: str;
+    f82: str;
+    f83: str;
+    f84: str;
+    f85: str;
+    f86: str;
+    f87: str;
+    f88: str;
+    f89: str;
+    f90: str;
+    f91: str;
+    f92: str;
+    f93: str;
+    f94: str;
+    f95: str;
+    f96: str;
+    f97: str;
+    f98: str;
+    f99: str;
+    f100: str;
+    f101: str;
+    f102: str;
+    f103: str;
+    f104: str;
+    f105: str;
+    f106: str;
+    f107: str;
+    f108: str;
+    f109: str;
+    f110: str;
+    f111: str;
+    f112: str;
+    f113: str;
+    f114: str;
+    f115: str;
+    f116: str;
+    f117: str;
+    f118: str;
+    f119: str;
+    f120: str;
+    f121: str;
+    f122: str;
+    f123: str;
+    f124: str;
+    f125: str;
+    f126: str;
+    f127: str;
+    f128: str;
+    f129: str;
+    f130: str;
+    f131: str;
+    f132: str;
+    f133: str;
+    f134: str;
+    f135: str;
+    f136: str;
+    f137: str;
+    f138: str;
+    f139: str;
+}
+
+fn churn() {
+    let j = 0;
+    while j < 3000 {
+        let _s = f"garbage-{j}";
+        j = j + 1;
+    }
+}
+
+fn main() -> i32 {
+    let n: i64 = 40;
+    let xs: List<Wide> = [];
+    let i: i64 = 0;
+    while i < n {
+        xs.push(Wide { a: i, f0: "init", f1: "init", f2: "init", f3: "init", f4: "init", f5: "init", f6: "init", f7: "init", f8: "init", f9: "init", f10: "init", f11: "init", f12: "init", f13: "init", f14: "init", f15: "init", r#f16: "init", f17: "init", f18: "init", f19: "init", f20: "init", f21: "init", f22: "init", f23: "init", f24: "init", f25: "init", f26: "init", f27: "init", f28: "init", f29: "init", f30: "init", f31: "init", f32: "init", f33: "init", f34: "init", f35: "init", f36: "init", f37: "init", f38: "init", f39: "init", f40: "init", f41: "init", f42: "init", f43: "init", f44: "init", f45: "init", f46: "init", f47: "init", f48: "init", f49: "init", f50: "init", f51: "init", f52: "init", f53: "init", f54: "init", f55: "init", f56: "init", f57: "init", f58: "init", f59: "init", f60: "init", f61: "init", f62: "init", f63: "init", f64: "init", f65: "init", f66: "init", f67: "init", f68: "init", f69: "init", f70: "init", f71: "init", f72: "init", f73: "init", f74: "init", f75: "init", f76: "init", f77: "init", f78: "init", f79: "init", f80: "init", f81: "init", f82: "init", f83: "init", f84: "init", f85: "init", f86: "init", f87: "init", f88: "init", f89: "init", f90: "init", f91: "init", f92: "init", f93: "init", f94: "init", f95: "init", f96: "init", f97: "init", f98: "init", f99: "init", f100: "init", f101: "init", f102: "init", f103: "init", f104: "init", f105: "init", f106: "init", f107: "init", f108: "init", f109: "init", f110: "init", f111: "init", f112: "init", f113: "init", f114: "init", f115: "init", f116: "init", f117: "init", f118: "init", f119: "init", f120: "init", f121: "init", f122: "init", f123: "init", f124: "init", f125: "init", f126: "init", f127: "init", f128: "init", f129: "init", f130: "init", f131: "init", f132: "init", f133: "init", f134: "init", f135: "init", f136: "init", f137: "init", f138: "init", f139: "init" });
+        i = i + 1;
+    }
+    unsafe { nabi_gc_collect() };
+    i = 0;
+    while i < n {
+        xs[i as usize] = Wide { a: i, f0: f"{i}-0", f1: f"{i}-1", f2: f"{i}-2", f3: f"{i}-3", f4: f"{i}-4", f5: f"{i}-5", f6: f"{i}-6", f7: f"{i}-7", f8: f"{i}-8", f9: f"{i}-9", f10: f"{i}-10", f11: f"{i}-11", f12: f"{i}-12", f13: f"{i}-13", f14: f"{i}-14", f15: f"{i}-15", r#f16: f"{i}-16", f17: f"{i}-17", f18: f"{i}-18", f19: f"{i}-19", f20: f"{i}-20", f21: f"{i}-21", f22: f"{i}-22", f23: f"{i}-23", f24: f"{i}-24", f25: f"{i}-25", f26: f"{i}-26", f27: f"{i}-27", f28: f"{i}-28", f29: f"{i}-29", f30: f"{i}-30", f31: f"{i}-31", f32: f"{i}-32", f33: f"{i}-33", f34: f"{i}-34", f35: f"{i}-35", f36: f"{i}-36", f37: f"{i}-37", f38: f"{i}-38", f39: f"{i}-39", f40: f"{i}-40", f41: f"{i}-41", f42: f"{i}-42", f43: f"{i}-43", f44: f"{i}-44", f45: f"{i}-45", f46: f"{i}-46", f47: f"{i}-47", f48: f"{i}-48", f49: f"{i}-49", f50: f"{i}-50", f51: f"{i}-51", f52: f"{i}-52", f53: f"{i}-53", f54: f"{i}-54", f55: f"{i}-55", f56: f"{i}-56", f57: f"{i}-57", f58: f"{i}-58", f59: f"{i}-59", f60: f"{i}-60", f61: f"{i}-61", f62: f"{i}-62", f63: f"{i}-63", f64: f"{i}-64", f65: f"{i}-65", f66: f"{i}-66", f67: f"{i}-67", f68: f"{i}-68", f69: f"{i}-69", f70: f"{i}-70", f71: f"{i}-71", f72: f"{i}-72", f73: f"{i}-73", f74: f"{i}-74", f75: f"{i}-75", f76: f"{i}-76", f77: f"{i}-77", f78: f"{i}-78", f79: f"{i}-79", f80: f"{i}-80", f81: f"{i}-81", f82: f"{i}-82", f83: f"{i}-83", f84: f"{i}-84", f85: f"{i}-85", f86: f"{i}-86", f87: f"{i}-87", f88: f"{i}-88", f89: f"{i}-89", f90: f"{i}-90", f91: f"{i}-91", f92: f"{i}-92", f93: f"{i}-93", f94: f"{i}-94", f95: f"{i}-95", f96: f"{i}-96", f97: f"{i}-97", f98: f"{i}-98", f99: f"{i}-99", f100: f"{i}-100", f101: f"{i}-101", f102: f"{i}-102", f103: f"{i}-103", f104: f"{i}-104", f105: f"{i}-105", f106: f"{i}-106", f107: f"{i}-107", f108: f"{i}-108", f109: f"{i}-109", f110: f"{i}-110", f111: f"{i}-111", f112: f"{i}-112", f113: f"{i}-113", f114: f"{i}-114", f115: f"{i}-115", f116: f"{i}-116", f117: f"{i}-117", f118: f"{i}-118", f119: f"{i}-119", f120: f"{i}-120", f121: f"{i}-121", f122: f"{i}-122", f123: f"{i}-123", f124: f"{i}-124", f125: f"{i}-125", f126: f"{i}-126", f127: f"{i}-127", f128: f"{i}-128", f129: f"{i}-129", f130: f"{i}-130", f131: f"{i}-131", f132: f"{i}-132", f133: f"{i}-133", f134: f"{i}-134", f135: f"{i}-135", f136: f"{i}-136", f137: f"{i}-137", f138: f"{i}-138", f139: f"{i}-139" };
+        unsafe { nabi_gc_collect_young() };
+        churn();
+        unsafe { nabi_gc_collect_young() };
+        i = i + 1;
+    }
+    println(f"{xs[0].f0} {xs[0].f70} {xs[39].f139}");
+    let ok = 0;
+    let total = 0;
+    for p in xs {
+        if p.f0 == f"{p.a}-0" { ok = ok + 1; }
+        if p.f1 == f"{p.a}-1" { ok = ok + 1; }
+        if p.f2 == f"{p.a}-2" { ok = ok + 1; }
+        if p.f3 == f"{p.a}-3" { ok = ok + 1; }
+        if p.f4 == f"{p.a}-4" { ok = ok + 1; }
+        if p.f5 == f"{p.a}-5" { ok = ok + 1; }
+        if p.f6 == f"{p.a}-6" { ok = ok + 1; }
+        if p.f7 == f"{p.a}-7" { ok = ok + 1; }
+        if p.f8 == f"{p.a}-8" { ok = ok + 1; }
+        if p.f9 == f"{p.a}-9" { ok = ok + 1; }
+        if p.f10 == f"{p.a}-10" { ok = ok + 1; }
+        if p.f11 == f"{p.a}-11" { ok = ok + 1; }
+        if p.f12 == f"{p.a}-12" { ok = ok + 1; }
+        if p.f13 == f"{p.a}-13" { ok = ok + 1; }
+        if p.f14 == f"{p.a}-14" { ok = ok + 1; }
+        if p.f15 == f"{p.a}-15" { ok = ok + 1; }
+        if p.r#f16 == f"{p.a}-16" { ok = ok + 1; }
+        if p.f17 == f"{p.a}-17" { ok = ok + 1; }
+        if p.f18 == f"{p.a}-18" { ok = ok + 1; }
+        if p.f19 == f"{p.a}-19" { ok = ok + 1; }
+        if p.f20 == f"{p.a}-20" { ok = ok + 1; }
+        if p.f21 == f"{p.a}-21" { ok = ok + 1; }
+        if p.f22 == f"{p.a}-22" { ok = ok + 1; }
+        if p.f23 == f"{p.a}-23" { ok = ok + 1; }
+        if p.f24 == f"{p.a}-24" { ok = ok + 1; }
+        if p.f25 == f"{p.a}-25" { ok = ok + 1; }
+        if p.f26 == f"{p.a}-26" { ok = ok + 1; }
+        if p.f27 == f"{p.a}-27" { ok = ok + 1; }
+        if p.f28 == f"{p.a}-28" { ok = ok + 1; }
+        if p.f29 == f"{p.a}-29" { ok = ok + 1; }
+        if p.f30 == f"{p.a}-30" { ok = ok + 1; }
+        if p.f31 == f"{p.a}-31" { ok = ok + 1; }
+        if p.f32 == f"{p.a}-32" { ok = ok + 1; }
+        if p.f33 == f"{p.a}-33" { ok = ok + 1; }
+        if p.f34 == f"{p.a}-34" { ok = ok + 1; }
+        if p.f35 == f"{p.a}-35" { ok = ok + 1; }
+        if p.f36 == f"{p.a}-36" { ok = ok + 1; }
+        if p.f37 == f"{p.a}-37" { ok = ok + 1; }
+        if p.f38 == f"{p.a}-38" { ok = ok + 1; }
+        if p.f39 == f"{p.a}-39" { ok = ok + 1; }
+        if p.f40 == f"{p.a}-40" { ok = ok + 1; }
+        if p.f41 == f"{p.a}-41" { ok = ok + 1; }
+        if p.f42 == f"{p.a}-42" { ok = ok + 1; }
+        if p.f43 == f"{p.a}-43" { ok = ok + 1; }
+        if p.f44 == f"{p.a}-44" { ok = ok + 1; }
+        if p.f45 == f"{p.a}-45" { ok = ok + 1; }
+        if p.f46 == f"{p.a}-46" { ok = ok + 1; }
+        if p.f47 == f"{p.a}-47" { ok = ok + 1; }
+        if p.f48 == f"{p.a}-48" { ok = ok + 1; }
+        if p.f49 == f"{p.a}-49" { ok = ok + 1; }
+        if p.f50 == f"{p.a}-50" { ok = ok + 1; }
+        if p.f51 == f"{p.a}-51" { ok = ok + 1; }
+        if p.f52 == f"{p.a}-52" { ok = ok + 1; }
+        if p.f53 == f"{p.a}-53" { ok = ok + 1; }
+        if p.f54 == f"{p.a}-54" { ok = ok + 1; }
+        if p.f55 == f"{p.a}-55" { ok = ok + 1; }
+        if p.f56 == f"{p.a}-56" { ok = ok + 1; }
+        if p.f57 == f"{p.a}-57" { ok = ok + 1; }
+        if p.f58 == f"{p.a}-58" { ok = ok + 1; }
+        if p.f59 == f"{p.a}-59" { ok = ok + 1; }
+        if p.f60 == f"{p.a}-60" { ok = ok + 1; }
+        if p.f61 == f"{p.a}-61" { ok = ok + 1; }
+        if p.f62 == f"{p.a}-62" { ok = ok + 1; }
+        if p.f63 == f"{p.a}-63" { ok = ok + 1; }
+        if p.f64 == f"{p.a}-64" { ok = ok + 1; }
+        if p.f65 == f"{p.a}-65" { ok = ok + 1; }
+        if p.f66 == f"{p.a}-66" { ok = ok + 1; }
+        if p.f67 == f"{p.a}-67" { ok = ok + 1; }
+        if p.f68 == f"{p.a}-68" { ok = ok + 1; }
+        if p.f69 == f"{p.a}-69" { ok = ok + 1; }
+        if p.f70 == f"{p.a}-70" { ok = ok + 1; }
+        if p.f71 == f"{p.a}-71" { ok = ok + 1; }
+        if p.f72 == f"{p.a}-72" { ok = ok + 1; }
+        if p.f73 == f"{p.a}-73" { ok = ok + 1; }
+        if p.f74 == f"{p.a}-74" { ok = ok + 1; }
+        if p.f75 == f"{p.a}-75" { ok = ok + 1; }
+        if p.f76 == f"{p.a}-76" { ok = ok + 1; }
+        if p.f77 == f"{p.a}-77" { ok = ok + 1; }
+        if p.f78 == f"{p.a}-78" { ok = ok + 1; }
+        if p.f79 == f"{p.a}-79" { ok = ok + 1; }
+        if p.f80 == f"{p.a}-80" { ok = ok + 1; }
+        if p.f81 == f"{p.a}-81" { ok = ok + 1; }
+        if p.f82 == f"{p.a}-82" { ok = ok + 1; }
+        if p.f83 == f"{p.a}-83" { ok = ok + 1; }
+        if p.f84 == f"{p.a}-84" { ok = ok + 1; }
+        if p.f85 == f"{p.a}-85" { ok = ok + 1; }
+        if p.f86 == f"{p.a}-86" { ok = ok + 1; }
+        if p.f87 == f"{p.a}-87" { ok = ok + 1; }
+        if p.f88 == f"{p.a}-88" { ok = ok + 1; }
+        if p.f89 == f"{p.a}-89" { ok = ok + 1; }
+        if p.f90 == f"{p.a}-90" { ok = ok + 1; }
+        if p.f91 == f"{p.a}-91" { ok = ok + 1; }
+        if p.f92 == f"{p.a}-92" { ok = ok + 1; }
+        if p.f93 == f"{p.a}-93" { ok = ok + 1; }
+        if p.f94 == f"{p.a}-94" { ok = ok + 1; }
+        if p.f95 == f"{p.a}-95" { ok = ok + 1; }
+        if p.f96 == f"{p.a}-96" { ok = ok + 1; }
+        if p.f97 == f"{p.a}-97" { ok = ok + 1; }
+        if p.f98 == f"{p.a}-98" { ok = ok + 1; }
+        if p.f99 == f"{p.a}-99" { ok = ok + 1; }
+        if p.f100 == f"{p.a}-100" { ok = ok + 1; }
+        if p.f101 == f"{p.a}-101" { ok = ok + 1; }
+        if p.f102 == f"{p.a}-102" { ok = ok + 1; }
+        if p.f103 == f"{p.a}-103" { ok = ok + 1; }
+        if p.f104 == f"{p.a}-104" { ok = ok + 1; }
+        if p.f105 == f"{p.a}-105" { ok = ok + 1; }
+        if p.f106 == f"{p.a}-106" { ok = ok + 1; }
+        if p.f107 == f"{p.a}-107" { ok = ok + 1; }
+        if p.f108 == f"{p.a}-108" { ok = ok + 1; }
+        if p.f109 == f"{p.a}-109" { ok = ok + 1; }
+        if p.f110 == f"{p.a}-110" { ok = ok + 1; }
+        if p.f111 == f"{p.a}-111" { ok = ok + 1; }
+        if p.f112 == f"{p.a}-112" { ok = ok + 1; }
+        if p.f113 == f"{p.a}-113" { ok = ok + 1; }
+        if p.f114 == f"{p.a}-114" { ok = ok + 1; }
+        if p.f115 == f"{p.a}-115" { ok = ok + 1; }
+        if p.f116 == f"{p.a}-116" { ok = ok + 1; }
+        if p.f117 == f"{p.a}-117" { ok = ok + 1; }
+        if p.f118 == f"{p.a}-118" { ok = ok + 1; }
+        if p.f119 == f"{p.a}-119" { ok = ok + 1; }
+        if p.f120 == f"{p.a}-120" { ok = ok + 1; }
+        if p.f121 == f"{p.a}-121" { ok = ok + 1; }
+        if p.f122 == f"{p.a}-122" { ok = ok + 1; }
+        if p.f123 == f"{p.a}-123" { ok = ok + 1; }
+        if p.f124 == f"{p.a}-124" { ok = ok + 1; }
+        if p.f125 == f"{p.a}-125" { ok = ok + 1; }
+        if p.f126 == f"{p.a}-126" { ok = ok + 1; }
+        if p.f127 == f"{p.a}-127" { ok = ok + 1; }
+        if p.f128 == f"{p.a}-128" { ok = ok + 1; }
+        if p.f129 == f"{p.a}-129" { ok = ok + 1; }
+        if p.f130 == f"{p.a}-130" { ok = ok + 1; }
+        if p.f131 == f"{p.a}-131" { ok = ok + 1; }
+        if p.f132 == f"{p.a}-132" { ok = ok + 1; }
+        if p.f133 == f"{p.a}-133" { ok = ok + 1; }
+        if p.f134 == f"{p.a}-134" { ok = ok + 1; }
+        if p.f135 == f"{p.a}-135" { ok = ok + 1; }
+        if p.f136 == f"{p.a}-136" { ok = ok + 1; }
+        if p.f137 == f"{p.a}-137" { ok = ok + 1; }
+        if p.f138 == f"{p.a}-138" { ok = ok + 1; }
+        if p.f139 == f"{p.a}-139" { ok = ok + 1; }
+        total = total + 140;
+    }
+    println(f"{ok} {total}");
+    return 0;
+}

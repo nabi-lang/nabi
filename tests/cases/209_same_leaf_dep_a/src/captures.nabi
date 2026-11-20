@@ -1,0 +1,5 @@
+pub struct Match { s: usize; e: usize; }
+impl Match {
+    pub fn start(self) -> usize { self.s }
+    pub(pkg) fn mk(s: usize, e: usize) -> Match { Match { s, e } }
+}

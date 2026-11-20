@@ -1,0 +1,53 @@
+// expect-exit: 0
+// expect-stdout:
+// 4 5 1.5 2.5
+// 3
+
+// Hygiene renames only what the template binds (`let`, a `for` loop's
+// variable): an `impl Tr for E` header names the definition site's `E`,
+// and an imported name inside `@for` resolves there too.
+use core::num::Complex;
+
+pub struct E { pub v: f64; }
+
+pub trait Twice { fn twice(self) -> f64; }
+
+pub trait Bump { fn bump(self) -> f64; }
+
+trait Re { fn re2(self) -> f64; }
+
+#[impl_macro(mk)] @macro {
+    (@m: ident) => {
+        impl Twice for E {
+            fn @m(self) -> f64 { self.v * 2.0 }
+        }
+        impl Bump for pkg::E {
+            fn bump(self) -> f64 { let v = self.v; v + 3.0 }
+        }
+    }
+}
+
+#[impl_macro(make)] @macro {
+    (@rep[sep = ","] { @t: ty }) => {
+        @for @t {
+            impl Re for Complex<@t> { fn re2(self) -> f64 { self.re as f64 + 0.5 } }
+        }
+    }
+}
+
+#[impl_macro(total)] @macro {
+    (@rep[sep = ","] { @x: expr }) => {
+        { let s = 0; for i in [@for @x { @x, }] { s += i; } s }
+    }
+}
+
+mk!(twice);
+
+make!(f64, f32);
+
+fn main() {
+    let e = E { v: 2.0 };
+    let i = 7;
+    println(f"{e.twice()} {e.bump()} {Complex { re: 1.0, im: 0.0 }.re2()} {Complex { re: 2.0f32, im: 0.0f32 }.re2()}");
+    println(total!(1, i - 5));
+}

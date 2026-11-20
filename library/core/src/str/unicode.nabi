@@ -1,0 +1,176 @@
+//! core::str::unicode - Unicode text on `str`: normalization
+//! forms, full case folding, and segmentation into grapheme clusters
+//! (user-perceived characters) and words. The tables are UCD 18.0.0,
+//! in the runtime.
+
+use core::rt::PARKED;
+
+/// A Unicode normalization form, for `s.normalize(Nfc)`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum NormalForm {
+    /// Canonical composition: `"e\u{301}"` -> `"é"`. The form to store
+    /// and compare text in.
+    Nfc,
+    /// Canonical decomposition: `"é"` -> `"e\u{301}"`.
+    Nfd,
+    /// Compatibility composition: NFC that also replaces look-alike
+    /// forms (`"ﬁ"` -> `"fi"`, `"①"` -> `"1"`, full-width `"Ａ"` -> `"A"`).
+    Nfkc,
+    /// Compatibility decomposition.
+    Nfkd,
+}
+
+const fn form_code(form: NormalForm) -> i32 {
+    match form {
+        NormalForm::Nfc => 0,
+        NormalForm::Nfd => 1,
+        NormalForm::Nfkc => 2,
+        NormalForm::Nfkd => 3,
+    }
+}
+
+impl str {
+    /// `self` in normalization form `form`; `self` itself, not a copy,
+    /// when it already is.
+    #[must_use]
+    pub const fn normalize(self, form: NormalForm) -> str {
+        unsafe { nabi_str_normalize(self, form_code(form)) }
+    }
+    /// `true` when `self.normalize(form) == self`, found without a copy
+    /// for most text.
+    #[must_use]
+    pub const fn is_normalized(self, form: NormalForm) -> bool {
+        unsafe { nabi_str_is_normalized(self, form_code(form)) } != 0
+    }
+    /// Full Unicode case folding (`"Straße"` -> `"strasse"`), the form
+    /// for caseless comparison; no locale rules. Python: `s.casefold()`.
+    #[must_use]
+    pub const fn casefold(self) -> str { unsafe { nabi_str_casefold(self) } }
+    /// `true` when the two are equal ignoring case and canonical
+    /// equivalence: their NFD case folds (of the NFD) are equal.
+    #[must_use]
+    pub const fn eq_ignore_case(self, other: str) -> bool {
+        caseless(self) == caseless(other)
+    }
+
+    /// The extended grapheme clusters, the characters a reader sees:
+    /// `"e\u{301}"`, a flag `"🇰🇷"` and an emoji ZWJ sequence
+    /// `"\u{1F469}\u{200D}\u{1F4BB}"` are one each.
+    #[must_use]
+    pub const fn graphemes(self) -> Graphemes { Graphemes { s: self, pos: 0, end: self.len() } }
+    /// The number of grapheme clusters, as `graphemes().count()`.
+    #[must_use]
+    pub const fn grapheme_count(self) -> usize {
+        if self.len() < PARKED { unsafe { nabi_str_grapheme_count(self) } } else { grapheme_count_parked(self) }
+    }
+    /// Grapheme clusters `a` up to `b` (not included), counted from 0;
+    /// both clamp to `grapheme_count()`, and `a >= b` gives `""`. O(b).
+    #[must_use]
+    pub const fn grapheme_slice(self, a: usize, b: usize) -> str {
+        if a >= b { return ""; }
+        let n = self.len();
+        let start = n;
+        let pos: usize = 0;
+        let k: usize = 0;
+        while pos < n && k < b {
+            if k == a { start = pos; }
+            pos = unsafe { nabi_str_grapheme_end(self, pos) };
+            k += 1;
+        }
+        self[start:pos]
+    }
+
+    /// The pieces between word boundaries: words, runs of spaces and
+    /// each punctuation mark, all of the text in order.
+    #[must_use]
+    pub const fn split_word_bounds(self) -> WordBounds { WordBounds { s: self, pos: 0 } }
+    /// The words: the `split_word_bounds` pieces holding a letter or a
+    /// digit (`"can't"`, `"3.14"`, each ideograph).
+    #[must_use]
+    pub const fn words(self) -> Words { Words { bounds: self.split_word_bounds() } }
+}
+
+const fn caseless(s: str) -> str {
+    s.normalize(NormalForm::Nfd).casefold().normalize(NormalForm::Nfd)
+}
+
+/// What `s.graphemes()` returns: the grapheme clusters, in order, or
+/// from the back with `next_back` / `rev()`.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Graphemes {
+    s: str;
+    pos: usize;
+    end: usize;
+}
+
+impl Debug for Graphemes {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Graphemes") }
+}
+
+impl Iterator for Graphemes {
+    type Item = str;
+    const fn next(ref self) -> str | none {
+        if self.pos >= self.end { return none; }
+        let start = self.pos;
+        self.pos = unsafe { nabi_str_grapheme_end(self.s, start) };
+        self.s[start:self.pos]
+    }
+}
+
+impl DoubleEndedIterator for Graphemes {
+    // The boundaries are those of a walk from the front, so the two ends
+    // meet on one.
+    const fn next_back(ref self) -> str | none {
+        if self.end <= self.pos { return none; }
+        let end = self.end;
+        self.end = unsafe { nabi_str_grapheme_start(self.s, end) };
+        self.s[self.end:end]
+    }
+}
+
+/// What `s.split_word_bounds()` returns: the pieces between word
+/// boundaries, in order.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct WordBounds {
+    s: str;
+    pos: usize;
+}
+
+impl Debug for WordBounds {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("WordBounds") }
+}
+
+impl Iterator for WordBounds {
+    type Item = str;
+    const fn next(ref self) -> str | none {
+        if self.pos >= self.s.len() { return none; }
+        let start = self.pos;
+        self.pos = unsafe { nabi_str_word_end(self.s, start) };
+        self.s[start:self.pos]
+    }
+}
+
+/// What `s.words()` returns: the words, in order.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Words {
+    bounds: WordBounds;
+}
+
+impl Debug for Words {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Words") }
+}
+
+impl Iterator for Words {
+    type Item = str;
+    const fn next(ref self) -> str | none {
+        while let piece: str = self.bounds.next() {
+            for c in piece.chars() {
+                if c.is_alphanumeric() { return piece; }
+            }
+        }
+        none
+    }
+}
+
+#[cold]
+const fn grapheme_count_parked(s: str) -> usize { unsafe { nabi_str_grapheme_count_parked(s) } }

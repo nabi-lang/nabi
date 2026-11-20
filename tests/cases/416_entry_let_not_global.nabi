@@ -1,0 +1,10 @@
+// expect-error: cannot find value `limit`
+
+// A top-level `let` is a local of the implicit `main`, not
+// visible inside item bodies.
+let limit = 3;
+check();
+
+fn check() {
+    println(f"{limit}");
+}

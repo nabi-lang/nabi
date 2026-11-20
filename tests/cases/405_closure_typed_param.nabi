@@ -1,0 +1,8 @@
+// expect-exit: 6
+// expect-stdout:
+
+// Closure parameters may be typed: `|x: i32| x * 2`.
+fn main() -> i32 {
+    let f = |x: i32| x * 2;
+    return f(3);
+}

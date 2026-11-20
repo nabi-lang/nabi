@@ -1,0 +1,15 @@
+// expect-exit: 1
+// expect-stderr: error: `main` returned an uncaught error: boom
+// expect-stderr: --> tests/cases/uncaught_error_loc.nabi:14:13
+// expect-stderr: raised at tests/cases/uncaught_error_loc.nabi:9:16
+// expect-stdout:
+
+// An error escaping a throwing `main` reports where it left `main`.
+fn fails(x: i32) throws (str) -> i32 {
+    if x > 1 { throw "boom"; }
+    x
+}
+
+let a = try fails(1);
+let b = try fails(2);
+println(f"{a + b}");

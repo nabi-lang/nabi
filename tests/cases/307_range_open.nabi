@@ -1,0 +1,13 @@
+// expect-exit: 0
+// expect-stdout:
+// 0
+// 1
+// 2
+
+// A plain range such as `0..3`.
+fn main() -> i32 {
+    for i in 0..3 {
+        println(f"{i}");
+    }
+    return 0;
+}

@@ -1,0 +1,25 @@
+// expect-exit: 0
+// expect-stdout:
+// load: libnabi_missing_test.so true true
+// symbol: nabi_missing_symbol true true
+// nul: cannot load a\0b: the path has a NUL byte at 1; remove it
+// same: true true
+
+// A library that is not there and a symbol that is not there throw
+// with the system's reason (`dlerror`, `FormatMessageW`); on a target
+// without dynamic loading, with that.
+use bare::ffi::{Library, LoadError, SymbolError};
+
+fn main() {
+    try Library::open("libnabi_missing_test.so") catch e: LoadError {
+        let shown = f"{e}";
+        println(f"load: {e.path()} {shown.starts_with("cannot load libnabi_missing_test.so: ")} {!e.message().is_empty()}");
+        try Library::this().raw_symbol("nabi_missing_symbol") catch s: SymbolError {
+            println(f"symbol: {s.name()} {f"{s}".starts_with("cannot find symbol nabi_missing_symbol: ")} {!s.message().is_empty()}");
+            try Library::open("a\0b") catch n: LoadError {
+                println(f"nul: {f"{n}".replace("\0", "\\0")}");
+            };
+            println(f"same: {e == e.clone()} {s == s.clone()}");
+        };
+    };
+}

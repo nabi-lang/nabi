@@ -1,0 +1,24 @@
+// expect-exit: 1
+// expect-stderr: error: `main` returned an uncaught error: bad 7
+// expect-stderr: --> tests/cases/entry_async_implicit_main_rules.nabi:20:1
+// expect-stderr: raised at tests/cases/entry_async_implicit_main_rules.nabi:16:16
+// expect-stdout:
+// 1
+
+// An async implicit `main` is `async fn main()
+// throws` - a top-level `try await` error escapes the entry (exit 1).
+struct Bad { n: i32; }
+impl Display for Bad { fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"bad {self.n}") } }
+impl Debug for Bad { fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Bad") } }
+impl Error for Bad {}
+
+async fn f(x: i32) throws (Bad) -> i32 {
+    if x > 0 { throw Bad { n: x }; }
+    return 1;
+}
+
+let a = try await f(0);
+println(f"{a}");
+let b = try await f(7);
+println(f"{b}");
+

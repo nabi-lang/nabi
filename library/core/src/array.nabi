@@ -1,0 +1,1315 @@
+//! core::array - Clone / Copy / Default / Debug / PartialEq / Eq /
+//! Hash for fixed arrays `[T; N]`, element-wise, and PartialOrd / Ord,
+//! lexicographic; and `Array<T, N>`, the n-dimensional array.
+
+mod axes;
+mod close;
+mod join;
+mod make;
+mod ops;
+mod reduce;
+mod sort;
+
+pub use core::array::join::{concat, stack, where};
+pub use core::array::make::{arange, linspace};
+
+use bare::gc::{Pinnable, Pinned};
+use bare::mem::transmute_unchecked;
+use bare::ptr::{ConstPtr, ManyPtr, Ptr};
+
+impl<T: Clone, const N: usize> Clone for [T; N] {
+    const fn clone(self) -> [T; N] {
+        let r = self;
+        for i in 0..N {
+            r[i] = self[i].clone();
+        }
+        r
+    }
+}
+
+impl<T: Copy, const N: usize> Copy for [T; N] {}
+
+impl<T: Default, const N: usize> Default for [T; N] {
+    // Each element its own default: zero bytes until each slot is written.
+    const fn default() -> [T; N] {
+        let r = unsafe {
+            let zero: GcBuf<[T; N]> = buf_new(1);
+            zero[0]
+        };
+        for i in 0..N {
+            let d: T = core::marker::default_of();
+            r[i] = d;
+        }
+        r
+    }
+}
+
+impl<T: Debug, const N: usize> Debug for [T; N] {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("[");
+        for i in 0..N {
+            try f.debug_entry("", self[i], i == 0, false);
+        }
+        try f.debug_close("]", N == 0, false)
+    }
+}
+
+impl<T: PartialEq, const N: usize> PartialEq for [T; N] {
+    const fn eq(self, rhs: [T; N]) -> bool {
+        for i in 0..N {
+            if self[i].ne(rhs[i]) { return false; }
+        }
+        true
+    }
+    fn ne(self, rhs: [T; N]) -> bool { !self.eq(rhs) }
+}
+
+impl<T: Eq, const N: usize> Eq for [T; N] {}
+
+// Lexicographic, like `List` and tuples.
+impl<T: PartialEq + PartialOrd, const N: usize> PartialOrd for [T; N] {
+    const fn lt(self, rhs: [T; N]) -> bool {
+        for i in 0..N {
+            if self[i] != rhs[i] { return self[i] < rhs[i]; }
+        }
+        false
+    }
+    const fn le(self, rhs: [T; N]) -> bool {
+        for i in 0..N {
+            if self[i] != rhs[i] { return self[i] < rhs[i]; }
+        }
+        true
+    }
+    const fn gt(self, rhs: [T; N]) -> bool { rhs.lt(self) }
+    const fn ge(self, rhs: [T; N]) -> bool { rhs.le(self) }
+}
+
+impl<T: Ord, const N: usize> Ord for [T; N] {
+    const fn cmp(self, rhs: [T; N]) -> core::cmp::Ordering {
+        for i in 0..N {
+            let c = self[i].cmp(rhs[i]);
+            if !c.is_eq() { return c; }
+        }
+        core::cmp::Ordering::Equal
+    }
+}
+
+/// The items in order; `N` is in the type, so no length.
+impl<T: Hash, const N: usize> Hash for [T; N] {
+    const fn hash<H: Hasher>(self, ref h: H) {
+        for i in 0..N {
+            self[i].hash(ref h);
+        }
+    }
+}
+
+impl<T, const N: usize> [T; N] {
+    /// The element count `N`.
+    pub const fn len(self) -> usize { N }
+    /// `true` when `N` is 0.
+    pub const fn is_empty(self) -> bool { N == 0 }
+
+    /// The elements front to back, over a copy (arrays are values).
+    pub const fn iter(self) -> SliceIter<T> {
+        self[:].iter()
+    }
+
+    /// The first element; `none` when `N` is 0.
+    pub const fn first(self) -> T | none {
+        if N == 0 {
+            return none;
+        }
+        self[0]
+    }
+
+    /// The last element; `none` when `N` is 0.
+    pub const fn last(self) -> T | none {
+        if N == 0 {
+            return none;
+        }
+        self[N - 1]
+    }
+
+    /// A new array of `f` applied to each element, in order.
+    pub const fn map<U>(self, f: fn(T) -> U) -> [U; N] {
+        unsafe {
+            // Zero bytes fill the slots until `f` writes each one.
+            let zero: GcBuf<[U; N]> = buf_new(1);
+            let out = zero[0];
+            for i in 0..N {
+                out[i] = f(self[i]);
+            }
+            out
+        }
+    }
+
+    /// Overwrite every element with `x`, in place.
+    pub const fn fill(ref self, x: T) {
+        for i in 0..N {
+            self[i] = x;
+        }
+    }
+}
+
+impl<T: PartialEq, const N: usize> [T; N] {
+    /// `true` when an element equals `x`.
+    pub const fn contains(self, x: T) -> bool {
+        for i in 0..N {
+            if self[i] == x {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// A fixed array whose element `i` is `f(i)`, called in order: each
+/// element its own value, where `[v; N]` copies one (`v` a resource, or
+/// not `Clone`). `N` comes from the expected type or `::<T, N>`.
+pub const fn from_fn<T, const N: usize>(f: fn(usize) -> T) -> [T; N] {
+    unsafe {
+        // Zero bytes fill the slots until `f` writes each one.
+        let zero: GcBuf<[T; N]> = buf_new(1);
+        let out = zero[0];
+        for i in 0..N {
+            out[i] = f(i);
+        }
+        out
+    }
+}
+
+/// An `N`-dimensional array of `T` (`N` is the rank): a shared element
+/// buffer seen through a shape and per-axis strides. Copies share the
+/// buffer, as with `List`; a basic index (`a[1:, ::2]`, `a.t()`,
+/// `a.reshape(..)` of a contiguous array) is a view of the same elements,
+/// with no copy. Elements of a type with no GC reference sit in a buffer
+/// the collector never scans; from 8 KiB on it is 64-byte aligned and
+/// never moves.
+///
+/// In an `Array` slot a nested list literal builds one: `[[1.0, 2.0],
+/// [3.0, 4.0]]` is a 2 x 2 `Array<f64, 2>`; rows must agree in length.
+#[lang("ndarray_type")]
+pub struct Array<T, const N: usize> {
+    pub(pkg) buf: GcBuf<T>;
+    pub(pkg) off: usize;
+    pub(pkg) shape: [usize; N];
+    pub(pkg) strides: [isize; N];
+}
+
+/// A rank-1 array.
+pub type Vector<T> = Array<T, 1>;
+/// A rank-2 array.
+pub type Matrix<T> = Array<T, 2>;
+
+// Copies share one buffer with no lock, as `List`.
+impl<T, const N: usize> !Sync for Array<T, N> {}
+
+impl<T, const N: usize> AxisIndexed for Array<T, N> {}
+
+impl<T, const N: usize> Broadcastable<N> for Array<T, N> {
+    type Elem = T;
+    fn broadcast_view(self) -> Array<T, N> { self }
+}
+
+/// A fused expression led by an array gives an array.
+impl<T, U, const N: usize> Materialize<U, N> for Array<T, N> {
+    type Output = Array<U, N>;
+    fn materialize(out: Array<U, N>) -> Array<U, N> { out }
+}
+
+/// The element count of `shape`; panics past what one buffer can hold.
+/// No axis is longer than `isize::MAX`, even with another of length 0:
+/// the optimizer counts on it.
+#[track_caller]
+const fn shape_count<const N: usize>(shape: [usize; N]) -> usize {
+    let n: usize = 1;
+    for k in 0..N {
+        check_axis(shape[k]);
+        n = cap_mul(n, shape[k]);
+    }
+    n
+}
+
+/// An axis length past `isize::MAX` panics as a capacity overflow.
+#[track_caller]
+const fn check_axis(len: usize) {
+    if len > isize::MAX as usize {
+        panic("capacity overflow");
+    }
+}
+
+/// Row-major strides of `shape` (the last axis is contiguous).
+const fn c_strides<const N: usize>(shape: [usize; N]) -> [isize; N] {
+    let st: [isize; N] = [0; N];
+    let s: isize = 1;
+    let k = N;
+    while k > 0 {
+        k -= 1;
+        st[k] = s;
+        s *= shape[k] as isize;
+    }
+    st
+}
+
+/// The position of axis index `i` in an axis of length `len`: from the
+/// end when negative; out of range panics, naming the axis. No checked
+/// arithmetic, so it inlines into the `#[track_caller]` accessors.
+#[inline]
+#[track_caller]
+const fn axis_at(i: isize, len: usize, axis: usize) -> usize {
+    // `len <= isize::MAX`: a negative `i` plus it does not wrap.
+    let p = if i < 0 { i.wrapping_add(len as isize) } else { i };
+    // Still negative is huge as a `usize`: one test for both ends.
+    if p as usize >= len {
+        axis_oob(i, len, axis);
+    }
+    p as usize
+}
+
+/// Out of line: a panic path is never inlined.
+#[track_caller]
+const fn axis_oob(i: isize, len: usize, axis: usize) -> ! {
+    panic(f"index {i} out of bounds for axis {axis} of length {len}")
+}
+
+/// Out of line, as `axis_oob`.
+#[track_caller]
+const fn at_oob<const N: usize>(idx: [usize; N], shape: [usize; N]) -> ! {
+    for k in 0..N {
+        if idx[k] >= shape[k] {
+            panic(f"index {idx[k]} out of bounds for axis {k} of length {shape[k]}");
+        }
+    }
+    panic("index out of bounds")
+}
+
+/// One axis argument, as the `Index` impls hand it to `select`.
+#[derive(Clone, Copy)]
+pub(pkg) enum Ax {
+    At(isize),
+    Span(SliceArg),
+    Insert,
+    Others,
+}
+
+impl<T, const N: usize> Array<T, N> {
+    /// An array of `shape` over a fresh row-major buffer, every element
+    /// still zero bits: only for `T` whose zero is a value, the caller
+    /// writes the rest.
+    #[track_caller]
+    pub(pkg) const unsafe fn alloc(shape: [usize; N]) -> Array<T, N> {
+        let n = shape_count(shape);
+        unsafe {
+            let buf: GcBuf<T> = buf_new(buf_len(cap_add(n, 1), size_of::<T>()));
+            Array { buf, off: 0, shape, strides: c_strides(shape) }
+        }
+    }
+
+    /// Every element `v`.
+    #[track_caller]
+    pub const fn full(shape: [usize; N], v: T) -> Array<T, N> {
+        let a: Array<T, N> = unsafe { Array::alloc(shape) };
+        let n = shape_count(shape);
+        unsafe {
+            for i in 0..n {
+                a.buf[i] = v;
+            }
+        }
+        a
+    }
+
+    /// Element at index `idx` is `f(idx)`, filled in row-major order.
+    #[track_caller]
+    pub const fn from_fn(shape: [usize; N], f: fn([usize; N]) -> T) -> Array<T, N> {
+        let a: Array<T, N> = unsafe { Array::alloc(shape) };
+        let n = shape_count(shape);
+        let idx: [usize; N] = [0; N];
+        unsafe {
+            for i in 0..n {
+                a.buf[i] = f(idx);
+                next_index(ref idx, shape);
+            }
+        }
+        a
+    }
+
+    /// The elements of `xs` in row-major order as an array of `shape`;
+    /// panics unless the counts agree.
+    #[track_caller]
+    pub const fn from_list(xs: List<T>, shape: [usize; N]) -> Array<T, N> {
+        let n = shape_count(shape);
+        if xs.len() != n {
+            panic(f"Array::from_list: {xs.len()} elements do not fill shape {shape:?} ({n} elements)");
+        }
+        let a: Array<T, N> = unsafe { Array::alloc(shape) };
+        unsafe {
+            for i in 0..n {
+                a.buf[i] = xs[i];
+            }
+        }
+        a
+    }
+
+    /// The list's elements in row-major order as an array of `shape`,
+    /// sharing its buffer: no copy. A write through either shows in the
+    /// other while the list keeps that buffer; a push past its capacity
+    /// moves the list to a new one, as with `xs[a:b]`. Panics unless the
+    /// counts agree (`from_list` copies).
+    #[track_caller]
+    pub const fn view_list(xs: List<T>, shape: [usize; N]) -> Array<T, N> {
+        let n = shape_count(shape);
+        if xs.len() != n {
+            panic(f"Array::view_list: {xs.len()} elements do not fill shape {shape:?} ({n} elements)");
+        }
+        Array { buf: xs.buffer(), off: 0, shape, strides: c_strides(shape) }
+    }
+
+    /// The elements as a list sharing this array's buffer, no copy, when
+    /// they are contiguous from its start (a fresh array, a `view_list`
+    /// one); else `none`, and `to_list()` copies. The list's first push
+    /// moves it to a buffer of its own.
+    pub const fn as_list(self) -> List<T> | none {
+        if self.off != 0 || !self.is_contiguous() {
+            return none;
+        }
+        unsafe { List::share(self.buf, self.len()) }
+    }
+
+    /// The length of each axis.
+    pub const fn shape(self) -> [usize; N] { self.shape }
+
+    /// The step, in elements, between neighbours along each axis.
+    pub const fn strides(self) -> [isize; N] { self.strides }
+
+    /// The rank `N`.
+    pub const fn ndim(self) -> usize { N }
+
+    /// The element count (the product of the shape).
+    pub const fn len(self) -> usize {
+        let n: usize = 1;
+        for k in 0..N {
+            n *= self.shape[k];
+        }
+        n
+    }
+
+    /// `true` when some axis has length 0.
+    pub const fn is_empty(self) -> bool { self.len() == 0 }
+
+    /// `true` when the elements are adjacent in row-major order, as a
+    /// fresh array's are.
+    pub const fn is_contiguous(self) -> bool {
+        let s: isize = 1;
+        let k = N;
+        while k > 0 {
+            k -= 1;
+            if self.shape[k] != 1 && self.strides[k] != s {
+                return false;
+            }
+            s *= self.shape[k] as isize;
+        }
+        true
+    }
+
+    /// The buffer position of the element at `idx` (unchecked). An index
+    /// in bounds names an element of the buffer: nothing wraps.
+    #[inline]
+    pub(pkg) const fn pos(self, idx: [usize; N]) -> usize {
+        let p = self.off;
+        for k in 0..N {
+            p = p.wrapping_add((idx[k] as isize).wrapping_mul(self.strides[k]) as usize);
+        }
+        p
+    }
+
+    /// Whether `idx` is past some axis.
+    #[inline]
+    const fn outside(self, idx: [usize; N]) -> bool {
+        let out = false;
+        for k in 0..N {
+            out = out || idx[k] >= self.shape[k];
+        }
+        out
+    }
+
+    /// The lowest and highest buffer positions of the elements (the
+    /// array is not empty).
+    pub(pkg) const fn span(self) -> (isize, isize) {
+        let lo = self.off as isize;
+        let hi = lo;
+        for k in 0..N {
+            let reach = (self.shape[k] as isize - 1) * self.strides[k];
+            if reach < 0 { lo += reach; } else { hi += reach; }
+        }
+        (lo, hi)
+    }
+
+    /// The element at `idx`, `none` when an index is past its axis.
+    pub const fn get(self, idx: [usize; N]) -> T | none {
+        if self.outside(idx) {
+            return none;
+        }
+        unsafe { self.buf[self.pos(idx)] }
+    }
+
+    /// The element at `idx`; an index past its axis panics.
+    #[track_caller]
+    pub const fn at(self, idx: [usize; N]) -> T {
+        if self.outside(idx) {
+            at_oob(idx, self.shape);
+        }
+        unsafe { self.buf[self.pos(idx)] }
+    }
+
+    /// Store `v` at `idx`; an index past its axis panics.
+    #[track_caller]
+    pub const fn set(self, idx: [usize; N], v: T) {
+        if self.outside(idx) {
+            at_oob(idx, self.shape);
+        }
+        unsafe {
+            self.buf[self.pos(idx)] = v;
+        }
+    }
+
+    /// Overwrite every element with `v`, in place (through a view too).
+    pub const fn fill(self, v: T) {
+        let n = self.len();
+        unsafe {
+            if self.is_contiguous() {
+                let o = self.off;
+                for i in 0..n {
+                    self.buf[o + i] = v;
+                }
+                return;
+            }
+            let idx: [usize; N] = [0; N];
+            for _ in 0..n {
+                self.buf[self.pos(idx)] = v;
+                next_index(ref idx, self.shape);
+            }
+        }
+    }
+
+    /// The elements in row-major order.
+    pub const fn iter(self) -> ArrayIter<T, N> {
+        let n = self.len();
+        // One row: a contiguous array, or one of rank 0 or 1 (its step
+        // the stride); else rows of the last axis.
+        if self.is_contiguous() || N <= 1 {
+            let step = if self.is_contiguous() { 1 } else { fused_step(self) };
+            return ArrayIter { a: self, p: self.off, step, k: n, r: 1, rows: 1, inner: n, i: 0, n };
+        }
+        let inner = fused_inner(self.shape);
+        ArrayIter { a: self, p: 0, step: fused_step(self), k: 0, r: 0, rows: fused_rows(n, inner), inner, i: 0, n }
+    }
+
+    /// The elements in row-major order, as a new list.
+    pub const fn to_list(self) -> List<T> {
+        let n = self.len();
+        let out: List<T> = List::with_capacity(n);
+        unsafe {
+            out.set_len(n);
+            let ob = out.buffer();
+            if self.is_contiguous() {
+                let o = self.off;
+                for i in 0..n {
+                    ob[i] = self.buf[o + i];
+                }
+            } else {
+                let i: usize = 0;
+                for x in self.iter() {
+                    ob[i] = x;
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// A contiguous copy with its own buffer.
+    pub const fn copy(self) -> Array<T, N> {
+        let out: Array<T, N> = unsafe { Array::alloc(self.shape) };
+        unsafe {
+            if self.is_contiguous() {
+                let o = self.off;
+                for i in 0..self.len() {
+                    out.buf[i] = self.buf[o + i];
+                }
+            } else {
+                let i: usize = 0;
+                for x in self.iter() {
+                    out.buf[i] = x;
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// `f` of each element, as a new array of the same shape.
+    pub const fn map<U>(self, f: fn(T) -> U) -> Array<U, N> {
+        let out: Array<U, N> = unsafe { Array::alloc(self.shape) };
+        unsafe {
+            if self.is_contiguous() {
+                let o = self.off;
+                for i in 0..self.len() {
+                    out.buf[i] = f(self.buf[o + i]);
+                }
+            } else {
+                let i: usize = 0;
+                for x in self.iter() {
+                    out.buf[i] = f(x);
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// The same elements as an array of `shape`: a view when this one is
+    /// contiguous, else a contiguous copy first. Panics unless the
+    /// element counts agree.
+    #[track_caller]
+    pub const fn reshape<const M: usize>(self, shape: [usize; M]) -> Array<T, M> {
+        let n = shape_count(shape);
+        if n != self.len() {
+            panic(f"reshape: shape {self.shape:?} ({self.len()} elements) does not fit {shape:?} ({n} elements)");
+        }
+        let src = if self.is_contiguous() { self } else { self.copy() };
+        Array { buf: src.buf, off: src.off, shape, strides: c_strides(shape) }
+    }
+
+    /// The axes in reverse order, a view (`a.t()[i, j]` is `a[j, i]`).
+    pub const fn t(self) -> Array<T, N> {
+        let shape: [usize; N] = [0; N];
+        let strides: [isize; N] = [0; N];
+        for k in 0..N {
+            shape[k] = self.shape[N - k - 1];
+            strides[k] = self.strides[N - k - 1];
+        }
+        Array { buf: self.buf, off: self.off, shape, strides }
+    }
+
+    /// The axes in the order `axes` names them, a view; `axes` must name
+    /// each axis once.
+    #[track_caller]
+    pub const fn permute(self, axes: [usize; N]) -> Array<T, N> {
+        let seen: [bool; N] = [false; N];
+        let shape: [usize; N] = [0; N];
+        let strides: [isize; N] = [0; N];
+        for k in 0..N {
+            let a = axes[k];
+            if a >= N || seen[a] {
+                panic(f"permute: {axes:?} is not an order of the {N} axes");
+            }
+            seen[a] = true;
+            shape[k] = self.shape[a];
+            strides[k] = self.strides[a];
+        }
+        Array { buf: self.buf, off: self.off, shape, strides }
+    }
+
+    /// This array stretched to `shape` without a copy: an axis of length
+    /// 1 repeats (stride 0), the others must match. Panics, naming both
+    /// shapes, when they do not.
+    #[track_caller]
+    pub const fn broadcast_to(self, shape: [usize; N]) -> Array<T, N> {
+        let strides: [isize; N] = [0; N];
+        for k in 0..N {
+            if self.shape[k] == shape[k] {
+                strides[k] = self.strides[k];
+            } else if self.shape[k] != 1 {
+                panic(f"broadcast: shape {self.shape:?} does not stretch to {shape:?}; each axis must match or have length 1");
+            } else {
+                check_axis(shape[k]);
+            }
+        }
+        Array { buf: self.buf, off: self.off, shape, strides }
+    }
+
+    /// The first element's address. It stays put while the array is
+    /// reachable when the buffer is 8 KiB or more (64-byte aligned
+    /// then); pin a smaller one. Strides are in elements.
+    pub unsafe fn as_ptr(self) -> ConstPtr<T> {
+        unsafe {
+            let at: usize = transmute_unchecked(self.buf);
+            ConstPtr::<T>::dangling().with_addr(at + 16 + self.off * size_of::<T>())
+        }
+    }
+
+    /// The view `axes` select; `M` is the rank they leave. The
+    /// `Index` impls build `axes` from the bracket's parts.
+    #[track_caller]
+    pub(pkg) const fn select<const K: usize, const M: usize>(self, axes: [Ax; K]) -> Array<T, M> {
+        let used: usize = 0;
+        for k in 0..K {
+            match axes[k] {
+                Ax::At(_) => { used += 1; }
+                Ax::Span(_) => { used += 1; }
+                _ => {}
+            }
+        }
+        if used > N {
+            panic(f"{used} indices for an array of rank {N}");
+        }
+        let shape: [usize; M] = [0; M];
+        let strides: [isize; M] = [0; M];
+        let off = self.off as isize;
+        let src: usize = 0;
+        let dst: usize = 0;
+        for k in 0..K {
+            match axes[k] {
+                Ax::At(i) => {
+                    off += axis_at(i, self.shape[src], src) as isize * self.strides[src];
+                    src += 1;
+                }
+                Ax::Span(s) => {
+                    let (first, count, step) = s.indices(self.shape[src]);
+                    off += first as isize * self.strides[src];
+                    shape[dst] = count;
+                    strides[dst] = self.strides[src] * step;
+                    src += 1;
+                    dst += 1;
+                }
+                Ax::Insert => {
+                    shape[dst] = 1;
+                    dst += 1;
+                }
+                Ax::Others => {
+                    for _ in 0..(N - used) {
+                        shape[dst] = self.shape[src];
+                        strides[dst] = self.strides[src];
+                        src += 1;
+                        dst += 1;
+                    }
+                }
+            }
+        }
+        // Axes no argument names are taken whole.
+        while src < N {
+            shape[dst] = self.shape[src];
+            strides[dst] = self.strides[src];
+            src += 1;
+            dst += 1;
+        }
+        Array { buf: self.buf, off: off as usize, shape, strides }
+    }
+
+    /// The element `idx` names, each index from the end when negative.
+    #[track_caller]
+    pub(pkg) const fn elem_at(self, idx: [isize; N]) -> T {
+        unsafe { self.buf[self.elem_pos(idx)] }
+    }
+
+    /// Store `v` at `idx`, each index from the end when negative.
+    #[track_caller]
+    pub(pkg) const fn elem_set(self, idx: [isize; N], v: T) {
+        unsafe {
+            self.buf[self.elem_pos(idx)] = v;
+        }
+    }
+
+    /// The buffer position of the element `idx` names (`elem_at`). In
+    /// bounds it is in the buffer: nothing wraps.
+    #[inline]
+    #[track_caller]
+    const fn elem_pos(self, idx: [isize; N]) -> usize {
+        let p = self.off;
+        for k in 0..N {
+            let i = axis_at(idx[k], self.shape[k], k) as isize;
+            p = p.wrapping_add(i.wrapping_mul(self.strides[k]) as usize);
+        }
+        p
+    }
+
+    /// Copy `src` into this array element by element; `src` stretches
+    /// (`broadcast_to`) to this shape.
+    #[track_caller]
+    pub const fn assign(self, src: Array<T, N>) {
+        let s = src.broadcast_to(self.shape);
+        let n = self.len();
+        let idx: [usize; N] = [0; N];
+        unsafe {
+            if self.is_contiguous() && s.is_contiguous() {
+                let (o, so) = (self.off, s.off);
+                for i in 0..n {
+                    self.buf[o + i] = s.buf[so + i];
+                }
+                return;
+            }
+            for _ in 0..n {
+                self.buf[self.pos(idx)] = s.buf[s.pos(idx)];
+                next_index(ref idx, self.shape);
+            }
+        }
+    }
+
+    /// The elements where `mask` is `true`, in row-major order, as a new
+    /// rank-1 array. The shapes must match.
+    #[track_caller]
+    pub const fn masked(self, mask: Array<bool, N>) -> Array<T, 1> {
+        check_shape("mask", self.shape, mask.shape);
+        let out: List<T> = List::new();
+        let idx: [usize; N] = [0; N];
+        unsafe {
+            for _ in 0..self.len() {
+                if mask.buf[mask.pos(idx)] {
+                    out.push(self.buf[self.pos(idx)]);
+                }
+                next_index(ref idx, self.shape);
+            }
+        }
+        Array::from_list(out, [out.len()])
+    }
+
+    /// Store `v` where `mask` is `true`. The shapes must match.
+    #[track_caller]
+    pub const fn fill_masked(self, mask: Array<bool, N>, v: T) {
+        check_shape("mask", self.shape, mask.shape);
+        let idx: [usize; N] = [0; N];
+        unsafe {
+            for _ in 0..self.len() {
+                if mask.buf[mask.pos(idx)] {
+                    self.buf[self.pos(idx)] = v;
+                }
+                next_index(ref idx, self.shape);
+            }
+        }
+    }
+
+    /// Store the elements of `vals` in order where `mask` is `true`;
+    /// `vals` holds one per `true`.
+    #[track_caller]
+    pub const fn assign_masked(self, mask: Array<bool, N>, vals: Array<T, 1>) {
+        check_shape("mask", self.shape, mask.shape);
+        let idx: [usize; N] = [0; N];
+        let j: usize = 0;
+        let n = vals.len();
+        unsafe {
+            for _ in 0..self.len() {
+                if mask.buf[mask.pos(idx)] {
+                    if j >= n {
+                        panic(f"mask assignment: more `true` elements than the {n} values");
+                    }
+                    self.buf[self.pos(idx)] = vals.at([j]);
+                    j += 1;
+                }
+                next_index(ref idx, self.shape);
+            }
+        }
+        if j != n {
+            panic(f"mask assignment: {n} values for {j} `true` elements");
+        }
+    }
+}
+
+// Element access of ranks 2 to 4 with no loop over the axes, which the
+// optimizer would only see through after inlining: positions, then the
+// element.
+
+/// The buffer offset of axis index `i` (`axis_at`) with step `stride`.
+#[inline]
+#[track_caller]
+const fn axis_step(i: isize, len: usize, axis: usize, stride: isize) -> usize {
+    (axis_at(i, len, axis) as isize).wrapping_mul(stride) as usize
+}
+
+impl<T> Array<T, 2> {
+    #[inline]
+    #[track_caller]
+    const fn pos2(self, i: isize, j: isize) -> usize {
+        let p = self.off.wrapping_add(axis_step(i, self.shape[0], 0, self.strides[0]));
+        p.wrapping_add(axis_step(j, self.shape[1], 1, self.strides[1]))
+    }
+
+    #[track_caller]
+    pub(pkg) const fn elem2(self, i: isize, j: isize) -> T { unsafe { self.buf[self.pos2(i, j)] } }
+
+    #[track_caller]
+    pub(pkg) const fn set2(self, i: isize, j: isize, v: T) {
+        unsafe {
+            self.buf[self.pos2(i, j)] = v;
+        }
+    }
+}
+
+impl<T> Array<T, 3> {
+    #[inline]
+    #[track_caller]
+    const fn pos3(self, i: isize, j: isize, k: isize) -> usize {
+        let p = self.off.wrapping_add(axis_step(i, self.shape[0], 0, self.strides[0]));
+        let p = p.wrapping_add(axis_step(j, self.shape[1], 1, self.strides[1]));
+        p.wrapping_add(axis_step(k, self.shape[2], 2, self.strides[2]))
+    }
+
+    #[track_caller]
+    pub(pkg) const fn elem3(self, i: isize, j: isize, k: isize) -> T { unsafe { self.buf[self.pos3(i, j, k)] } }
+
+    #[track_caller]
+    pub(pkg) const fn set3(self, i: isize, j: isize, k: isize, v: T) {
+        unsafe {
+            self.buf[self.pos3(i, j, k)] = v;
+        }
+    }
+}
+
+impl<T> Array<T, 4> {
+    #[inline]
+    #[track_caller]
+    const fn pos4(self, i: isize, j: isize, k: isize, l: isize) -> usize {
+        let p = self.off.wrapping_add(axis_step(i, self.shape[0], 0, self.strides[0]));
+        let p = p.wrapping_add(axis_step(j, self.shape[1], 1, self.strides[1]));
+        let p = p.wrapping_add(axis_step(k, self.shape[2], 2, self.strides[2]));
+        p.wrapping_add(axis_step(l, self.shape[3], 3, self.strides[3]))
+    }
+
+    #[track_caller]
+    pub(pkg) const fn elem4(self, i: isize, j: isize, k: isize, l: isize) -> T {
+        unsafe { self.buf[self.pos4(i, j, k, l)] }
+    }
+
+    #[track_caller]
+    pub(pkg) const fn set4(self, i: isize, j: isize, k: isize, l: isize, v: T) {
+        unsafe {
+            self.buf[self.pos4(i, j, k, l)] = v;
+        }
+    }
+}
+
+impl<T: Zero, const N: usize> Array<T, N> {
+    /// Every element `0`.
+    #[track_caller]
+    pub const fn zeros(shape: [usize; N]) -> Array<T, N> { Array::full(shape, T::zero()) }
+}
+
+impl<T: One, const N: usize> Array<T, N> {
+    /// Every element `1`.
+    #[track_caller]
+    pub const fn ones(shape: [usize; N]) -> Array<T, N> { Array::full(shape, T::one()) }
+}
+
+/// The shape two operands of an element-wise operation stretch to: per
+/// axis, equal lengths stay, a length 1 stretches to the other. Any
+/// other pair panics with both shapes. Operands of different rank are
+/// first given axes of length 1 at the front (`v[none, :]`).
+#[track_caller]
+pub const fn broadcast_shape<const N: usize>(a: [usize; N], b: [usize; N]) -> [usize; N] {
+    let s: [usize; N] = [0; N];
+    for k in 0..N {
+        if a[k] == b[k] || b[k] == 1 {
+            s[k] = a[k];
+        } else if a[k] == 1 {
+            s[k] = b[k];
+        } else {
+            panic(f"broadcast: shapes {a:?} and {b:?} differ on axis {k}; each axis must match or have length 1");
+        }
+    }
+    s
+}
+
+/// `f` of each pair of elements, both arrays stretched to one shape.
+#[track_caller]
+pub(pkg) const fn zip_with<A, B, C, const N: usize>(a: Array<A, N>, b: Array<B, N>, f: fn(A, B) -> C) -> Array<C, N> {
+    let shape = broadcast_shape(a.shape, b.shape);
+    let x = a.broadcast_to(shape);
+    let y = b.broadcast_to(shape);
+    let out: Array<C, N> = unsafe { Array::alloc(shape) };
+    let idx: [usize; N] = [0; N];
+    unsafe {
+        for i in 0..out.len() {
+            out.buf[i] = f(x.buf[x.pos(idx)], y.buf[y.pos(idx)]);
+            next_index(ref idx, shape);
+        }
+    }
+    out
+}
+
+/// `f(a[i], b)` for each element.
+pub(pkg) const fn map_right<A, B, C, const N: usize>(a: Array<A, N>, b: B, f: fn(A, B) -> C) -> Array<C, N> {
+    let out: Array<C, N> = unsafe { Array::alloc(a.shape) };
+    let i: usize = 0;
+    unsafe {
+        for x in a.iter() {
+            out.buf[i] = f(x, b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// `f(a, b[i])` for each element.
+pub(pkg) const fn map_left<A, B, C, const N: usize>(a: A, b: Array<B, N>, f: fn(A, B) -> C) -> Array<C, N> {
+    let out: Array<C, N> = unsafe { Array::alloc(b.shape) };
+    let i: usize = 0;
+    unsafe {
+        for x in b.iter() {
+            out.buf[i] = f(a, x);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The two shapes agree, else a panic naming `what` and both.
+#[track_caller]
+pub(pkg) const fn check_shape<const N: usize>(what: str, a: [usize; N], b: [usize; N]) {
+    for k in 0..N {
+        if a[k] != b[k] {
+            panic(f"{what}: shapes {a:?} and {b:?} differ");
+        }
+    }
+}
+
+/// The row-major successor of `idx` within `shape` (wraps to zeros
+/// after the last).
+pub(pkg) const fn next_index<const N: usize>(ref idx: [usize; N], shape: [usize; N]) {
+    let k = N;
+    while k > 0 {
+        k -= 1;
+        idx[k] += 1;
+        if idx[k] < shape[k] {
+            return;
+        }
+        idx[k] = 0;
+    }
+}
+
+// The hooks of a fused dot expression over `Broadcastable` operands
+// (`nabic_typeck::lower::broadcast`). Each operand is viewed as an array
+// stretched to the result's shape (`fused_view`); the loop reads it
+// at buffer positions: `fused_row` gives the first of a row of the
+// last axis, `fused_step` the step along it. When every view is
+// contiguous the whole result is one row.
+
+/// `acc` and `s` stretched to one shape (`broadcast_shape`); `s` may
+/// have fewer axes, which count from the last.
+#[track_caller]
+#[lang("fused_shape_fn")]
+pub(pkg) const fn fused_shape<const M: usize, const N: usize>(acc: [usize; M], s: [usize; N]) -> [usize; M] {
+    let out = acc;
+    for k in 0..N {
+        let a = M - N + k;
+        if acc[a] == 1 {
+            out[a] = s[k];
+        } else if s[k] != acc[a] && s[k] != 1 {
+            panic(f"broadcast: shapes {acc:?} and {s:?} differ on axis {a}; each axis must match or have length 1");
+        }
+    }
+    out
+}
+
+/// `v` seen with shape `s`: its axes are the last of `s`, a length 1
+/// and each missing axis repeat (stride 0).
+#[lang("fused_view_fn")]
+pub(pkg) const fn fused_view<T, const N: usize, const M: usize>(v: Array<T, N>, s: [usize; M]) -> Array<T, M> {
+    let strides: [isize; M] = [0; M];
+    for k in 0..N {
+        let a = M - N + k;
+        if v.shape[k] == s[a] {
+            strides[a] = v.strides[k];
+        }
+    }
+    Array { buf: v.buf, off: v.off, shape: s, strides }
+}
+
+/// A fresh row-major array of shape `s` for the result; the fused loop
+/// writes every element before anything reads it.
+#[track_caller]
+#[lang("fused_alloc_fn")]
+pub(pkg) const fn fused_alloc<T, const M: usize>(s: [usize; M]) -> Array<T, M> {
+    unsafe { Array::alloc(s) }
+}
+
+/// `v` is contiguous: position `off + i` is its element `i`.
+#[lang("fused_flat_fn")]
+pub(pkg) const fn fused_flat<T, const M: usize>(v: Array<T, M>) -> bool { v.is_contiguous() }
+
+/// The length of a row: the last axis, the whole array if rank 0.
+#[lang("fused_inner_fn")]
+pub(pkg) const fn fused_inner<const M: usize>(s: [usize; M]) -> usize {
+    if M == 0 { 1 } else { s[M - 1] }
+}
+
+/// The number of rows of `inner` elements in `n`.
+#[lang("fused_rows_fn")]
+pub(pkg) const fn fused_rows(n: usize, inner: usize) -> usize {
+    if inner == 0 { 0 } else { n / inner }
+}
+
+/// The buffer position of the first element of row `r` (rows of
+/// `inner` elements in row-major order).
+#[lang("fused_row_fn")]
+pub(pkg) const fn fused_row<T, const M: usize>(v: Array<T, M>, r: usize, inner: usize) -> isize {
+    let p = v.off as isize;
+    if inner == 0 {
+        return p;
+    }
+    let rest = r * inner;
+    let k = M;
+    while k > 0 {
+        k -= 1;
+        let len = v.shape[k];
+        if len != 0 {
+            p += (rest % len) as isize * v.strides[k];
+            rest /= len;
+        }
+    }
+    p
+}
+
+/// The step along the last axis (0 for rank 0).
+#[lang("fused_step_fn")]
+pub(pkg) const fn fused_step<T, const M: usize>(v: Array<T, M>) -> isize {
+    if M == 0 { 0 } else { v.strides[M - 1] }
+}
+
+/// Element `i` of a contiguous run from buffer position `o`
+/// (unchecked: the loop's own).
+#[lang("fused_at_fn")]
+pub(pkg) const fn fused_at<T, const M: usize>(v: Array<T, M>, o: isize, i: usize) -> T {
+    unsafe { v.buf[o as usize + i] }
+}
+
+/// Store `x` as element `i` of a contiguous run from position `o`.
+#[lang("fused_put_fn")]
+pub(pkg) const fn fused_put<T, const M: usize>(v: Array<T, M>, o: isize, i: usize, x: T) {
+    unsafe { v.buf[o as usize + i] = x; }
+}
+
+/// Element `i` of a row from buffer position `o` with step `step`.
+#[lang("fused_get_fn")]
+pub(pkg) const fn fused_get<T, const M: usize>(v: Array<T, M>, o: isize, i: usize, step: isize) -> T {
+    unsafe { v.buf[(o + i as isize * step) as usize] }
+}
+
+/// Store `x` as element `i` of a row from `o` with step `step`.
+#[lang("fused_set_fn")]
+pub(pkg) const fn fused_set<T, const M: usize>(v: Array<T, M>, o: isize, i: usize, step: isize, x: T) {
+    unsafe { v.buf[(o + i as isize * step) as usize] = x; }
+}
+
+/// The operands of an in-place broadcast stretch to the destination's
+/// shape `d` (`s`, their shape with `d` folded in, is `d`).
+#[track_caller]
+#[lang("fused_dest_fn")]
+pub(pkg) const fn fused_dest<const M: usize>(d: [usize; M], s: [usize; M]) {
+    for k in 0..M {
+        if s[k] != d[k] {
+            panic(f"broadcast: the result has shape {s:?}, which does not fit the destination of shape {d:?}; the destination is not stretched");
+        }
+    }
+}
+
+/// Source view `w` of an in-place broadcast into `d`: a copy when it
+/// reads elements of `d`'s buffer that the loop writes before reading
+/// them (`a .= a[::-1]`); `w` itself when it is `d` or apart from it.
+#[lang("fused_source_fn")]
+pub(pkg) const fn fused_source<T, U, const M: usize>(d: Array<T, M>, w: Array<U, M>) -> Array<U, M> {
+    if !buf_same(buf_erase(d.buf), buf_erase(w.buf)) || d.len() == 0 {
+        return w;
+    }
+    let same = d.off == w.off;
+    for k in 0..M {
+        if d.shape[k] > 1 && d.strides[k] != w.strides[k] {
+            same = false;
+        }
+    }
+    if same {
+        return w;
+    }
+    let (dlo, dhi) = d.span();
+    let (wlo, whi) = w.span();
+    if dhi < wlo || whi < dlo {
+        return w;
+    }
+    w.copy()
+}
+
+/// The elements of an array in row-major order, a row of the last axis
+/// at a time (all of them at once when contiguous).
+pub struct ArrayIter<T, const N: usize> {
+    a: Array<T, N>;
+    /// The buffer position of the next element, and the step to the one
+    /// after it.
+    p: usize;
+    step: isize;
+    /// Elements left in the row at hand.
+    k: usize;
+    /// The next row, the row count and the length of a row.
+    r: usize;
+    rows: usize;
+    inner: usize;
+    /// Rank 0 and 1 (one row): elements taken and the element count, so
+    /// the loop counts `i` up to `n` (a counted loop).
+    i: usize;
+    n: usize;
+}
+
+impl<T, const N: usize> Iterator for ArrayIter<T, N> {
+    type Item = T;
+    #[inline]
+    const fn next(ref self) -> T | none {
+        if N <= 1 {
+            if self.i >= self.n {
+                return none;
+            }
+            let x = unsafe { self.a.buf[self.p] };
+            self.p = self.p.wrapping_add(self.step as usize);
+            self.i += 1;
+            return x;
+        }
+        if self.k == 0 {
+            if self.r == self.rows {
+                return none;
+            }
+            self.p = fused_row(self.a, self.r, self.inner) as usize;
+            self.k = self.inner;
+            self.r = self.r.wrapping_add(1);
+        }
+        self.k = self.k.wrapping_sub(1);
+        let x = unsafe { self.a.buf[self.p] };
+        self.p = self.p.wrapping_add(self.step as usize);
+        x
+    }
+}
+
+impl<T, const N: usize> IntoIterator for Array<T, N> {
+    type IntoIter = ArrayIter<T, N>;
+    type Item = T;
+    const fn into_iter(self) -> ArrayIter<T, N> { self.iter() }
+}
+
+/// `pin(a)` keeps the element buffer in place (none for an empty array).
+impl<T, const N: usize> Pinnable for Array<T, N> {
+    #[internal("write `pin(x)` to keep a value in place")]
+    fn gc_object(self) -> GcBuf<u8> | none {
+        if self.is_empty() {
+            return none;
+        }
+        let erased: GcBuf<u8> = unsafe { transmute_unchecked(self.buf) };
+        erased
+    }
+}
+
+impl<T, const N: usize> Pinned<Array<T, N>> {
+    /// The array's first element (index 0 on every axis); dangling for
+    /// an empty array. Steps along each axis are its `strides()`, in
+    /// elements.
+    pub fn as_data_ptr(self) -> Ptr<T> {
+        let a = self.obj();
+        if a.is_empty() {
+            return Ptr::<T>::dangling();
+        }
+        let at = unsafe { a.as_ptr() }.addr();
+        Ptr::<T>::dangling().with_addr(at)
+    }
+
+    /// `as_data_ptr` as a pointer to the run of elements.
+    pub fn as_data_many_ptr(self) -> ManyPtr<T> { self.as_data_ptr().as_many() }
+}
+
+/// A rank-1 array of the list's elements (a copy).
+impl<T> From<List<T>> for Array<T, 1> {
+    const fn from(xs: List<T>) -> Array<T, 1> { Array::from_list(xs, [xs.len()]) }
+}
+
+/// Element-wise: same shape and equal elements.
+impl<T: PartialEq, const N: usize> PartialEq for Array<T, N> {
+    const fn eq(self, rhs: Array<T, N>) -> bool {
+        for k in 0..N {
+            if self.shape[k] != rhs.shape[k] {
+                return false;
+            }
+        }
+        let idx: [usize; N] = [0; N];
+        unsafe {
+            if self.is_contiguous() && rhs.is_contiguous() {
+                let (o, ro) = (self.off, rhs.off);
+                for i in 0..self.len() {
+                    if self.buf[o + i] != rhs.buf[ro + i] {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            for _ in 0..self.len() {
+                if self.buf[self.pos(idx)] != rhs.buf[rhs.pos(idx)] {
+                    return false;
+                }
+                next_index(ref idx, self.shape);
+            }
+        }
+        true
+    }
+    fn ne(self, rhs: Array<T, N>) -> bool { !self.eq(rhs) }
+}
+
+/// A deep copy (the elements cloned), contiguous.
+impl<T: Clone, const N: usize> Clone for Array<T, N> {
+    const fn clone(self) -> Array<T, N> { self.map(|x: T| -> T { x.clone() }) }
+}
+
+/// Nested brackets, one level per axis: `[[1, 2], [3, 4]]`.
+impl<T: Debug, const N: usize> Debug for Array<T, N> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        if N == 0 {
+            return try Debug::fmt(unsafe { self.buf[self.off] }, ref f);
+        }
+        let idx: [usize; N] = [0; N];
+        for _ in 0..N {
+            try f.write_str("[");
+        }
+        let n = self.len();
+        for i in 0..n {
+            try Debug::fmt(unsafe { self.buf[self.pos(idx)] }, ref f);
+            next_index(ref idx, self.shape);
+            if i + 1 == n {
+                break;
+            }
+            // Close the axes that wrapped, then open them again.
+            let k = N;
+            let closed: usize = 0;
+            while k > 0 && idx[k - 1] == 0 {
+                k -= 1;
+                closed += 1;
+            }
+            for _ in 0..closed {
+                try f.write_str("]");
+            }
+            try f.write_str(", ");
+            for _ in 0..closed {
+                try f.write_str("[");
+            }
+        }
+        if n == 0 {
+            for _ in 0..N {
+                try f.write_str("]");
+            }
+            return;
+        }
+        for _ in 0..N {
+            try f.write_str("]");
+        }
+    }
+}
+
+impl<T: Debug, const N: usize> Display for Array<T, N> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try Debug::fmt(self, ref f) }
+}
+
+/// The nested list literal in an `Array` slot: `shape` from the
+/// nesting, `items` in row-major order. The compiler checks that rows
+/// agree before it calls this.
+#[lang("array_literal_fn")]
+pub(pkg) const fn array_literal<T, const N: usize>(shape: [usize; N], items: ...T) -> Array<T, N> {
+    let a: Array<T, N> = unsafe { Array::alloc(shape) };
+    let i: usize = 0;
+    unsafe {
+        for x in items {
+            a.buf[i] = x;
+            i += 1;
+        }
+    }
+    a
+}

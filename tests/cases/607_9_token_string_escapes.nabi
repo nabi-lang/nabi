@@ -1,0 +1,32 @@
+// expect-exit: 0
+// expect-stdout: 3 4 5
+
+// The token is the string's value: `"\\"` is one backslash, as is `r"\"`.
+trait Solve<Rhs = Self> {
+    type Output;
+    #[infix("\\", like = "/")]
+    fn solve(self, rhs: Rhs) -> Output;
+}
+
+trait Under<Rhs = Self> {
+    type Output;
+    #[infix(r"\\\", like = "/")]
+    fn under(self, rhs: Rhs) -> Output;
+}
+
+impl Solve<f64> for f64 {
+    type Output = f64;
+    fn solve(self, b: f64) -> f64 { b / self }
+}
+
+impl Under<f64> for f64 {
+    type Output = f64;
+    fn under(self, b: f64) -> f64 { b + self }
+}
+
+fn main() {
+    let q = 2.0 \ 4.0 + 1.0;
+    let r = 2.0 \ 8.0;
+    let s = 2.0 \\\ 3.0;
+    println(f"{q} {r} {s}");
+}

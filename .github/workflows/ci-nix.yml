@@ -1,0 +1,56 @@
+name: CI / Nix flake
+
+# The flake installs the release named in nix/sources.json and builds and
+# runs a program with it, on each Nix system the flake covers.
+on:
+  push:
+    branches: [main]
+    paths: [flake.nix, flake.lock, nix/**, .github/workflows/ci-nix.yml]
+  pull_request:
+    paths: [flake.nix, flake.lock, nix/**, .github/workflows/ci-nix.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flake:
+    name: Build and run the flake (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Before the first release the sources are a template (zero checksums).
+      - name: Check whether nix/sources.json is a template
+        id: sources
+        run: |
+          if [ "$(jq -r '.template // false' nix/sources.json)" = true ]; then
+            echo "::notice::nix/sources.json is a template until the first release; nothing to build"
+            echo "template=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Nix
+        if: steps.sources.outputs.template != 'true'
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+      - name: Check flake.lock exists
+        if: steps.sources.outputs.template != 'true'
+        run: |
+          [ -f flake.lock ] || {
+            echo "::error::no flake.lock: run \`nix flake lock\` and commit it (docs/releasing.md)"
+            exit 1
+          }
+      - name: Build with nix build
+        if: steps.sources.outputs.template != 'true'
+        run: nix build .#nabi
+      - name: Run nabi from the read-only store path
+        if: steps.sources.outputs.template != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          printf 'fn main() { println("hello from nix"); }\n' > hello.nabi
+          out=$(nix run "$GITHUB_WORKSPACE" -- run hello.nabi)
+          echo "$out"
+          [ "$(printf '%s\n' "$out" | tail -n 1)" = "hello from nix" ]

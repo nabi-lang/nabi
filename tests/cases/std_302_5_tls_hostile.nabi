@@ -1,0 +1,871 @@
+// needs: threads net
+// expect-exit: 0
+// expect-stdout:
+// clean: ok pong
+// expired: Certificate alert 45: certificate expired or not yet valid
+// not yet valid: Certificate alert 45: certificate expired or not yet valid
+// no serverAuth: Certificate alert 43: certificate not valid for server authentication
+// wrong name: Certificate alert 42: certificate is not valid for localhost
+// bad signature: Certificate alert 42: bad certificate signature
+// unknown CA: Certificate alert 48: certificate signed by an unknown authority
+// unknown EE extension: Protocol alert 110: unexpected extension 4660 in EncryptedExtensions
+// server_name with data: Protocol alert 47: server_name acknowledged wrongly
+// unknown ServerHello extension: Protocol alert 110: unexpected extension 4660 in ServerHello
+// unrequested SCT: Protocol alert 110: unexpected extension 18 in Certificate
+// bad CertificateVerify: Protocol alert 51: bad CertificateVerify signature
+// bad Finished: Protocol alert 51: bad server Finished
+// KeyUpdate 2: read: tls: malformed KeyUpdate
+// post-handshake type 99: read: tls: unexpected post-handshake message 99
+// HRR for a group already sent: Protocol alert 47: HelloRetryRequest for an unusable group
+// 16 MiB post-handshake message: read: tls: handshake message too long
+// failed handshake: record 21 alert 50, then closed: true
+// mutated server flights: 24, forged CertificateVerify / Finished accepted: 0, under 10 s each: true
+// mutated client flights: 24, forged CertificateVerify / Finished accepted: 0, under 10 s each: true
+// mutated ClientHellos: 48, under 10 s each: true
+// mutated server flights (plaintext): 40, under 10 s each: true
+// mutated DER / PEM: 900, hostile DER rejected: 12 of 12
+
+// TLS against hostile peers and inputs: an alert, never a panic or a hang.
+// A hang shows as an exchange that waited out its 10 s read timeout; a
+// tighter bound fails under emulation on a loaded host.
+use core::convert::AsBytes;
+use std::net::{tcp_listen, tcp_connect, TcpStream, Shutdown};
+use std::net::tls::{Client, Server, ClientConfig, ServerConfig, Certificate, PrivateKey, CipherSuite};
+use std::thread;
+use core::time::{Duration, Instant};
+use core::crypto::HashAlgorithm;
+use core::crypto::hmac::Hmac;
+use core::crypto::hkdf;
+use core::crypto::aead::{Aead, AeadAlgorithm};
+use core::crypto::{x25519, ed25519};
+use core::crypto::Secret;
+
+const CA: str = "-----BEGIN CERTIFICATE-----
+MIIBWTCCAQugAwIBAgIUTEx+6YUTAbdTdjG820F1ykbaMgowBQYDK2VwMBkxFzAV
+BgNVBAMMDm5hYmkgcm9idXN0IENBMCAXDTI2MDEwMTAwMDAwMFoYDzIxMjYwMTAx
+MDAwMDAwWjAZMRcwFQYDVQQDDA5uYWJpIHJvYnVzdCBDQTAqMAUGAytlcAMhAKF+
+fOScfj+CL6Yp12X1H3FXbS5bN0+eOvQHXFbcEIm5o2MwYTAdBgNVHQ4EFgQUaBID
+0h5E2v0ubPLmOGRbr6g0fBcwHwYDVR0jBBgwFoAUaBID0h5E2v0ubPLmOGRbr6g0
+fBcwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAgQwBQYDK2VwA0EAqRtC
+t7ZHva2Q5uDJi+6aHZ8wX3oqwz//OJwW+Jx3/ej96rf+T6AGjabD5nLp2bw2OY/o
+9NoKQJK4WyLR9symDA==
+-----END CERTIFICATE-----
+";
+
+const GOOD: str = "-----BEGIN CERTIFICATE-----
+MIIBezCCAS2gAwIBAgIUWEe5s0V6VquWp7qThQQMZp10te0wBQYDK2VwMBkxFzAV
+BgNVBAMMDm5hYmkgcm9idXN0IENBMCAXDTI2MDEwMTAwMDAwMFoYDzIxMjYwMTAx
+MDAwMDAwWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwKjAFBgMrZXADIQC13aY3LyWg
+o3OIK2yKuW4HI7/XrNMkIbbCbdgGgMHShKOBiTCBhjAJBgNVHRMEAjAAMBQGA1Ud
+EQQNMAuCCWxvY2FsaG9zdDATBgNVHSUEDDAKBggrBgEFBQcDATAOBgNVHQ8BAf8E
+BAMCB4AwHQYDVR0OBBYEFGaPjcq1opaRQqMIIaqi6TAQZSMmMB8GA1UdIwQYMBaA
+FGgSA9IeRNr9Lmzy5jhkW6+oNHwXMAUGAytlcANBAM0DdalznJpynEPwbTlqBiLg
+2SJRB7QyI/hEmvK9WqkOkdx9ZeXAmXTg5eFCBFw9zv7PplPGhMjg7VhRiH4njQM=
+-----END CERTIFICATE-----
+";
+
+const EXPIRED: str = "-----BEGIN CERTIFICATE-----
+MIIBeTCCASugAwIBAgIUILLPOHIxgy6+hAI1rEFQjPSRHBAwBQYDK2VwMBkxFzAV
+BgNVBAMMDm5hYmkgcm9idXN0IENBMB4XDTIwMDEwMTAwMDAwMFoXDTIxMDEwMTAw
+MDAwMFowFDESMBAGA1UEAwwJbG9jYWxob3N0MCowBQYDK2VwAyEAtd2mNy8loKNz
+iCtsirluByO/16zTJCG2wm3YBoDB0oSjgYkwgYYwCQYDVR0TBAIwADAUBgNVHREE
+DTALgglsb2NhbGhvc3QwEwYDVR0lBAwwCgYIKwYBBQUHAwEwDgYDVR0PAQH/BAQD
+AgeAMB0GA1UdDgQWBBRmj43KtaKWkUKjCCGqoukwEGUjJjAfBgNVHSMEGDAWgBRo
+EgPSHkTa/S5s8uY4ZFuvqDR8FzAFBgMrZXADQQD9WCMRFM6WdwCXUl6/9R+26QB6
+zpv01II/CP14nF5l+3QnVxIfq6sliGw4k/boQ/De4/4/x5WVN3imh6OSqlYH
+-----END CERTIFICATE-----
+";
+
+const FUTURE: str = "-----BEGIN CERTIFICATE-----
+MIIBfTCCAS+gAwIBAgIUW40HWLX+EMfPvGBEKVmXb1cVhI0wBQYDK2VwMBkxFzAV
+BgNVBAMMDm5hYmkgcm9idXN0IENBMCIYDzIxMDAwMTAxMDAwMDAwWhgPMjEwMTAx
+MDEwMDAwMDBaMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDAqMAUGAytlcAMhALXdpjcv
+JaCjc4grbIq5bgcjv9es0yQhtsJt2AaAwdKEo4GJMIGGMAkGA1UdEwQCMAAwFAYD
+VR0RBA0wC4IJbG9jYWxob3N0MBMGA1UdJQQMMAoGCCsGAQUFBwMBMA4GA1UdDwEB
+/wQEAwIHgDAdBgNVHQ4EFgQUZo+NyrWilpFCowghqqLpMBBlIyYwHwYDVR0jBBgw
+FoAUaBID0h5E2v0ubPLmOGRbr6g0fBcwBQYDK2VwA0EAwajiV9xlhEokjy6GrpND
+1feykIv1bj6B+wKA/VfTALndHPX7WkXD9Ba1U+XL89NWvnoi3MsodMnIQSchYFed
+CQ==
+-----END CERTIFICATE-----
+";
+
+const CLIENT_ONLY: str = "-----BEGIN CERTIFICATE-----
+MIIBezCCAS2gAwIBAgIUTDg5332qxNLyGysA6FVSLwiNxO0wBQYDK2VwMBkxFzAV
+BgNVBAMMDm5hYmkgcm9idXN0IENBMCAXDTI2MDEwMTAwMDAwMFoYDzIxMjYwMTAx
+MDAwMDAwWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwKjAFBgMrZXADIQC13aY3LyWg
+o3OIK2yKuW4HI7/XrNMkIbbCbdgGgMHShKOBiTCBhjAJBgNVHRMEAjAAMBQGA1Ud
+EQQNMAuCCWxvY2FsaG9zdDATBgNVHSUEDDAKBggrBgEFBQcDAjAOBgNVHQ8BAf8E
+BAMCB4AwHQYDVR0OBBYEFGaPjcq1opaRQqMIIaqi6TAQZSMmMB8GA1UdIwQYMBaA
+FGgSA9IeRNr9Lmzy5jhkW6+oNHwXMAUGAytlcANBAHFFWemTSXlFhDIprbdSQ78I
+YiOEgh0JAS4pa8huxG1o17jhm0wOXvwfyg5MmkA50Vb5HwVOF5BBu9rrqDb2GQo=
+-----END CERTIFICATE-----
+";
+
+const WRONG_HOST: str = "-----BEGIN CERTIFICATE-----
+MIIBfzCCATGgAwIBAgIUTqj6rYZadwaZuglOXMVaSao4roowBQYDK2VwMBkxFzAV
+BgNVBAMMDm5hYmkgcm9idXN0IENBMCAXDTI2MDEwMTAwMDAwMFoYDzIxMjYwMTAx
+MDAwMDAwWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwKjAFBgMrZXADIQC13aY3LyWg
+o3OIK2yKuW4HI7/XrNMkIbbCbdgGgMHShKOBjTCBijAJBgNVHRMEAjAAMBgGA1Ud
+EQQRMA+CDW90aGVyLmV4YW1wbGUwEwYDVR0lBAwwCgYIKwYBBQUHAwEwDgYDVR0P
+AQH/BAQDAgeAMB0GA1UdDgQWBBRmj43KtaKWkUKjCCGqoukwEGUjJjAfBgNVHSME
+GDAWgBRoEgPSHkTa/S5s8uY4ZFuvqDR8FzAFBgMrZXADQQCD59YDfAZ3QdzPrh5A
+27ET9Hs1KOW6MlIK6GfiR0imIi2xFED+8sOfP55zNu6WIhUH59TyPr7baxpRjvyV
+7j4C
+-----END CERTIFICATE-----
+";
+
+const BAD_SIG: str = "-----BEGIN CERTIFICATE-----
+MIIBezCCAS2gAwIBAgIUWEe5s0V6VquWp7qThQQMZp10te0wBQYDK2VwMBkxFzAV
+BgNVBAMMDm5hYmkgcm9idXN0IENBMCAXDTI2MDEwMTAwMDAwMFoYDzIxMjYwMTAx
+MDAwMDAwWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwKjAFBgMrZXADIQC13aY3LyWg
+o3OIK2yKuW4HI7/XrNMkIbbCbdgGgMHShKOBiTCBhjAJBgNVHRMEAjAAMBQGA1Ud
+EQQNMAuCCWxvY2FsaG9zdDATBgNVHSUEDDAKBggrBgEFBQcDATAOBgNVHQ8BAf8E
+BAMCB4AwHQYDVR0OBBYEFGaPjcq1opaRQqMIIaqi6TAQZSMmMB8GA1UdIwQYMBaA
+FGgSA9IeRNr9Lmzy5jhkW6+oNHwXMAUGAytlcANBAM0DdalznJpynEPwbTlqBiLg
+2SJRB7QyI/hEmvK9WqkOkdx9ZeXAmXTg5eFCBFw9zv7PplPGhMjg7VhRiX4njQM=
+-----END CERTIFICATE-----
+";
+
+const KEY: str = "-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIHjZ2zWr0BOanbCk2Wjs0qtwQsg9pZtXqSHmcbcvrAdV
+-----END PRIVATE KEY-----
+";
+
+const KEY_DER: str = "302e020100300506032b65700422042078d9db35abd0139a9db0a4d968ecd2ab7042c83da59b57a921e671b72fac0755";
+
+/// SHA-256("HelloRetryRequest").
+const HRR_RANDOM: [u8; 32] = [
+    0xcfu8, 0x21u8, 0xadu8, 0x74u8, 0xe5u8, 0x9au8, 0x61u8, 0x11u8, 0xbeu8, 0x1du8, 0x8cu8, 0x02u8, 0x1eu8, 0x65u8, 0xb8u8, 0x91u8,
+    0xc2u8, 0xa2u8, 0x11u8, 0x16u8, 0x7au8, 0xbbu8, 0x8cu8, 0x5eu8, 0x07u8, 0x9eu8, 0x09u8, 0xe2u8, 0xc8u8, 0xa8u8, 0x33u8, 0x9cu8,
+];
+
+const SEED: str = "78d9db35abd0139a9db0a4d968ecd2ab7042c83da59b57a921e671b72fac0755";
+
+// Helpers.
+
+struct Rng { s: u64; }
+
+impl Rng {
+    fn next(ref self) -> u64 {
+        self.s ^= self.s << 13u64;
+        self.s ^= self.s >> 7u64;
+        self.s ^= self.s << 17u64;
+        self.s
+    }
+    fn below(ref self, n: usize) -> usize { if n == 0 { 0 } else { (self.next() % (n as u64)) as usize } }
+}
+
+fn cat(a: List<u8>, b: List<u8>) -> List<u8> {
+    let o = a.clone();
+    o.extend(b);
+    o
+}
+
+/// A copy of `b` changed by 1..3 random edits (never equal to `b`).
+fn mutate(ref r: Rng, b: List<u8>) -> List<u8> {
+    loop {
+        let m = mutate1(ref r, b);
+        if m != b { return m; }
+    }
+}
+
+fn mutate1(ref r: Rng, b: List<u8>) -> List<u8> {
+    let out = b.clone();
+    for _ in 0..1 + r.below(3) {
+        let n = out.len();
+        if n == 0 {
+            out.push(r.next() as u8);
+            continue;
+        }
+        let k = r.below(9);
+        let at = r.below(n);
+        if k == 0 {
+            out[at] = out[at] ^ ((1u64 << (r.below(8) as u64)) as u8);
+        } else if k == 1 {
+            out[at] = r.next() as u8;
+        } else if k == 2 {
+            out = out[0:at].to_list();
+        } else if k == 3 {
+            let ins: List<u8> = [];
+            for _ in 0..1 + r.below(32) { ins.push(r.next() as u8); }
+            out = cat(cat(out[0:at].to_list(), ins), out[at:n].to_list());
+        } else if k == 4 {
+            let end = at + 1 + r.below(32);
+            if end > n { end = n; }
+            out = cat(out[0:at].to_list(), out[end:n].to_list());
+        } else if k == 5 {
+            // A chunk repeated.
+            let end = at + 1 + r.below(64);
+            if end > n { end = n; }
+            out = cat(out[0:end].to_list(), out[at:n].to_list());
+        } else if k == 6 && at + 1 < n {
+            out[at] = 0xffu8;
+            out[at + 1] = 0xffu8;
+        } else if k == 7 && at + 1 < n {
+            out[at] = 0u8;
+            out[at + 1] = 0u8;
+        } else if at + 1 < n {
+            // A length field off by a little.
+            let v = ((out[at] as i64) << 8) | (out[at + 1] as i64);
+            v += (r.below(5) as i64) - 2;
+            out[at] = (v >> 8) as u8;
+            out[at + 1] = v as u8;
+        }
+    }
+    out
+}
+
+fn nib(c: u8) -> u8 { if c <= 0x39u8 { c - 0x30u8 } else { c - 0x61u8 + 10u8 } }
+
+fn unhex(s: str) -> List<u8> {
+    let o: List<u8> = [];
+    let b = s.as_bytes();
+    let i = 0usize;
+    while i + 1 < b.len() {
+        o.push((nib(b[i]) << 4u8) | nib(b[i + 1]));
+        i += 2;
+    }
+    o
+}
+
+fn u16b(v: usize) -> List<u8> { [(v >> 8) as u8, v as u8] }
+fn u24b(v: usize) -> List<u8> { [(v >> 16) as u8, (v >> 8) as u8, v as u8] }
+fn v8(b: List<u8>) -> List<u8> { cat([b.len() as u8], b) }
+fn v16(b: List<u8>) -> List<u8> { cat(u16b(b.len()), b) }
+fn v24(b: List<u8>) -> List<u8> { cat(u24b(b.len()), b) }
+fn msg(t: u8, body: List<u8>) -> List<u8> { cat([t], v24(body)) }
+fn ext(t: usize, body: List<u8>) -> List<u8> { cat(u16b(t), v16(body)) }
+fn u16at(b: List<u8>, i: usize) -> usize { ((b[i] as usize) << 8) | (b[i + 1] as usize) }
+fn u24at(b: List<u8>, i: usize) -> usize { ((b[i] as usize) << 16) | u16at(b, i + 1) }
+
+fn spaces(n: usize) -> List<u8> {
+    let z: List<u8> = [];
+    for _ in 0..n { z.push(0x20u8); }
+    z
+}
+
+fn zeros(n: usize) -> List<u8> {
+    let z: List<u8> = [];
+    for _ in 0..n { z.push(0u8); }
+    z
+}
+
+fn rand_bytes(ref r: Rng, n: usize) -> List<u8> {
+    let o: List<u8> = [];
+    for _ in 0..n { o.push(r.next() as u8); }
+    o
+}
+
+const H: HashAlgorithm = HashAlgorithm::Sha256;
+
+fn label(secret: List<u8>, l: str, ctx: List<u8>, n: usize) -> List<u8> {
+    let info = cat(cat(u16b(n), v8(("tls13 " + l).as_bytes().to_list())), v8(ctx));
+    (try! hkdf::expand(H, secret, info, n)).as_bytes().to_list()
+}
+
+fn derive(secret: List<u8>, l: str, transcript: List<u8>) -> List<u8> { label(secret, l, H.digest(transcript), 32) }
+
+/// One direction's AES-128-GCM record keys.
+struct Keys { aead: Aead; iv: List<u8>; seq: u64; }
+
+fn keys(secret: List<u8>) -> Keys {
+    Keys { aead: try! Aead::new(AeadAlgorithm::Aes128Gcm, label(secret, "key", [], 16)), iv: label(secret, "iv", [], 12), seq: 0u64 }
+}
+
+fn nonce(ref k: Keys) -> List<u8> {
+    let n = k.iv.clone();
+    for i in 4..12 { n[i] = n[i] ^ ((k.seq >> (8 * (11 - i)) as u64) as u8); }
+    k.seq += 1u64;
+    n
+}
+
+/// An encrypted record of inner type `typ` with `pad` zero bytes.
+fn seal(ref k: Keys, typ: u8, data: List<u8>, pad: usize) -> List<u8> {
+    let inner = data.clone();
+    inner.push(typ);
+    for _ in 0..pad { inner.push(0u8); }
+    let hdr = cat([23u8, 3u8, 3u8], u16b(inner.len() + 16));
+    let n = nonce(ref k);
+    cat(hdr, try! k.aead.seal(n, hdr, inner))
+}
+
+fn unseal(ref k: Keys, hdr: List<u8>, body: List<u8>) -> (u8, List<u8>) | none {
+    let n = nonce(ref k);
+    let p = match try! k.aead.open(n, hdr, body) { b: List<u8> => b, none => return none };
+    let i = p.len();
+    while i > 0 && p[i - 1] == 0u8 { i -= 1; }
+    if i == 0 { return none; }
+    (p[i - 1], p[0:i - 1].to_list())
+}
+
+fn read_some(s: TcpStream) -> List<u8> {
+    let buf = zeros(16384);
+    let k = try s.read(buf) catch _ { 0 };
+    buf[0:k].to_list()
+}
+
+/// Everything until the peer closes or goes quiet; whether it closed.
+fn drain(s: TcpStream) -> (List<u8>, bool) {
+    let got: List<u8> = [];
+    let buf = zeros(16384);
+    loop {
+        let k = try s.read(buf) catch _ { return (got, false); };
+        if k == 0 { return (got, true); }
+        got.extend(buf[0:k]);
+    }
+}
+
+fn pem_der(pem: str) -> List<u8> { (try! Certificate::from_pem(pem))[0].to_der() }
+
+fn cert_msg(der: List<u8>, entry_exts: List<u8>) -> List<u8> { msg(11u8, cat(v8([]), v24(cat(v24(der), v16(entry_exts))))) }
+
+fn x_public(k: List<u8>) -> List<u8> {
+    (try! x25519::PrivateKey::from_bytes(k)).public_key().to_bytes()[0:32].to_list()
+}
+
+fn x_shared<P: AsBytes>(k: List<u8>, peer: P) -> Secret | none {
+    (try! x25519::PrivateKey::from_bytes(k)).diffie_hellman(try! x25519::PublicKey::from_bytes(peer))
+}
+
+fn verify_msg(tr: List<u8>, ctx: str) -> List<u8> {
+    let tbs = cat(cat(spaces(64), ctx.as_bytes().to_list()), cat([0u8], H.digest(tr)));
+    msg(15u8, cat([8u8, 7u8], v16((try! ed25519::SigningKey::from_seed(unhex(SEED))).sign(tbs))))
+}
+
+// A server written here, against tls::Client.
+
+/// How the server misbehaves.
+struct Evil {
+    cert: List<u8>;
+    ee_exts: List<u8>;
+    sh_ext: List<u8>;
+    entry_exts: List<u8>;
+    hrr: bool;
+    /// Flip a bit of the CertificateVerify signature / Finished.
+    bad_cv: bool;
+    bad_fin: bool;
+    /// Sent after the handshake, under the application keys.
+    post: List<u8>;
+    /// Mutate one message: 0 EE, 1 CR, 2 Certificate, 3 CV, 4 Finished,
+    /// 5 the whole flight, 6 record boundaries and padding, 7 the post-
+    /// handshake message; 99 none.
+    what: usize;
+}
+
+fn evil(cert: List<u8>) -> Evil {
+    Evil { cert, ee_exts: ext(16, v16(v8("h2".as_bytes().to_list()))), sh_ext: [], entry_exts: [], hrr: false, bad_cv: false, bad_fin: false, post: [], what: 99 }
+}
+
+/// The X25519 share and session id of a ClientHello record.
+fn hello_parts(rec: List<u8>) -> (List<u8>, List<u8>) {
+    let p = 43usize;
+    let sid = rec[p + 1:p + 1 + (rec[p] as usize)].to_list();
+    p += 1 + (rec[p] as usize);
+    p += 2 + u16at(rec, p);
+    p += 1 + (rec[p] as usize);
+    let end = p + 2 + u16at(rec, p);
+    p += 2;
+    while p < end {
+        let t = u16at(rec, p);
+        let n = u16at(rec, p + 2);
+        if t == 51 {
+            let q = p + 6;
+            while q < p + 4 + n {
+                let kl = u16at(rec, q + 2);
+                if u16at(rec, q) == 0x1d { return (rec[q + 4:q + 4 + kl].to_list(), sid); }
+                q += 4 + kl;
+            }
+        }
+        p += 4 + n;
+    }
+    ([], sid)
+}
+
+fn evil_serve(s: TcpStream, ref r: Rng, e: Evil) {
+    let ch = read_some(s);
+    if ch.len() < 50 { return; }
+    let (share, sid) = hello_parts(ch);
+    let eph = rand_bytes(ref r, 32);
+    let random = rand_bytes(ref r, 32);
+    if e.hrr {
+        random = [];
+        for b in HRR_RANDOM { random.push(b); }
+    }
+    // A HelloRetryRequest's key_share names only the group.
+    let ks = if e.hrr { [0u8, 0x1du8] } else { cat([0u8, 0x1du8], v16(x_public(eph))) };
+    let sh_exts = cat(cat(ext(43, [3u8, 4u8]), ext(51, ks)), e.sh_ext);
+    let sh = msg(2u8, cat(cat(cat(cat([3u8, 3u8], random), v8(sid)), [0x13u8, 0x01u8, 0u8]), v16(sh_exts)));
+    let tr = cat(ch[5:ch.len()].to_list(), sh);
+    let shared = match x_shared(eph, share) { b: Secret => b.as_bytes().to_list(), none => return };
+    let early = hkdf::extract(H, [0u8], zeros(32)).as_bytes().to_list();
+    let hs = hkdf::extract(H, derive(early, "derived", []), shared).as_bytes().to_list();
+    let s_hs = derive(hs, "s hs traffic", tr);
+    let k = keys(s_hs);
+
+    let ee = msg(8u8, v16(e.ee_exts));
+    if e.what == 0 { ee = mutate(ref r, ee); }
+    tr = cat(tr, ee);
+    let cr = msg(13u8, cat(v8([]), v16(ext(13, v16([8u8, 7u8, 4u8, 3u8])))));
+    let with_cr = e.what == 1;
+    if with_cr {
+        cr = mutate(ref r, cr);
+        tr = cat(tr, cr);
+    }
+    let cert = cert_msg(e.cert, e.entry_exts);
+    if e.what == 2 { cert = mutate(ref r, cert); }
+    tr = cat(tr, cert);
+    let cv = verify_msg(tr, "TLS 1.3, server CertificateVerify");
+    if e.bad_cv { cv[cv.len() - 1] = cv[cv.len() - 1] ^ 1u8; }
+    if e.what == 3 { cv = mutate(ref r, cv); }
+    tr = cat(tr, cv);
+    let fin = msg(20u8, Hmac::mac(H, label(s_hs, "finished", [], 32), H.digest(tr)));
+    if e.bad_fin { fin[4] = fin[4] ^ 0x80u8; }
+    if e.what == 4 { fin = mutate(ref r, fin); }
+    tr = cat(tr, fin);
+
+    let flight = cat(cat(cat(ee, if with_cr { cr } else { [] }), cert), cat(cv, fin));
+    if e.what == 5 { flight = mutate(ref r, flight); }
+    let out = cat(cat([22u8, 3u8, 3u8], v16(sh)), [20u8, 3u8, 3u8, 0u8, 1u8, 1u8]);
+    if e.what == 6 {
+        let at = 0usize;
+        while at < flight.len() {
+            let end = at + 1 + r.below(200);
+            if end > flight.len() { end = flight.len(); }
+            let pad = r.below(40);
+            out = cat(out, seal(ref k, 22u8, flight[at:end].to_list(), pad));
+            at = end;
+        }
+    } else {
+        out = cat(out, seal(ref k, 22u8, flight, 0));
+    }
+    try s.write_all(out) catch _ { return; };
+    if e.what <= 6 {
+        // The client fails on its own: EOF, not more data.
+        try s.shutdown(Shutdown::Write) catch _ {};
+        let _ = drain(s);
+        return;
+    }
+    let master = hkdf::extract(H, derive(hs, "derived", []), zeros(32)).as_bytes().to_list();
+    let ka = keys(derive(master, "s ap traffic", tr));
+    let _ = read_some(s);
+    let post = e.post;
+    if e.what == 7 { post = mutate(ref r, post); }
+    if post.len() > 0 { try s.write_all(seal(ref ka, 22u8, post, 0)) catch _ { return; }; }
+    try s.write_all(seal(ref ka, 23u8, "pong".as_bytes().to_list(), 0)) catch _ { return; };
+    try s.shutdown(Shutdown::Write) catch _ {};
+    let _ = drain(s);
+}
+
+/// The targeted server misbehaviours, by index.
+fn evil_case(i: usize) -> Evil {
+    let good = pem_der(GOOD);
+    let e = evil(good);
+    if i == 1 { e.cert = pem_der(EXPIRED); }
+    if i == 2 { e.cert = pem_der(FUTURE); }
+    if i == 3 { e.cert = pem_der(CLIENT_ONLY); }
+    if i == 4 { e.cert = pem_der(WRONG_HOST); }
+    if i == 5 { e.cert = pem_der(BAD_SIG); }
+    if i == 7 { e.ee_exts = cat(e.ee_exts, ext(0x1234, [])); }
+    if i == 8 { e.ee_exts = cat(e.ee_exts, ext(0, [1u8])); }
+    if i == 9 { e.sh_ext = ext(0x1234, []); }
+    if i == 10 { e.entry_exts = ext(18, [0u8, 0u8]); }
+    if i == 11 { e.bad_cv = true; }
+    if i == 12 { e.bad_fin = true; }
+    if i == 13 { e.post = msg(24u8, [2u8]); e.what = 98; }
+    if i == 14 { e.post = msg(99u8, []); e.what = 98; }
+    if i == 15 { e.hrr = true; }
+    if i == 16 {
+        // A post-handshake message announcing 16 MiB.
+        e.post = [4u8, 0xffu8, 0xffu8, 0xffu8];
+        e.what = 98;
+    }
+    e
+}
+
+const CASES: [str; 17] = [
+    "clean", "expired", "not yet valid", "no serverAuth", "wrong name", "bad signature", "unknown CA",
+    "unknown EE extension", "server_name with data", "unknown ServerHello extension", "unrequested SCT",
+    "bad CertificateVerify", "bad Finished", "KeyUpdate 2", "post-handshake type 99", "HRR for a group already sent",
+    "16 MiB post-handshake message",
+];
+
+fn client_cfg(roots: List<Certificate>) -> ClientConfig {
+    ClientConfig { root_certs: roots, cipher_suites: [CipherSuite::Aes128GcmSha256], alpn_protocols: ["h2".as_bytes().to_list()], enable_post_quantum: false, client_cert_chain: [], client_key: none, session_cache: none, early_data: [] }
+}
+
+/// A client connection: the reply to "ping", or how it failed.
+fn ask(port: u16, roots: List<Certificate>) -> str {
+    let s = try! tcp_connect(f"127.0.0.1:{port}");
+    s.set_read_timeout(Duration::secs(10));
+    let c = try Client::with_config(s, "localhost", client_cfg(roots)) catch e { return f"{e.kind():?} alert {e.alert()}: {e.message()}"; };
+    try c.write_all("ping") catch e { try! c.close(); return f"write: {e}"; };
+    let buf = zeros(64);
+    let k = try c.read(buf) catch e { try! c.close(); return f"read: {e}"; };
+    try! c.close();
+    f"ok {try str::from_utf8(buf[0:k]) catch _ { "?" }}"
+}
+
+fn targeted() {
+    let l = try! tcp_listen("127.0.0.1:0");
+    let port = (try! l.local_addr()).port();
+    let t = thread::spawn(|| {
+        let r = Rng { s: 7u64 };
+        for i in 0..CASES.len() {
+            let (s, _) = try! l.accept();
+            s.set_read_timeout(Duration::secs(10));
+            evil_serve(s, ref r, evil_case(i));
+            try! s.close();
+        }
+        try! l.close();
+    });
+    let roots = try! Certificate::from_pem(CA);
+    for i in 0..CASES.len() {
+        println(f"{CASES[i]}: {ask(port, if i == 6 { [] } else { roots })}");
+    }
+    try! t.join();
+}
+
+/// Mutated encrypted flights and post-handshake messages: the client
+/// never accepts a bad CertificateVerify or Finished, never hangs.
+fn fuzz_evil_server(n: usize) {
+    let l = try! tcp_listen("127.0.0.1:0");
+    let port = (try! l.local_addr()).port();
+    let t = thread::spawn(|| {
+        let r = Rng { s: 11u64 };
+        for i in 0..n {
+            let (s, _) = try! l.accept();
+            s.set_read_timeout(Duration::secs(10));
+            let e = evil(pem_der(GOOD));
+            e.what = i % 8;
+            e.post = msg(24u8, [0u8]);
+            evil_serve(s, ref r, e);
+            try! s.close();
+        }
+        try! l.close();
+    });
+    let roots = try! Certificate::from_pem(CA);
+    let forged = 0;
+    let slow = 0i64;
+    for i in 0..n {
+        let t0 = Instant::now();
+        let got = ask(port, roots);
+        if (i % 8 == 3 || i % 8 == 4) && got.starts_with("ok") { forged += 1; }
+        let ms = t0.elapsed().as_ms();
+        if ms > slow { slow = ms; }
+    }
+    try! t.join();
+    println(f"mutated server flights: {n}, forged CertificateVerify / Finished accepted: {forged}, under 10 s each: {slow < 10000}");
+}
+
+// A client written here, against tls::Server.
+
+/// One connection with an Ed25519 client certificate; `what` mutates:
+/// 0 Certificate, 1 CertificateVerify, 2 Finished, 3 the flight, 4
+/// record boundaries, 5 a post-handshake KeyUpdate, 6 a client
+/// NewSessionTicket, 7 an application record or alert.
+fn evil_client(s: TcpStream, ref r: Rng, what: usize) {
+    let eph = rand_bytes(ref r, 32);
+    let random = rand_bytes(ref r, 32);
+    let exts = cat(cat(ext(43, [2u8, 3u8, 4u8]), ext(10, [0u8, 2u8, 0u8, 0x1du8])), cat(ext(13, [0u8, 4u8, 8u8, 7u8, 4u8, 3u8]), ext(51, v16(cat([0u8, 0x1du8], v16(x_public(eph)))))));
+    let ch = msg(1u8, cat(cat(cat([3u8, 3u8], random), v8(random)), cat(cat(v16([0x13u8, 1u8]), [1u8, 0u8]), v16(exts))));
+    try s.write_all(cat(cat([22u8, 3u8, 1u8], u16b(ch.len())), ch)) catch _ { return; };
+    let tr = ch;
+    let sh_end = 0usize;
+
+    // The server's flight up to its Finished.
+    let inb: List<u8> = [];
+    let k: Keys | none = none;
+    let hs: List<u8> = [];
+    let hsbuf: List<u8> = [];
+    let seen_fin = false;
+    while !seen_fin {
+        while inb.len() < 5 || inb.len() < 5 + u16at(inb, 3) {
+            let more = read_some(s);
+            if more.len() == 0 { return; }
+            inb.extend(more);
+        }
+        let n = u16at(inb, 3);
+        let hdr = inb[0:5].to_list();
+        let body = inb[5:5 + n].to_list();
+        inb = inb[5 + n:inb.len()].to_list();
+        if hdr[0] == 20u8 { continue; }
+        if hdr[0] == 22u8 {
+            // ServerHello: its key share is the last 32 bytes.
+            tr = cat(tr, body);
+            sh_end = tr.len();
+            let shared = match x_shared(eph, body[body.len() - 32:body.len()]) { b: Secret => b.as_bytes().to_list(), none => return };
+            let early = hkdf::extract(H, [0u8], zeros(32)).as_bytes().to_list();
+            hs = hkdf::extract(H, derive(early, "derived", []), shared).as_bytes().to_list();
+            k = keys(derive(hs, "s hs traffic", tr));
+            continue;
+        }
+        let kk: Keys = k else { return; };
+        let (t, data) = unseal(ref kk, hdr, body) ?? { return; };
+        k = kk;
+        if t != 22u8 { return; }
+        hsbuf.extend(data);
+        while hsbuf.len() >= 4 && hsbuf.len() >= 4 + u24at(hsbuf, 1) {
+            let m = 4 + u24at(hsbuf, 1);
+            tr = cat(tr, hsbuf[0:m].to_list());
+            if hsbuf[0] == 20u8 { seen_fin = true; }
+            hsbuf = hsbuf[m:hsbuf.len()].to_list();
+        }
+    }
+    let c_hs = derive(hs, "c hs traffic", tr[0:sh_end].to_list());
+    let master = hkdf::extract(H, derive(hs, "derived", []), zeros(32)).as_bytes().to_list();
+    let c_ap = derive(master, "c ap traffic", tr);
+    let kc = keys(c_hs);
+
+    let cert = cert_msg(pem_der(CLIENT_ONLY), []);
+    if what == 0 { cert = mutate(ref r, cert); }
+    tr = cat(tr, cert);
+    let cv = verify_msg(tr, "TLS 1.3, client CertificateVerify");
+    if what == 1 { cv = mutate(ref r, cv); }
+    tr = cat(tr, cv);
+    let fin = msg(20u8, Hmac::mac(H, label(c_hs, "finished", [], 32), H.digest(tr)));
+    if what == 2 { fin = mutate(ref r, fin); }
+    let flight = cat(cat(cert, cv), fin);
+    if what == 3 { flight = mutate(ref r, flight); }
+    let out = [20u8, 3u8, 3u8, 0u8, 1u8, 1u8];
+    if what == 4 {
+        let at = 0usize;
+        while at < flight.len() {
+            let end = at + 1 + r.below(200);
+            if end > flight.len() { end = flight.len(); }
+            let pad = r.below(40);
+            out = cat(out, seal(ref kc, 22u8, flight[at:end].to_list(), pad));
+            at = end;
+        }
+    } else {
+        out = cat(out, seal(ref kc, 22u8, flight, 0));
+    }
+    if what >= 5 {
+        let ka = keys(c_ap);
+        if what == 5 {
+            let kb = r.below(3) as u8;
+            out = cat(out, seal(ref ka, 22u8, mutate(ref r, msg(24u8, [kb])), 0));
+        } else if what == 6 {
+            let m = mutate(ref r, msg(4u8, cat([0u8, 0u8, 1u8, 0u8, 0u8, 0u8, 0u8, 1u8, 0u8], cat(v16([1u8]), v16([])))));
+            out = cat(out, seal(ref ka, 22u8, m, 0));
+        } else {
+            let typ = if r.below(2) == 0 { 23u8 } else { 21u8 };
+            let pad = r.below(3);
+            let m = mutate(ref r, "ping".as_bytes().to_list());
+            out = cat(out, seal(ref ka, typ, m, pad));
+        }
+    }
+    try s.write_all(out) catch _ { return; };
+    try s.shutdown(Shutdown::Write) catch _ {};
+    let _ = drain(s);
+}
+
+fn server_cfg() -> ServerConfig {
+    let cfg = try! ServerConfig::new(try! Certificate::from_pem(GOOD), try! PrivateKey::from_pem(KEY));
+    cfg.alpn_protocols = ["h2".as_bytes().to_list()];
+    cfg.ticket_store = none;
+    cfg
+}
+
+/// Mutated client second flights into a Server that asks for a client
+/// certificate.
+fn fuzz_evil_client(n: usize) {
+    let l = try! tcp_listen("127.0.0.1:0");
+    let port = (try! l.local_addr()).port();
+    let t = thread::spawn(|| {
+        let cfg = server_cfg();
+        cfg.client_roots = try! Certificate::from_pem(CA);
+        let forged = 0;
+        let slow = 0i64;
+        for i in 0..n {
+            let (s, _) = try! l.accept();
+            s.set_read_timeout(Duration::secs(10));
+            let t0 = Instant::now();
+            let srv = try? Server::new(s, cfg);
+            if let v: Server = srv {
+                if i % 8 == 1 || i % 8 == 2 { forged += 1; }
+                let _ = try v.read(zeros(64)) catch _ { 0 };
+                try v.close() catch _ {};
+            }
+            let ms = t0.elapsed().as_ms();
+            if ms > slow { slow = ms; }
+        }
+        try! l.close();
+        println(f"mutated client flights: {n}, forged CertificateVerify / Finished accepted: {forged}, under 10 s each: {slow < 10000}");
+    });
+    let r = Rng { s: 13u64 };
+    for i in 0..n {
+        let s = try! tcp_connect(f"127.0.0.1:{port}");
+        s.set_read_timeout(Duration::secs(10));
+        evil_client(s, ref r, i % 8);
+        try! s.close();
+    }
+    try! t.join();
+}
+
+// Plaintext flights and certificate parsing.
+
+/// A real ClientHello and the real server's first flight for it.
+fn capture() -> (List<u8>, List<u8>) {
+    let l = try! tcp_listen("127.0.0.1:0");
+    let port = (try! l.local_addr()).port();
+    let t = thread::spawn(|| {
+        let s = try! tcp_connect(f"127.0.0.1:{port}");
+        s.set_read_timeout(Duration::ms(300));
+        let cfg = client_cfg(try! Certificate::from_pem(CA));
+        cfg.enable_post_quantum = true;
+        cfg.cipher_suites = CipherSuite::all();
+        if let c: Client = try? Client::with_config(s, "localhost", cfg) { try c.close() catch _ {}; }
+    });
+    let (s, _) = try! l.accept();
+    s.set_read_timeout(Duration::ms(300));
+    let (hello, _) = drain(s);
+    try! s.close();
+    try! t.join();
+    try! l.close();
+    let l2 = try! tcp_listen("127.0.0.1:0");
+    let port2 = (try! l2.local_addr()).port();
+    let t2 = thread::spawn(|| {
+        let (s, _) = try! l2.accept();
+        s.set_read_timeout(Duration::ms(300));
+        try! l2.close();
+        if let v: Server = try? Server::new(s, server_cfg()) { try v.close() catch _ {}; }
+    });
+    let s2 = try! tcp_connect(f"127.0.0.1:{port2}");
+    try! s2.write_all(hello);
+    s2.set_read_timeout(Duration::ms(300));
+    let (flight, _) = drain(s2);
+    try! s2.close();
+    try! t2.join();
+    (hello, flight)
+}
+
+/// Mutated ClientHellos into a Server: each ends with an alert or a
+/// handshake that waits for the client, never a hang.
+fn fuzz_hellos(hello: List<u8>, n: usize) {
+    let l = try! tcp_listen("127.0.0.1:0");
+    let port = (try! l.local_addr()).port();
+    let t = thread::spawn(|| {
+        let cfg = server_cfg();
+        for _ in 0..n {
+            let (s, _) = try! l.accept();
+            s.set_read_timeout(Duration::secs(10));
+            if let v: Server = try? Server::new(s, cfg) { try v.close() catch _ {}; }
+        }
+        try! l.close();
+    });
+    let r = Rng { s: 17u64 };
+    let slow = 0i64;
+    for _ in 0..n {
+        let t0 = Instant::now();
+        let s = try! tcp_connect(f"127.0.0.1:{port}");
+        s.set_read_timeout(Duration::secs(10));
+        try s.write_all(mutate(ref r, hello)) catch _ {};
+        try s.shutdown(Shutdown::Write) catch _ {};
+        let _ = drain(s);
+        try! s.close();
+        let ms = t0.elapsed().as_ms();
+        if ms > slow { slow = ms; }
+    }
+    try! t.join();
+    println(f"mutated ClientHellos: {n}, under 10 s each: {slow < 10000}");
+}
+
+/// Mutated server first flights (ServerHello, HelloRetryRequest marker,
+/// records) into a Client.
+fn fuzz_flights(flight: List<u8>, n: usize) {
+    let l = try! tcp_listen("127.0.0.1:0");
+    let port = (try! l.local_addr()).port();
+    let t = thread::spawn(|| {
+        let roots = try! Certificate::from_pem(CA);
+        let slow = 0i64;
+        for _ in 0..n {
+            let t0 = Instant::now();
+            let s = try! tcp_connect(f"127.0.0.1:{port}");
+            s.set_read_timeout(Duration::secs(10));
+            let cfg = client_cfg(roots);
+            cfg.enable_post_quantum = true;
+            cfg.cipher_suites = CipherSuite::all();
+            if let c: Client = try? Client::with_config(s, "localhost", cfg) { try c.close() catch _ {}; }
+            let ms = t0.elapsed().as_ms();
+            if ms > slow { slow = ms; }
+        }
+        println(f"mutated server flights (plaintext): {n}, under 10 s each: {slow < 10000}");
+    });
+    let r = Rng { s: 19u64 };
+    for i in 0..n {
+        let (s, _) = try! l.accept();
+        s.set_read_timeout(Duration::secs(10));
+        let _ = read_some(s);
+        let m = mutate(ref r, flight);
+        if i % 5 == 0 && m.len() >= 11 + 32 {
+            // The ServerHello random (bytes 11..43) as the
+            // HelloRetryRequest marker.
+            for j in 0..32 { m[11 + j] = HRR_RANDOM[j]; }
+        }
+        try s.write_all(m) catch _ {};
+        try s.shutdown(Shutdown::Write) catch _ {};
+        let _ = drain(s);
+        try! s.close();
+    }
+    try! t.join();
+    try! l.close();
+}
+
+/// Mutated and hostile DER / PEM into the certificate and key parsers.
+fn fuzz_der(n: usize) {
+    let r = Rng { s: 23u64 };
+    let ders = [pem_der(CA), pem_der(GOOD), pem_der(BAD_SIG)];
+    let key_der = unhex(KEY_DER);
+    let parsed = 0;
+    for i in 0..n {
+        let d = ders[i % 3];
+        if (try? Certificate::from_der(mutate(ref r, d))) is Certificate { parsed += 1; }
+        if (try? PrivateKey::from_der(mutate(ref r, key_der))) is PrivateKey { parsed += 1; }
+        let t = try str::from_utf8(mutate(ref r, (GOOD + KEY).as_bytes().to_list())) catch _ { continue; };
+        let _ = try? Certificate::from_pem(t);
+        let _ = try? PrivateKey::from_pem(t);
+    }
+    // Deep nesting, indefinite and huge lengths.
+    let deep: List<u8> = [];
+    for _ in 0..20000 { deep.extend([0x30u8, 0x80u8]); }
+    let nest: List<u8> = [0x05u8, 0u8];
+    for _ in 0..1000 { nest = cat(cat([0x30u8, 0x82u8], u16b(nest.len())), nest); }
+    let hostile = [deep, nest, [0x30u8, 0x84u8, 0xffu8, 0xffu8, 0xffu8, 0xffu8], [0x30u8, 0x88u8, 0xffu8, 0xffu8, 0xffu8, 0xffu8, 0xffu8, 0xffu8, 0xffu8, 0xffu8, 0u8], [0x30u8, 0x81u8, 0x05u8, 0x02u8], [0x1fu8, 0xffu8, 0xffu8, 0xffu8, 0xffu8, 0x7fu8, 0u8]];
+    let rejected = 0;
+    for h in hostile {
+        if (try? Certificate::from_der(h)) is none { rejected += 1; }
+        if (try? PrivateKey::from_der(h)) is none { rejected += 1; }
+    }
+    println(f"mutated DER / PEM: {3 * n}, hostile DER rejected: {rejected} of {2 * hostile.len()}");
+    let _ = parsed;
+}
+
+/// A failed handshake ends with the alert and the server's close (it
+/// does not leave the socket open).
+fn closes_after_alert() {
+    let l = try! tcp_listen("127.0.0.1:0");
+    let port = (try! l.local_addr()).port();
+    let t = thread::spawn(|| {
+        let (s, _) = try! l.accept();
+        try! l.close();
+        if let v: Server = try? Server::new(s, server_cfg()) { try v.close() catch _ {}; }
+    });
+    let s = try! tcp_connect(f"127.0.0.1:{port}");
+    s.set_read_timeout(Duration::secs(5));
+    try! s.write_all([22u8, 3u8, 1u8, 0u8, 4u8, 1u8, 0u8, 0u8, 0u8]);
+    let (got, closed) = drain(s);
+    try! s.close();
+    try! t.join();
+    println(f"failed handshake: record {got[0]} alert {got[got.len() - 1]}, then closed: {closed}");
+}
+
+fn main() {
+    targeted();
+    closes_after_alert();
+    fuzz_evil_server(24);
+    fuzz_evil_client(24);
+    let (hello, flight) = capture();
+    fuzz_hellos(hello, 48);
+    fuzz_flights(flight, 40);
+    fuzz_der(300);
+}

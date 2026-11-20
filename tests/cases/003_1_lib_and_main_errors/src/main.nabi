@@ -1,0 +1,23 @@
+// nabic-arg: --name app
+// expect-error: error[E0027]: cannot find function `add` in this scope
+// expect-error: = help: the library `src/lib.nabi` has `app::add`, and `src/main.nabi` sees it by the package's name: add `use app::add;`
+// expect-error: error[E0028]: cannot find type `Square` in this scope
+// expect-error: = help: the library `src/lib.nabi` has `app::shapes::Square`, and `src/main.nabi` sees it by the package's name: add `use app::shapes::Square;`
+// expect-error: error[E0034]: function `app::secret` is private to module `app` and cannot be used from `<root>` (add `pub` to expose it)
+// expect-error: = help: `src/main.nabi` uses its package's library `src/lib.nabi` as the package `app`, like a dependency: it sees only the library's `pub` items
+// expect-error: error[E0034]: function `app::inside` is `pub(pkg)`: visible only inside its package `app`
+// expect-error: error[E0034]: type `app::Hidden` is private to module `app` and cannot be used from `<root>`
+
+// The executable sees only the library's `pub` items, and only by the
+// package's name: each error says so.
+fn side(s: Square) -> i32 {
+    return s.side;
+}
+
+fn hide(h: app::Hidden) -> i32 {
+    return 0;
+}
+
+fn main() {
+    println(f"{add(1, 2)} {app::secret()} {app::inside()}");
+}

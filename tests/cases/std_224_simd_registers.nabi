@@ -1,0 +1,175 @@
+// expect-exit: 0
+// expect-stdout:
+// f32 ok 832.75
+// f64 ok -6.9375
+// i32 ok -48
+// u8 ok 240
+// i16 ok 32684
+// u64 ok 18446744073709551614
+// f32x8 ok 336
+// loop ok 1023.0 1022.5
+// calls ok 18
+
+// `core::simd` values kept in vector registers: lane operations,
+// loads and stores at offsets, splats and sums, checked lane by lane
+// against the scalar operators; accumulators carried through loops and
+// across calls.
+use core::simd::{f32x4, f32x8, f64x2, i16x8, i32x4, u64x2, u8x16, Simd};
+
+fn same_f32(v: f32x4, w: [f32; 4]) -> bool {
+    let a = v.to_array();
+    for i in 0..4 {
+        if a[i].to_bits() != w[i].to_bits() { return false; }
+    }
+    true
+}
+
+fn lanes(a: f32x4, b: f32x4, f: fn(f32, f32) -> f32) -> [f32; 4] {
+    let x = a.to_array();
+    let y = b.to_array();
+    [f(x[0], y[0]), f(x[1], y[1]), f(x[2], y[2]), f(x[3], y[3])]
+}
+
+fn f32s() {
+    let xs: List<f32> = [1.5, -2.0, 0.25, 8.0, 3.0, -0.0, 100.0, 7.5, 2.0];
+    let a = f32x4::load(xs, 0);
+    let b = f32x4::load(xs, 3);
+    let ok = same_f32(a + b, lanes(a, b, |x: f32, y: f32| -> f32 { x + y }))
+        && same_f32(a - b, lanes(a, b, |x: f32, y: f32| -> f32 { x - y }))
+        && same_f32(a * b, lanes(a, b, |x: f32, y: f32| -> f32 { x * y }))
+        && same_f32(b / f32x4::splat(2.0), lanes(b, b, |x: f32, _y: f32| -> f32 { x / 2.0 }))
+        && same_f32(-a, lanes(a, a, |x: f32, _y: f32| -> f32 { -x }))
+        && same_f32(a.abs(), lanes(a, a, |x: f32, _y: f32| -> f32 { x.abs() }))
+        && same_f32((a .< b).select(a, b), lanes(a, b, |x: f32, y: f32| -> f32 { if x < y { x } else { y } }))
+        && same_f32(f32x4::splat(xs[8]), [2.0, 2.0, 2.0, 2.0]);
+    (a * b + a).store(xs, 5);
+    let s = f32x4::load(xs, 2).reduce_sum() + xs[8];
+    println(f"f32 {if ok { "ok" } else { "BAD" }} {s}");
+}
+
+fn f64s() {
+    let xs: List<f64> = [0.5, -4.0, 2.25, 1.0];
+    let a = f64x2::load(xs, 0);
+    let b = f64x2::load(xs, 2);
+    let c = (a - b) * b + f64x2::splat(xs[3]);
+    let e = c.to_array();
+    let ok = e[0] == (0.5 - 2.25) * 2.25 + 1.0 && e[1] == (-4.0 - 1.0) * 1.0 + 1.0;
+    println(f"f64 {if ok { "ok" } else { "BAD" }} {c.reduce_sum() + 0.0}");
+}
+
+fn i32s() {
+    let xs: List<i32> = [2147483647, -5, 12, -2147483648, 3, 7, -9, 1];
+    let a = i32x4::load(xs, 0);
+    let b = i32x4::load(xs, 4);
+    let s = (a + b).to_array();
+    let d = (a - b).to_array();
+    let m = (a * b).to_array();
+    let ok = s[0] == 2147483647i32.wrapping_add(3) && s[3] == -2147483647
+        && d[0] == 2147483644 && d[3] == i32::MIN.wrapping_sub(1)
+        && m[0] == 2147483647i32.wrapping_mul(3) && m[2] == -108
+        && (a .< b).to_array() == [false, true, false, true]
+        && (a .== a).all() && !(a .!= a).any()
+        && a.min(b).to_array() == [3, -5, -9, -2147483648]
+        && a.max(b).to_array() == [2147483647, 7, 12, 1]
+        && (-b).to_array() == [-3, -7, 9, -1]
+        && (a ^ b).to_array() == [2147483647 ^ 3, -5 ^ 7, 12 ^ -9, -2147483648 ^ 1];
+    println(f"i32 {if ok { "ok" } else { "BAD" }} {(b * i32x4::splat(-2) + i32x4::splat(-11)).reduce_sum()}");
+}
+
+fn u8s() {
+    let xs: List<u8> = List::from_fn(20, |i: usize| -> u8 { (i * 37 % 256) as u8 });
+    let a = u8x16::load(xs, 0);
+    let b = u8x16::load(xs, 4);
+    let c = a + b;
+    let ok = c.to_array()[15] == xs[15].wrapping_add(xs[19])
+        && (a .<= b).to_array()[0] == (xs[0] <= xs[4])
+        && a.max(b).to_array()[7] == xs[7].max(xs[11]);
+    c.store(xs, 2);
+    println(f"u8 {if ok { "ok" } else { "BAD" }} {xs[2..18].iter().fold(0u8, |s: u8, x: u8| -> u8 { s.wrapping_add(x) })}");
+}
+
+fn i16s() {
+    let a = i16x8::from_array([30000, -30000, 5, -5, 0, 1, -1, 32767]);
+    let b = i16x8::splat(-20);
+    let c = a * b;
+    let ok = c.to_array()[0] == 30000i16.wrapping_mul(-20) && !(a .> b).to_array()[1];
+    println(f"i16 {if ok { "ok" } else { "BAD" }} {(a & b | i16x8::splat(1)).reduce_sum()}");
+}
+
+fn u64s() {
+    let a = u64x2::from_array([18446744073709551615, 7]);
+    let b = u64x2::splat(18446744073709551615);
+    let c = a + b;
+    let ok = c.to_array() == [18446744073709551614, 6] && (a .== b).to_array() == [true, false];
+    println(f"u64 {if ok { "ok" } else { "BAD" }} {(a & !u64x2::splat(1)).to_array()[0]}");
+}
+
+fn wide() {
+    let xs: List<f32> = List::from_fn(16, |i: usize| -> f32 { i as f32 });
+    let a = f32x8::load(xs, 0);
+    let b = f32x8::load(xs, 8);
+    let c = a * b - a;
+    let e = c.to_array();
+    let ok = e[0] == 0.0 && e[7] == 7.0 * 15.0 - 7.0 && e[3] == 3.0 * 11.0 - 3.0;
+    c.store(xs, 4);
+    println(f"f32x8 {if ok { "ok" } else { "BAD" }} {xs[4..12].iter().fold(0.0f32, |s: f32, x: f32| -> f32 { s + x }) as i64}");
+}
+
+fn looped() {
+    let n: usize = 1024;
+    let xs: List<f32> = List::from_fn(n, |i: usize| -> f32 { (i % 3) as f32 });
+    let ys: List<f32> = List::from_fn(n, |i: usize| -> f32 { (i % 5) as f32 * 0.5 });
+    let acc = f32x4::splat(0.0);
+    let two = f32x4::splat(0.0);
+    let i = 0;
+    while i + 4 <= n {
+        let x = f32x4::load(xs, i);
+        acc += x;
+        two = two + x * f32x4::load(ys, i);
+        i += 4;
+    }
+    let s1: f32 = 0.0;
+    let s2: f32 = 0.0;
+    for j in 0..n {
+        s1 += xs[j];
+        s2 += xs[j] * ys[j];
+    }
+    let ok = acc.reduce_sum() == {
+        let l = [0.0f32; 4];
+        for j in 0..n { l[j % 4] += xs[j]; }
+        0.0 + l[0] + l[1] + l[2] + l[3]
+    };
+    println(f"loop {if ok { "ok" } else { "BAD" }} {s1 + 0.0 * acc.reduce_sum():.1} {s2:.1}");
+}
+
+#[inline(never)]
+fn scale(v: f32x4, k: f32) -> f32x4 {
+    v * f32x4::splat(k)
+}
+
+fn calls() {
+    let acc = f32x4::from_array([1.0, 2.0, 3.0, 4.0]);
+    let base = f32x4::splat(0.5);
+    for _ in 0..3 {
+        acc = scale(acc, 2.0) * base;
+        println_none();
+    }
+    let ok = acc.to_array() == [1.0, 2.0, 3.0, 4.0];
+    println(f"calls {if ok { "ok" } else { "BAD" }} {(acc + base * f32x4::splat(4.0)).reduce_sum()}");
+}
+
+#[inline(never)]
+fn println_none() {}
+
+fn main() {
+    f32s();
+    f64s();
+    i32s();
+    u8s();
+    i16s();
+    u64s();
+    wide();
+    looped();
+    calls();
+    let _: Simd<i32, 4> = i32x4::splat(0);
+}

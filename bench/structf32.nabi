@@ -1,0 +1,66 @@
+// Small structs of floats read from a list: an `f32` and an `f64`
+// three-vector dot product per element (fields straight to float
+// registers), and the same through a by-value call.
+struct V3 {
+    x: f32;
+    y: f32;
+    z: f32;
+}
+
+struct D3 {
+    x: f64;
+    y: f64;
+    z: f64;
+}
+
+#[inline(never)]
+fn dot(a: V3, b: V3) -> f32 {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+fn sum(vs: List<V3>, w: V3) -> f32 {
+    let s: f32 = 0.0;
+    for v in vs {
+        s += v.x * w.x + v.y * w.y + v.z * w.z;
+    }
+    s
+}
+
+fn sumd(vs: List<D3>, w: D3) -> f64 {
+    let s: f64 = 0.0;
+    for v in vs {
+        s += v.x * w.x + v.y * w.y + v.z * w.z;
+    }
+    s
+}
+
+fn sumc(vs: List<V3>, w: V3) -> f32 {
+    let s: f32 = 0.0;
+    for v in vs {
+        s += dot(v, w);
+    }
+    s
+}
+
+fn main() -> i32 {
+    let n: usize = 4096;
+    let a: List<V3> = [];
+    let b: List<D3> = [];
+    for i in 0..n {
+        let f = (i % 17) as f32 * 0.25;
+        a.push(V3 { x: f, y: f + 1.0, z: f - 1.0 });
+        b.push(D3 { x: f as f64, y: f as f64 + 1.0, z: f as f64 - 1.0 });
+    }
+    let s: f64 = 0.0;
+    let d: f64 = 0.0;
+    for r in 0..2000 {
+        let e = (r % 8) as f32 * 0.125;
+        let w = V3 { x: 0.5 + e, y: 0.25, z: 2.0 - e };
+        let wd = D3 { x: 0.5 + e as f64, y: 0.25, z: 2.0 - e as f64 };
+        s += sum(a, w) as f64;
+        d += sumd(b, wd);
+        s += sumc(a, w) as f64;
+    }
+    println(f"{s} {d}");
+    return 0;
+}

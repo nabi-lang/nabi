@@ -1,0 +1,40 @@
+// y = a * x + y over 1M-element `List<f64>`s, 500 times; then
+// y = x * 3 + 1 on `List<i16>` (wrapping). Vectorized maps. Output
+// matches bench/c/vecsaxpy.c.
+fn axpy(a: f64, xs: List<f64>, ys: List<f64>) {
+    for i in 0..xs.len() {
+        ys[i] = a * xs[i] + ys[i];
+    }
+}
+
+fn affine(xs: List<i16>, ys: List<i16>) {
+    for i in 0..xs.len() {
+        ys[i] = xs[i].wrapping_mul(3).wrapping_add(1);
+    }
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 20;
+    let xs: List<f64> = List::filled(n, 0.0);
+    let ys: List<f64> = List::filled(n, 0.0);
+    let hs: List<i16> = List::filled(n, 0i16);
+    let gs: List<i16> = List::filled(n, 0i16);
+    for i in 0..n {
+        xs[i] = (i % 1000) as f64 * 0.001;
+        ys[i] = (i % 7) as f64;
+        hs[i] = (i % 30011) as i16;
+    }
+    for r in 0..500 {
+        axpy(0.5 + (r % 3) as f64 * 0.25, xs, ys);
+        affine(hs, gs);
+        hs[r] = gs[r + 1];
+    }
+    let s = 0.0;
+    let k: i64 = 0;
+    for i in 0..n {
+        s += ys[i];
+        k += gs[i] as i64;
+    }
+    println(f"{s:.6} {k}");
+    return 0;
+}

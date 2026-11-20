@@ -1,0 +1,301 @@
+// More `List` methods: unstable sorting, searching by a comparator or
+// key, rotation, splitting and joining, and dedup by a rule. No
+// `append(other)`: `xs.append(x)` is the Python habit for `push`, and
+// its help says so; `xs += ys` joins lists.
+
+use core::cmp::Ordering;
+
+// Below this many elements a part is insertion-sorted.
+const SMALL: usize = 20;
+
+impl<T> List<T> {
+    /// Ascending by `cmp`, in place, not stable (equal elements may
+    /// change order); no extra memory and usually faster than
+    /// `sort_by`. Quicksort with a median-of-three pivot, insertion sort
+    /// for small parts and heapsort past a depth of 2 log2(n), so O(n
+    /// log n) always.
+    ///
+    /// ```nabi
+    /// let xs = [5, 3, 9, 1, 3];
+    /// xs.sort_unstable_by(|a, b| b.cmp(a));
+    /// assert(xs == [9, 5, 3, 3, 1]);
+    /// ```
+    pub const fn sort_unstable_by(self, cmp: fn(T, T) -> Ordering) {
+        let n = self.len();
+        let depth: usize = 0;
+        let m = n;
+        while m > 1 {
+            depth += 2;
+            m /= 2;
+        }
+        unsafe { quick(self.buffer(), 0, n, depth, cmp); }
+    }
+
+    /// Ascending by `key(x)`, not stable; `key` runs twice per
+    /// comparison.
+    pub const fn sort_unstable_by_key<K: Ord>(self, key: fn(T) -> K) {
+        self.sort_unstable_by(|a: T, b: T| -> Ordering { key(a).cmp(key(b)) });
+    }
+
+    /// The index of an element `f` finds equal (`f(x)` is `Equal`) in a
+    /// list `f` sees as ascending (`Less` before, `Greater` after), the
+    /// first of them; `none` when there is none. O(log n).
+    ///
+    /// ```nabi
+    /// let xs = [(1, "a"), (3, "c"), (5, "e")];
+    /// assert(xs.binary_search_by(|p| p.0.cmp(3)) == 1);
+    /// assert(xs.binary_search_by_key(5, |p| p.0) == 2);
+    /// assert(xs.binary_search_by_key(4, |p| p.0) is none);
+    /// ```
+    pub const fn binary_search_by(self, f: fn(T) -> Ordering) -> usize | none {
+        let i = self.partition_point(|e: T| -> bool { f(e).is_lt() });
+        if i < self.len() && f(self[i]).is_eq() {
+            return i;
+        }
+        none
+    }
+
+    /// `binary_search_by` comparing `key(x)` with `k`.
+    pub const fn binary_search_by_key<K: Ord>(self, k: K, key: fn(T) -> K) -> usize | none {
+        self.binary_search_by(|e: T| -> Ordering { key(e).cmp(k) })
+    }
+
+    /// The index of the last element `pred` accepts, or `none`.
+    ///
+    /// ```nabi
+    /// let xs = [1, 4, 2, 4];
+    /// assert(xs.rposition(|x| x == 4) == 3 && xs.rposition(|x| x > 9) is none);
+    /// ```
+    pub const fn rposition(self, pred: fn(T) -> bool) -> usize | none {
+        let i = self.len();
+        while i > 0 {
+            i -= 1;
+            if pred(self[i]) {
+                return i;
+            }
+        }
+        none
+    }
+
+    /// Shift every element `k` places toward the front, in place; the
+    /// first `k` go to the back. Panics when `k` is past the length.
+    ///
+    /// ```nabi
+    /// let xs = [1, 2, 3, 4, 5];
+    /// xs.rotate_left(2);
+    /// assert(xs == [3, 4, 5, 1, 2]);
+    /// xs.rotate_right(2);
+    /// assert(xs == [1, 2, 3, 4, 5]);
+    /// ```
+    #[track_caller]
+    pub const fn rotate_left(self, k: usize) {
+        let n = self.len();
+        if k > n {
+            panic(f"List::rotate_left: {k} is past the length {n}; pass at most {n} (or `k % xs.len()`)");
+        }
+        unsafe {
+            let b = self.buffer();
+            flip(b, 0, k);
+            flip(b, k, n);
+            flip(b, 0, n);
+        }
+    }
+
+    /// Shift every element `k` places toward the back, in place; the
+    /// last `k` go to the front. Panics when `k` is past the length.
+    #[track_caller]
+    pub const fn rotate_right(self, k: usize) {
+        let n = self.len();
+        if k > n {
+            panic(f"List::rotate_right: {k} is past the length {n}; pass at most {n} (or `k % xs.len()`)");
+        }
+        self.rotate_left(n - k);
+    }
+
+    /// Remove the elements from `at` on and return them as a new list.
+    /// Panics when `at` is past the length.
+    ///
+    /// ```nabi
+    /// let xs = [1, 2, 3, 4];
+    /// let tail = xs.split_off(1);
+    /// assert(xs == [1] && tail == [2, 3, 4]);
+    /// xs += tail;
+    /// assert(xs == [1, 2, 3, 4]);
+    /// ```
+    #[track_caller]
+    #[discardable]
+    pub const fn split_off(self, at: usize) -> List<T> {
+        let n = self.len();
+        if at > n {
+            panic(f"List::split_off: index {at} out of bounds for length {n}");
+        }
+        self.drain(at..n)
+    }
+
+    /// Drop each element `same` says matches the one kept before it, in
+    /// place (`same(kept, x)`).
+    ///
+    /// ```nabi
+    /// let xs = [1, 2, 4, 5, 9];
+    /// xs.dedup_by(|a, b| b - a == 1);
+    /// assert(xs == [1, 4, 9]);
+    /// let ws = ["apple", "avocado", "banana"];
+    /// ws.dedup_by_key(|w| w.chars().next());
+    /// assert(ws == ["apple", "banana"]);
+    /// ```
+    pub const fn dedup_by(self, same: fn(T, T) -> bool) {
+        let n = self.len();
+        if n < 2 {
+            return;
+        }
+        let w: usize = 1;
+        for r in 1..n {
+            let x = self[r];
+            if !same(self[w - 1], x) {
+                self[w] = x;
+                w += 1;
+            }
+        }
+        self.truncate(w);
+    }
+
+    /// Drop each element whose `key` equals the key of the one before.
+    pub const fn dedup_by_key<K: PartialEq>(self, key: fn(T) -> K) {
+        self.dedup_by(|a: T, b: T| -> bool { key(a) == key(b) });
+    }
+}
+
+impl<T: Ord> List<T> {
+    /// Ascending, in place, not stable: `sort_unstable_by` with `cmp`.
+    ///
+    /// ```nabi
+    /// let xs = [3, 1, 2];
+    /// xs.sort_unstable();
+    /// assert(xs == [1, 2, 3]);
+    /// ```
+    pub const fn sort_unstable(self) {
+        self.sort_unstable_by(|a: T, b: T| -> Ordering { a.cmp(b) });
+    }
+}
+
+impl<T> List<List<T>> {
+    /// The elements of every list in order, as one new list.
+    ///
+    /// ```nabi
+    /// let rows = [[1, 2], [], [3]];
+    /// assert(rows.concat() == [1, 2, 3]);
+    /// ```
+    pub const fn concat(self) -> List<T> {
+        let n: usize = 0;
+        for xs in self {
+            n += xs.len();
+        }
+        let out: List<T> = List::with_capacity(n);
+        for xs in self {
+            for x in xs {
+                out.push(x);
+            }
+        }
+        out
+    }
+}
+
+/// Reverse `b[lo..hi]`.
+const unsafe fn flip<T>(b: GcBuf<T>, lo: usize, hi: usize) {
+    unsafe {
+        while lo + 1 < hi {
+            hi -= 1;
+            let t = b[lo];
+            b[lo] = b[hi];
+            b[hi] = t;
+            lo += 1;
+        }
+    }
+}
+
+const unsafe fn swap_at<T>(b: GcBuf<T>, i: usize, j: usize) {
+    unsafe {
+        let t = b[i];
+        b[i] = b[j];
+        b[j] = t;
+    }
+}
+
+/// Sort `b[lo..hi]` by `cmp`, falling back to heapsort when `depth`
+/// runs out.
+const unsafe fn quick<T>(b: GcBuf<T>, lo: usize, hi: usize, depth: usize, cmp: fn(T, T) -> Ordering) {
+    unsafe {
+        while hi - lo > SMALL {
+            if depth == 0 {
+                heap(b, lo, hi, cmp);
+                return;
+            }
+            depth -= 1;
+            // Median of three to `lo`, then Hoare partition around it.
+            let mid = lo + (hi - lo) / 2;
+            if cmp(b[mid], b[lo]).is_lt() { swap_at(b, mid, lo); }
+            if cmp(b[hi - 1], b[lo]).is_lt() { swap_at(b, hi - 1, lo); }
+            if cmp(b[hi - 1], b[mid]).is_lt() { swap_at(b, hi - 1, mid); }
+            swap_at(b, lo, mid);
+            let p = b[lo];
+            let i = lo;
+            let j = hi;
+            loop {
+                i += 1;
+                while i < hi && cmp(b[i], p).is_lt() { i += 1; }
+                j -= 1;
+                while cmp(p, b[j]).is_lt() { j -= 1; }
+                if i >= j { break; }
+                swap_at(b, i, j);
+            }
+            swap_at(b, lo, j);
+            // Recurse into the smaller side, loop on the larger.
+            if j - lo < hi - j {
+                quick(b, lo, j, depth, cmp);
+                lo = j + 1;
+            } else {
+                quick(b, j + 1, hi, depth, cmp);
+                hi = j;
+            }
+        }
+        for i in lo + 1..hi {
+            let x = b[i];
+            let k = i;
+            while k > lo && cmp(x, b[k - 1]).is_lt() {
+                b[k] = b[k - 1];
+                k -= 1;
+            }
+            b[k] = x;
+        }
+    }
+}
+
+const unsafe fn heap<T>(b: GcBuf<T>, lo: usize, hi: usize, cmp: fn(T, T) -> Ordering) {
+    unsafe {
+        let n = hi - lo;
+        let i = n / 2;
+        while i > 0 {
+            i -= 1;
+            sift(b, lo, i, n, cmp);
+        }
+        let end = n;
+        while end > 1 {
+            end -= 1;
+            swap_at(b, lo, lo + end);
+            sift(b, lo, 0, end, cmp);
+        }
+    }
+}
+
+const unsafe fn sift<T>(b: GcBuf<T>, lo: usize, i: usize, n: usize, cmp: fn(T, T) -> Ordering) {
+    unsafe {
+        loop {
+            let c = 2 * i + 1;
+            if c >= n { return; }
+            if c + 1 < n && cmp(b[lo + c], b[lo + c + 1]).is_lt() { c += 1; }
+            if !cmp(b[lo + i], b[lo + c]).is_lt() { return; }
+            swap_at(b, lo + i, lo + c);
+            i = c;
+        }
+    }
+}

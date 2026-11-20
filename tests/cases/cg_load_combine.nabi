@@ -1,0 +1,83 @@
+// nabic-arg: -O2
+// expect-exit: 0
+// expect-stdout:
+// 506097522914230528 1084818905618843912
+// 50462976 117835012
+// 513 1541
+// 1 4294967295 255
+// 6618611712513 4
+// 0x0807060504040201 0x0b0a0908
+
+// Bytes of a buffer read one by one and put together little-endian give
+// the same integer when the reads become one wide load: every width, the
+// parts in any order, a sum that wraps, and assemblies that stay byte
+// loads (a byte missing, a shift off its place, a store between).
+use bare::mem::{GcBuf, buf_new};
+
+fn u64_at(b: GcBuf<u8>, q: usize) -> u64 {
+    unsafe {
+        (b[q] as u64)
+            | ((b[q + 1] as u64) << 8u64)
+            | ((b[q + 2] as u64) << 16u64)
+            | ((b[q + 3] as u64) << 24u64)
+            | ((b[q + 4] as u64) << 32u64)
+            | ((b[q + 5] as u64) << 40u64)
+            | ((b[q + 6] as u64) << 48u64)
+            | ((b[q + 7] as u64) << 56u64)
+    }
+}
+
+fn u32_shuffled(b: GcBuf<u8>, q: usize) -> u32 {
+    unsafe {
+        ((b[q.wrapping_add(3)] as u32) << 24u32)
+            | ((b[q.wrapping_add(1)] as u32) << 8u32)
+            | (b[q] as u32)
+            | ((b[q.wrapping_add(2)] as u32) << 16u32)
+    }
+}
+
+fn u16_at(b: GcBuf<u8>, q: usize) -> u16 {
+    unsafe { (b[q] as u16) | ((b[q + 1] as u16) << 8u16) }
+}
+
+fn i32_at(b: GcBuf<u8>, q: usize) -> i32 {
+    unsafe {
+        (b[q] as i32) | ((b[q + 1] as i32) << 8i32) | ((b[q + 2] as i32) << 16i32) | ((b[q + 3] as i32) << 24i32)
+    }
+}
+
+// A byte missing: not a whole word.
+fn gap(b: GcBuf<u8>, q: usize) -> u64 {
+    unsafe {
+        (b[q] as u64) | ((b[q + 1] as u64) << 8u64) | ((b[q + 3] as u64) << 24u64)
+            | ((b[q + 4] as u64) << 32u64) | ((b[q + 5] as u64) << 40u64)
+    }
+}
+
+// A store between the reads: the second read sees it.
+fn stored(b: GcBuf<u8>, q: usize) -> u16 {
+    unsafe {
+        let lo = b[q] as u16;
+        b[q + 1] = 4u8;
+        lo | ((b[q + 1] as u16) << 8u16)
+    }
+}
+
+fn main() {
+    let b: GcBuf<u8> = unsafe { buf_new(24) };
+    for i in 0..24 {
+        unsafe { b[i] = i as u8; }
+    }
+    println(f"{u64_at(b, 0)} {u64_at(b, 8)}");
+    println(f"{u32_shuffled(b, 0)} {u32_shuffled(b, 4)}");
+    println(f"{u16_at(b, 1)} {u16_at(b, 5)}");
+    unsafe {
+        b[16] = 255u8;
+        b[17] = 255u8;
+        b[18] = 255u8;
+        b[19] = 255u8;
+    }
+    println(f"{i32_at(b, 1) & 1} {i32_at(b, 16) as u32} {unsafe { b[18] }}");
+    println(f"{gap(b, 1)} {stored(b, 2) >> 8u16}");
+    println(f"{u64_at(b, 1):#018x} {u32_shuffled(b, 8):#010x}");
+}

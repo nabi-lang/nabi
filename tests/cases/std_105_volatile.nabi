@@ -1,0 +1,18 @@
+// expect-exit: 0
+// expect-stdout:
+// 9 9
+
+// `bare::volatile::{read, write}` - accesses kept
+// exactly as written (both writes happen); same as the `Ptr` methods.
+use bare::ptr::{ConstPtr, Ptr, addr_of};
+
+fn main() {
+    let words: [u32; 2] = [1, 2];
+    let p: Ptr<u32> = addr_of(words[0]);
+    unsafe {
+        bare::volatile::write(p, 7);
+        bare::volatile::write(p, 9);
+    }
+    let c: ConstPtr<u32> = ConstPtr::<u32>::dangling().with_addr(p.addr());
+    println(f"{unsafe { bare::volatile::read(c) }} {unsafe { c.read_volatile() }}");
+}

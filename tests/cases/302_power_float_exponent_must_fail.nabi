@@ -1,0 +1,14 @@
+// expect-error: 10:13: operator `**` cannot be applied to `i64` and `f64`
+// expect-error: help: Nabi never converts numbers implicitly; raise a float: `2.0 ** -1.0`
+// expect-error: 12:13: operator `**` cannot be applied to `i32` and `f64`
+// expect-error: help: Nabi never converts numbers implicitly; raise a float: `(n as f64) ** 0.5`
+// expect-error: `i32` to a negative power is a fraction, not an integer
+// expect-error: help: raise a float instead: `(n as f64) ** -2.0`
+
+// An integer base with a float exponent mixes the two number kinds.
+fn main() {
+    let a = 2 ** -1.0;
+    let n: i32 = 2;
+    let b = n ** 0.5;
+    let c = n ** -2;
+}

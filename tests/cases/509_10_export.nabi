@@ -1,0 +1,21 @@
+// expect-exit: 0
+// expect-stdout:
+// 42 6
+
+// `#[export]` exports an `extern "C" fn` under its own name, like
+// `#[export_name("twice")]`.
+#[export]
+pub extern "C" fn nabi_probe_509_twice(x: c_int) -> c_int { x * 2 }
+
+#[export_name("nabi_probe_509_area")]
+pub extern "C" fn area(w: c_int, h: c_int) -> c_int { w * h }
+
+extern "C" {
+    #[link_name = "nabi_probe_509_twice"]
+    fn twice_c(x: c_int) -> c_int;
+    fn nabi_probe_509_area(w: c_int, h: c_int) -> c_int;
+}
+
+fn main() {
+    println(f"{unsafe { twice_c(21) }} {unsafe { nabi_probe_509_area(2, 3) }}");
+}

@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout:
+// 3
+
+// `#![no_implicit_nabi]` drops the implicit
+// prelude import from the file; what it uses is imported.
+#![no_implicit_nabi]
+
+use core::ops::Add;
+use core::print::println;
+
+struct V { x: i32; }
+
+impl Add for V {
+    type Output = V;
+    fn add(self, r: V) -> V { V { x: self.x + r.x } }
+}
+
+let v = V { x: 1 } + V { x: 2 };
+println(f"{v.x}");

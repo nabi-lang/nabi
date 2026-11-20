@@ -1,0 +1,16 @@
+// A library for `unitsdep_user`: a private module's const fn behind a
+// public const, an alias of a type re-exported from a private module, a
+// negative const argument in a `const` item and a number suffix.
+mod d;
+pub mod kinds;
+mod quantity;
+
+pub use d::D;
+pub use quantity::Q;
+
+pub struct G<const L: i32> { pub v: f64; }
+pub const NEG: G<-1> = G { v: 2.0 };
+pub fn local() -> f64 { NEG.v }
+
+#[literal(number "ms")]
+pub const fn milliseconds(n: f64) -> f64 { n * 1e-3 }

@@ -1,0 +1,76 @@
+// needs: posix-fs
+// only-os: macos linux
+// expect-exit: 0
+// expect-stdout:
+// 640 false 640 600
+// created: 600
+// set: 444 true 644
+// raw: 600 seen
+// truncated: 0
+// nofollow: FilesystemLoop
+// custom: InvalidInput
+// custom says: os.custom_flags sets O_TRUNC, which File::open_or_create decides: use File::create instead, or DirExt::open_at for raw flags
+
+// Unix permission bits and raw open(2) live in `std::os::unix::fs`:
+// `PermissionsExt` on `Permissions`, the create mode as
+// `CreateFlags.permissions`, `DirExt::open_at` with the `O_*` flags, and
+// `OsCreateFlags.custom_flags` refusing the bits the function decides.
+use std::fs;
+use std::fs::{CreateFlags, Dir, File, OpenFlags, Permissions};
+use std::os::unix::fs::{DirExt, OsCreateFlags, PermissionsExt, O_CREAT, O_TRUNC, O_WRONLY};
+use core::io::IoError;
+use std::env;
+
+fn mode_of(p: str) throws (IoError) -> u32 {
+    (try fs::metadata(p)).permissions().mode() & 0o777u32
+}
+
+fn main() throws (IoError) {
+    let p = Permissions::from_mode(0o100640u32);
+    let q = p;
+    q.set_mode(0o600u32);
+    let w = p;
+    w.set_readonly(false);
+    println(f"{p.mode():o} {p.readonly()} {w.mode() & 0o777u32:o} {q.mode():o}");
+
+    let dir = env::temp_dir() / "nabi_unix_fs_ext";
+    try fs::remove_dir_all(dir) catch _ {};
+    try fs::create_dir(dir);
+    let a = dir / "a";
+    using f = try File::open_or_create(a, CreateFlags { permissions: Permissions::from_mode(0o600u32) }) {}
+    println(f"created: {try mode_of(a.as_str()):o}");
+
+    // set_readonly(true) clears every write bit; false adds the owner's only.
+    let r = Permissions::from_mode(0o644u32);
+    r.set_readonly(true);
+    try fs::set_permissions(a, r);
+    let ro = try mode_of(a.as_str());
+    r.set_readonly(false);
+    try Dir::root().set_permissions(a, r);
+    println(f"set: {ro:o} {!(try fs::metadata(a)).permissions().readonly() && ro == 0o444u32} {try mode_of(a.as_str()):o}");
+
+    using g = try Dir::root().open_at(dir / "b", O_WRONLY | O_CREAT, 0o600u32) {
+        try g.write_all("seen");
+    }
+    println(f"raw: {try mode_of((dir / "b").as_str()):o} {try fs::read_to_str(dir / "b")}");
+    // Truncate an existing file without creating one: the raw layer only.
+    using t = try Dir::root().open_at(dir / "b", O_WRONLY | O_TRUNC) {}
+    println(f"truncated: {(try fs::metadata(dir / "b")).len()}");
+
+    try fs::symlink("b", dir / "link");
+    let nofollow = try File::open(dir / "link", ReadOnly, OpenFlags { follow_symlinks: false }) catch e {
+        println(f"nofollow: {e.kind():?}");
+        try File::open(dir / "b")
+    };
+    try nofollow.close();
+
+    let bad = CreateFlags { os: OsCreateFlags { custom_flags: O_TRUNC } };
+    let opened = try File::open_or_create(a, bad) catch e {
+        println(f"custom: {e.kind():?}");
+        println(f"custom says: {e.message().replace(a.as_str() + ": ", "")}");
+        try fs::remove_dir_all(dir);
+        return;
+    };
+    try opened.close();
+    try fs::remove_dir_all(dir);
+}

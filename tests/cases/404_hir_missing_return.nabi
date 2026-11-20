@@ -1,0 +1,8 @@
+// A missing return in a non-unit function is an error.
+// expect-error: can finish without returning a value
+
+fn f(a: i32) -> i32 {
+    if a > 0 { return 1; }
+}
+
+fn main() -> i32 { return f(0); }

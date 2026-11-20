@@ -1,0 +1,83 @@
+// expect-error: error[E0105]: `ys` shares `xs`, which was moved into the `Mutex` at line 28
+// expect-error: handoff_alias_errors.nabi:29:5: `ys` shares `xs`, which was moved into the `Mutex` at line 28
+// expect-error: help: it belongs to the `Mutex` now; use it through the lock: `using g = _m.lock() { g.get().len() }`, or hand over `xs.clone()` to keep a separate copy
+// expect-error: handoff_alias_errors.nabi:36:5: `xs` shares `ys`, which was moved into the `Mutex` at line 35
+// expect-error: handoff_alias_errors.nabi:42:5: `s.items` was moved into the `Mutex` at line 41
+// expect-error: handoff_alias_errors.nabi:49:5: `xs` shares `s`, which was moved into the `Mutex` at line 48
+// expect-error: handoff_alias_errors.nabi:56:5: `ys` shares `s`, which was moved into the `Mutex` at line 55
+// expect-error: handoff_alias_errors.nabi:63:5: `f` shares `xs`, which was moved into the `Mutex` at line 62
+// expect-error: handoff_alias_errors.nabi:72:5: `xs` shares `all`, which was moved into the `Mutex` at line 71
+// expect-error: handoff_alias_errors.nabi:82:5: `t.items` shares `s`, which was moved into the `Mutex` at line 81
+
+// Every handle to a handed-off object is gone, not just the passed local.
+
+struct Bag {
+    items: List<i32>;
+    n: i64;
+}
+
+fn main() {
+    let a = copied() + copy_handed() + field() + through_struct() + field_of_handed();
+    let b = captured() + in_list() + copy_field_kept();
+    println(f"{a} {b}");
+}
+
+fn copied() -> i64 {
+    let xs: List<i32> = [1];
+    let ys = xs;
+    let _m = Mutex::new(xs);
+    ys.len() as i64
+}
+
+fn copy_handed() -> i64 {
+    let xs: List<i32> = [1];
+    let ys = xs;
+    let _m = Mutex::new(ys);
+    xs.len() as i64
+}
+
+fn field() -> i64 {
+    let s = Bag { items: [1], n: 1 };
+    let _m = Mutex::new(s.items);
+    s.items.len() as i64
+}
+
+fn through_struct() -> i64 {
+    let xs: List<i32> = [1, 2];
+    let s = Bag { items: xs, n: 0 };
+    let _m = Mutex::new(s);
+    xs.len() as i64
+}
+
+fn field_of_handed() -> i64 {
+    let s = Bag { items: [1], n: 0 };
+    let ys = s.items;
+    let _m = Mutex::new(s);
+    ys.len() as i64
+}
+
+fn captured() -> i64 {
+    let xs: List<i32> = [1];
+    let f = || xs.len() as i64;
+    let _m = Mutex::new(xs);
+    f()
+}
+
+// A list handed over takes its items along.
+fn in_list() -> i64 {
+    let xs: List<i32> = [1];
+    let all: List<List<i32>> = [];
+    all.push(xs);
+    let _m = Mutex::new(all);
+    xs.len() as i64
+}
+
+// A copy's other fields still share the original's after one of its
+// fields gets a new value.
+fn copy_field_kept() -> i64 {
+    let s = Bag { items: [1], n: 0 };
+    let t = s;
+    t.n = 5;
+    let _m = Mutex::new(s);
+    t.items.len() as i64
+}

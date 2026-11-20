@@ -1,0 +1,4 @@
+// expect-error: must return `()` or `i32`
+
+// `fn main` returns `()` or `i32` (exit code) only.
+fn main() -> u8 { return 200u8; }

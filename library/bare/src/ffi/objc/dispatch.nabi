@@ -1,0 +1,46 @@
+//! bare::ffi::objc::dispatch - Grand Central Dispatch: run a closure on
+//! the main queue or a global one, through a `Block`.
+
+use bare::ffi::objc::Block;
+use bare::mem::transmute_unchecked;
+use bare::ptr::CPtr;
+
+extern "C" {
+    // The main queue: data, named as a function only for its address.
+    fn _dispatch_main_q();
+    fn dispatch_get_global_queue(identifier: isize, flags: usize) -> CPtr<u8>;
+    #[link_name = "dispatch_async"]
+    fn dispatch_async_raw(queue: CPtr<u8>, block: CPtr<u8>);
+}
+
+/// A dispatch queue (`dispatch_queue_t`).
+pub struct Queue {
+    p: CPtr<u8>;
+}
+
+impl Clone for Queue {
+    const fn clone(self) -> Queue { self }
+}
+
+impl Copy for Queue {}
+
+impl Queue {
+    /// The main thread's queue: its blocks run from the main run loop
+    /// (`NSApplication::run`, `dispatch_main`).
+    pub fn main() -> Queue {
+        let q: unsafe extern "C" fn() = _dispatch_main_q;
+        Queue { p: CPtr::from_addr(unsafe { transmute_unchecked(q) }) }
+    }
+
+    /// The global concurrent queue of default quality of service.
+    pub fn global() -> Queue { Queue { p: unsafe { dispatch_get_global_queue(0, 0) } } }
+
+    /// The queue, for a C parameter of type `dispatch_queue_t`.
+    pub fn as_raw(self) -> CPtr<u8> { self.p }
+}
+
+/// Run `block` on `queue` later (`dispatch_async`); the queue keeps the
+/// block until it ran.
+pub fn dispatch_async(queue: Queue, block: Block<fn()>) {
+    unsafe { dispatch_async_raw(queue.p, block.as_raw()) }
+}

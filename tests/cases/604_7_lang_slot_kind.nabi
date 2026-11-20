@@ -1,0 +1,8 @@
+// expect-error: 5:1: `twice` does not match the form of lang slot `iterator_trait`: it goes on a trait
+
+// A `_trait` slot goes on a trait declaration,
+// a `_fn` slot on a function, and so on.
+#[lang("iterator_trait")]
+fn twice(x: i32) -> i32 { x * 2 }
+
+println("unreached");

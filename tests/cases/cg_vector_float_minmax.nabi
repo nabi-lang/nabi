@@ -1,0 +1,339 @@
+// Float min / max reductions and maps, vectorized (`-O2`), give the
+// scalar loop's bits for every input: NaNs (quiet, signaling, either
+// sign), zeros of both signs, infinities, subnormals, every length from
+// 0 to 33 and every start, from every accumulator. The references read
+// their elements through an index list, which keeps them scalar.
+// expect-exit: 0
+// expect-stdout:
+// cases 110160 bad 0
+// maps 37026 bad 0
+// long -1 2.5 inf 0 bad 0
+
+fn mn(xs: List<f64>, a: usize, m: f64) -> f64 {
+    let m = m;
+    for x in xs[a:] {
+        m = m.min(x);
+    }
+    m
+}
+
+fn mx(xs: List<f64>, a: usize, m: f64) -> f64 {
+    let m = m;
+    for x in xs[a:] {
+        m = x.max(m);
+    }
+    m
+}
+
+fn mn_lt(xs: List<f64>, a: usize, m: f64) -> f64 {
+    let m = m;
+    for x in xs[a:] {
+        if x < m {
+            m = x;
+        }
+    }
+    m
+}
+
+fn mx_ge(xs: List<f64>, a: usize, m: f64) -> f64 {
+    let m = m;
+    for x in xs[a:] {
+        m = if m >= x { m } else { x };
+    }
+    m
+}
+
+fn mn32(xs: List<f32>, a: usize, m: f32) -> f32 {
+    let m = m;
+    for x in xs[a:] {
+        m = x.min(m);
+    }
+    m
+}
+
+fn mx32(xs: List<f32>, a: usize, m: f32) -> f32 {
+    let m = m;
+    for x in xs[a:] {
+        m = m.max(x);
+    }
+    m
+}
+
+fn mx32_gt(xs: List<f32>, a: usize, m: f32) -> f32 {
+    let m = m;
+    for x in xs[a:] {
+        if x > m {
+            m = x;
+        }
+    }
+    m
+}
+
+fn mn32_le(xs: List<f32>, a: usize, m: f32) -> f32 {
+    let m = m;
+    for x in xs[a:] {
+        if x <= m {
+            m = x;
+        }
+    }
+    m
+}
+
+fn both(xs: List<f64>, a: usize, lo: f64, hi: f64) -> f64 {
+    let lo = lo;
+    let hi = hi;
+    for x in xs[a:] {
+        lo = lo.min(x);
+        hi = hi.max(x);
+    }
+    hi - lo
+}
+
+fn rmn(xs: List<f64>, ix: List<usize>, a: usize, n: usize, m: f64) -> f64 {
+    let m = m;
+    for k in a..n {
+        m = m.min(xs[ix[k]]);
+    }
+    m
+}
+
+fn rmx(xs: List<f64>, ix: List<usize>, a: usize, n: usize, m: f64) -> f64 {
+    let m = m;
+    for k in a..n {
+        m = xs[ix[k]].max(m);
+    }
+    m
+}
+
+fn rmn_lt(xs: List<f64>, ix: List<usize>, a: usize, n: usize, m: f64) -> f64 {
+    let m = m;
+    for k in a..n {
+        let x = xs[ix[k]];
+        if x < m {
+            m = x;
+        }
+    }
+    m
+}
+
+fn rmx_ge(xs: List<f64>, ix: List<usize>, a: usize, n: usize, m: f64) -> f64 {
+    let m = m;
+    for k in a..n {
+        let x = xs[ix[k]];
+        m = if m >= x { m } else { x };
+    }
+    m
+}
+
+fn rmn32(xs: List<f32>, ix: List<usize>, a: usize, n: usize, m: f32) -> f32 {
+    let m = m;
+    for k in a..n {
+        m = xs[ix[k]].min(m);
+    }
+    m
+}
+
+fn rmx32(xs: List<f32>, ix: List<usize>, a: usize, n: usize, m: f32) -> f32 {
+    let m = m;
+    for k in a..n {
+        m = m.max(xs[ix[k]]);
+    }
+    m
+}
+
+fn rmx32_gt(xs: List<f32>, ix: List<usize>, a: usize, n: usize, m: f32) -> f32 {
+    let m = m;
+    for k in a..n {
+        let x = xs[ix[k]];
+        if x > m {
+            m = x;
+        }
+    }
+    m
+}
+
+fn rmn32_le(xs: List<f32>, ix: List<usize>, a: usize, n: usize, m: f32) -> f32 {
+    let m = m;
+    for k in a..n {
+        let x = xs[ix[k]];
+        if x <= m {
+            m = x;
+        }
+    }
+    m
+}
+
+fn rboth(xs: List<f64>, ix: List<usize>, a: usize, n: usize, lo: f64, hi: f64) -> f64 {
+    let lo = lo;
+    let hi = hi;
+    for k in a..n {
+        let x = xs[ix[k]];
+        lo = lo.min(x);
+        hi = hi.max(x);
+    }
+    hi - lo
+}
+
+fn map_mn(ys: List<f64>, xs: List<f64>, zs: List<f64>) {
+    let n = ys.len().min(xs.len()).min(zs.len());
+    for i in 0..n {
+        ys[i] = xs[i].min(zs[i]);
+    }
+}
+
+fn map_mx32(ys: List<f32>, xs: List<f32>, zs: List<f32>) {
+    let n = ys.len().min(xs.len()).min(zs.len());
+    for i in 0..n {
+        ys[i] = zs[i].max(xs[i]);
+    }
+}
+
+// Equal bits, but for a NaN's quiet bit: on i686 a float a call
+// returns passes the x87 stack, which quiets a signaling NaN.
+fn same(a: f64, b: f64) -> bool {
+    let k = if a.is_nan() { 0xfff7ffffffffffffu64 } else { 0xffffffffffffffffu64 };
+    let x = a.to_bits() & k;
+    let y = b.to_bits() & k;
+    x == y
+}
+
+fn same32(a: f32, b: f32) -> bool {
+    let k = if a.is_nan() { 0xffbfffffu32 } else { 0xffffffffu32 };
+    let x = a.to_bits() & k;
+    let y = b.to_bits() & k;
+    x == y
+}
+
+fn main() -> i32 {
+    let special: List<u64> = [
+        0u64, 0x8000000000000000u64, 0x7ff0000000000000u64, 0xfff0000000000000u64,
+        0x7ff8000000000000u64, 0xfff8000000000000u64, 0x7ff0000000000001u64,
+        0xfff0000000000001u64, 0x7ff8000000000123u64, 1u64, 0x8000000000000001u64,
+        0x7fefffffffffffffu64, 0xffefffffffffffffu64, 0x3ff0000000000000u64,
+        0xbff0000000000000u64,
+    ];
+    let special32: List<u32> = [
+        0u32, 0x80000000u32, 0x7f800000u32, 0xff800000u32, 0x7fc00000u32, 0xffc00000u32,
+        0x7f800001u32, 0xff800001u32, 0x7fc00123u32, 1u32, 0x80000001u32, 0x7f7fffffu32,
+        0xff7fffffu32, 0x3f800000u32, 0xbf800000u32,
+    ];
+    let plain: List<f64> = [2.5, -7.25, 3.0, 1.0e-300, -1.0e300, 0.5, -0.5, 42.0];
+    let n_max: usize = 36;
+    let ix: List<usize> = List::filled(5000, 0usize);
+    for i in 0..5000 {
+        ix[i] = i;
+    }
+    let xs: List<f64> = List::filled(n_max, 0.0);
+    let fs: List<f32> = List::filled(n_max, 0.0f32);
+    let seed: u64 = 12345;
+    let cases = 0;
+    let bad = 0;
+    for trial in 0..30 {
+        // Specials more and more rare: from every element one to none.
+        let rate: u64 = [1u64, 2u64, 4u64, 16u64, 1000u64][trial % 5];
+        for n in 0..34 {
+            for i in 0..n_max {
+                seed = seed.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+                let r = seed >> 33;
+                if r % rate == 0 {
+                    let k = ((r >> 8) % 15u64) as usize;
+                    xs[i] = f64::from_bits(special[k]);
+                    fs[i] = f32::from_bits(special32[k]);
+                } else {
+                    let v = plain[((r >> 8) % 8u64) as usize] * (((r >> 12) % 5u64) as f64 + 1.0);
+                    xs[i] = v;
+                    fs[i] = v as f32;
+                }
+            }
+            for a in 0..3 {
+                let len = n + a;
+                if len > n_max {
+                    continue;
+                }
+                for s in 0..4 {
+                    let m: f64 = [1.0 / 0.0, -1.0 / 0.0, 0.0, f64::from_bits(special[(trial + s) % 15])][s];
+                    let m32 = m as f32;
+                    let yl: List<f64> = List::filled(len, 0.0);
+                    let gl: List<f32> = List::filled(len, 0.0f32);
+                    for i in 0..len {
+                        yl[i] = xs[ix[i]];
+                        gl[i] = fs[ix[i]];
+                    }
+                    cases += 9;
+                    if !same(mn(yl, a, m), rmn(yl, ix, a, len, m)) { bad += 1; }
+                    if !same(mx(yl, a, m), rmx(yl, ix, a, len, m)) { bad += 1; }
+                    if !same(mn_lt(yl, a, m), rmn_lt(yl, ix, a, len, m)) { bad += 1; }
+                    if !same(mx_ge(yl, a, m), rmx_ge(yl, ix, a, len, m)) { bad += 1; }
+                    if !same32(mn32(gl, a, m32), rmn32(gl, ix, a, len, m32)) { bad += 1; }
+                    if !same32(mx32(gl, a, m32), rmx32(gl, ix, a, len, m32)) { bad += 1; }
+                    if !same32(mx32_gt(gl, a, m32), rmx32_gt(gl, ix, a, len, m32)) { bad += 1; }
+                    if !same32(mn32_le(gl, a, m32), rmn32_le(gl, ix, a, len, m32)) { bad += 1; }
+                    if !same(both(yl, a, m, -m), rboth(yl, ix, a, len, m, -m)) { bad += 1; }
+                }
+            }
+        }
+    }
+    println(f"cases {cases} bad {bad}");
+    // Maps: every element its own.
+    let maps = 0;
+    let mbad = 0;
+    for n in 0..34 {
+        for t in 0..66 {
+            let a: List<f64> = List::filled(n, 0.0);
+            let b: List<f64> = List::filled(n, 0.0);
+            let c: List<f64> = List::filled(n, 9.0);
+            let a32: List<f32> = List::filled(n, 0.0f32);
+            let b32: List<f32> = List::filled(n, 0.0f32);
+            let c32: List<f32> = List::filled(n, 9.0f32);
+            for i in 0..n {
+                seed = seed.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+                let r = seed >> 33;
+                let k = (r % 15u64) as usize;
+                let j = ((r >> 8) % 15u64) as usize;
+                if t % 3 == 0 {
+                    a[i] = f64::from_bits(special[k]);
+                    b[i] = f64::from_bits(special[j]);
+                    a32[i] = f32::from_bits(special32[k]);
+                    b32[i] = f32::from_bits(special32[j]);
+                } else {
+                    a[i] = plain[k % 8];
+                    b[i] = plain[j % 8];
+                    a32[i] = plain[k % 8] as f32;
+                    b32[i] = plain[j % 8] as f32;
+                }
+            }
+            map_mn(c, a, b);
+            map_mx32(c32, a32, b32);
+            for i in 0..n {
+                maps += 1;
+                if !same(c[i], a[ix[i]].min(b[ix[i]])) { mbad += 1; }
+                if !same32(c32[i], b32[ix[i]].max(a32[ix[i]])) { mbad += 1; }
+            }
+        }
+    }
+    println(f"maps {maps} bad {mbad}");
+    // Long: past a strip, zeros and NaNs late.
+    let big: List<f64> = List::filled(5000, 2.5);
+    big[4321] = -1.0;
+    let lo = mn(big, 0, 1.0 / 0.0);
+    let hi = mx(big, 0, -1.0 / 0.0);
+    big[4999] = 0.0 / 0.0;
+    big[100] = 1.0 / 0.0;
+    let hi2 = mx(big, 0, 0.0);
+    big[4321] = 2.5;
+    big[3000] = -0.0;
+    big[3001] = 0.0;
+    big[3500] = 0.0 / 0.0;
+    let lb = 0;
+    for a in 0..3 {
+        for m in [5.0, 0.0, -0.0, 0.0 / 0.0] {
+            if !same(mn(big, a, m), rmn(big, ix, a, 5000, m)) { lb += 1; }
+            if !same(mx(big, a, m), rmx(big, ix, a, 5000, m)) { lb += 1; }
+            if !same(mn_lt(big, a, m), rmn_lt(big, ix, a, 5000, m)) { lb += 1; }
+        }
+    }
+    let zs = 0;
+    if mn(big, 0, 5.0) == 0.0 { zs = 0; }
+    println(f"long {lo} {hi} {hi2} {zs} bad {lb}");
+    return 0;
+}

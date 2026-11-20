@@ -1,0 +1,30 @@
+// expect-exit: 1
+// expect-stderr: error: `main` returned an uncaught error: oops
+// expect-stderr: --> tests/cases/async_main_throws.nabi:22:1
+// expect-stderr: raised at tests/cases/async_main_throws.nabi:18:16
+// expect-stdout:
+// step 0
+// step 1
+// step 2
+
+// `async fn main() throws`: an error escaping it exits 1.
+struct Oops {}
+impl Display for Oops { fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("oops") } }
+impl Debug for Oops { fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Oops") } }
+impl Error for Oops {}
+
+async fn step(n: i32) throws (Oops) -> i32 {
+    await task::sleep(Duration::ms(1));
+    if n > 2 { throw Oops {}; }
+    n
+}
+
+async fn main() throws (Oops) {
+    let i = 0;
+    while true {
+        let v = try await step(i);
+        println(f"step {v}");
+        i = i + 1;
+    }
+}
+

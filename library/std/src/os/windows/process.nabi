@@ -1,0 +1,14 @@
+//! std::os::windows::process: Windows-only parts of `process`.
+
+use core::io::IoError;
+use std::process::install_handler;
+
+/// `SIGBREAK` in the CRT numbering the runtime routes by.
+const CTRL_BREAK: i32 = 21;
+
+/// Call `handler` (on the `nabi-signal` thread) each time the console
+/// sends Ctrl-Break; a later call replaces it. Ctrl-C and console close
+/// are `process::on_signal(Signal::Interrupt / Signal::Hangup, ..)`.
+pub fn on_ctrl_break(handler: fn() + Send + Sync) throws (IoError) {
+    try install_handler(CTRL_BREAK, handler);
+}

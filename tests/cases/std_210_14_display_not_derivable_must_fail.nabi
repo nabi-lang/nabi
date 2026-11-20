@@ -1,0 +1,8 @@
+// expect-error: cannot derive `Display` for `P`
+
+// Of the fmt traits only `Debug` derives; `Display` is
+// written by hand.
+#[derive(Debug, Display)]
+struct P { x: i32; }
+
+fn main() {}

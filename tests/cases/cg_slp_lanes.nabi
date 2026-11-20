@@ -1,0 +1,149 @@
+// Straight-line lanes as vectors (`-O2`): four adjacent stores of one
+// tree of operations each, floats rounding lane by lane as written (no
+// fused multiply-add, no reassociation, NaN and signed zeros kept),
+// wrapping integers, a row read one element ahead of the row written,
+// two views of one buffer, and a struct of numbers built from lanes.
+// expect-exit: 0
+// expect-stdout:
+// axpy 1 0.85 0.8 1666666666666667.3 1428571428571429 NaN 0 0.7000000000000001
+// late 1 1.35 1.475 1666666666666668 2261904761904763
+// mix 0.014285716 0.041666668 0.037037037 -0.9666667
+// wrap -2147483589 -2147483616 -2147483627 2147483642
+// shift 2.35 2.475 1666666666666669 2261904761904764 2261904761904763
+// views 2.35 4.7 9.4
+// pair 0.00000000000000005551115123125783 2.0999999999999996
+// gather 3.8666666 6.0499997 -inf 10.333333
+
+use bare::mem::GcBuf;
+use core::hint::black_box;
+
+struct P2 { x: f64; y: f64; }
+struct Q { x: f32; y: f32; z: f32; w: f32; }
+
+// A struct of four lanes, each from adjacent elements of two buffers.
+fn gather(qs: List<Q>, b: GcBuf<f32>, c: GcBuf<f32>, i: usize, s: f32) {
+    unsafe {
+        let q = Q {
+            x: b.get(i) * s - c.get(i),
+            y: b.get(i + 1) * s - c.get(i + 1),
+            z: b.get(i + 2) * s - c.get(i + 2),
+            w: b.get(i + 3) * s - c.get(i + 3),
+        };
+        qs[0] = q;
+        qs[2] = q;
+    }
+}
+
+fn axpy4(c: GcBuf<f64>, b: GcBuf<f64>, co: usize, bo: usize, x: f64) {
+    unsafe {
+        let (b0, b1, b2, b3) = (b.get(bo), b.get(bo + 1), b.get(bo + 2), b.get(bo + 3));
+        c.set(co, c.get(co) + x * b0);
+        c.set(co + 1, c.get(co + 1) + x * b1);
+        c.set(co + 2, c.get(co + 2) + x * b2);
+        c.set(co + 3, c.get(co + 3) + x * b3);
+    }
+}
+
+// Each lane's load of b after the store before it: b may be c.
+fn axpy4_late(c: GcBuf<f64>, b: GcBuf<f64>, co: usize, bo: usize, x: f64) {
+    unsafe {
+        c.set(co, c.get(co) + x * b.get(bo));
+        c.set(co + 1, c.get(co + 1) + x * b.get(bo + 1));
+        c.set(co + 2, c.get(co + 2) + x * b.get(bo + 2));
+        c.set(co + 3, c.get(co + 3) + x * b.get(bo + 3));
+    }
+}
+
+fn mix32(c: GcBuf<f32>, a: f32, b: f32, d: f32, e: f32, s: f32) {
+    unsafe {
+        c.set(0, (c.get(0) - a) / s);
+        c.set(1, (c.get(1) - b) / s);
+        c.set(2, (c.get(2) - d) / s);
+        c.set(3, (c.get(3) - e) / s);
+    }
+}
+
+fn wrap(c: GcBuf<i32>, k: i32) {
+    unsafe {
+        c.set(4, c.get(4).wrapping_mul(k) ^ 7);
+        c.set(5, c.get(5).wrapping_mul(k) ^ 7);
+        c.set(6, c.get(6).wrapping_mul(k) ^ 7);
+        c.set(7, c.get(7).wrapping_mul(k) ^ 7);
+    }
+}
+
+// c[i] = c[i + 1] + 1: each lane reads the old value of the next.
+fn shift(c: GcBuf<f64>) {
+    unsafe {
+        c.set(0, c.get(1) + 1.0);
+        c.set(1, c.get(2) + 1.0);
+        c.set(2, c.get(3) + 1.0);
+        c.set(3, c.get(4) + 1.0);
+    }
+}
+
+// Two names of one buffer: y's stores are what x reads next.
+fn views(x: GcBuf<f64>, y: GcBuf<f64>) {
+    unsafe {
+        y.set(1, x.get(0) * 2.0);
+        y.set(2, x.get(1) * 2.0);
+    }
+}
+
+fn pair(a: P2, b: P2, s: f64) -> P2 {
+    P2 { x: a.x * s - b.x, y: a.y * s - b.y }
+}
+
+fn show(c: GcBuf<f64>, n: usize) -> str {
+    let out = "";
+    unsafe { for i in 0..n { out = f"{out} {c.get(i)}"; } }
+    out
+}
+
+fn main() -> i32 {
+    let c: GcBuf<f64> = unsafe { GcBuf::new(8) };
+    let b: GcBuf<f64> = unsafe { GcBuf::new(8) };
+    unsafe {
+        for i in 0..8 {
+            c.set(i, 0.1 * i as f64);
+            b.set(i, 1.0 / (i as f64 + 3.0));
+        }
+        b.set(5, black_box(f64::NAN));
+        c.set(6, black_box(-0.0));
+        b.set(6, black_box(0.0));
+    }
+    axpy4(c, b, 0, 0, black_box(3.0));
+    axpy4(c, b, 3, 3, black_box(1e16));
+    println(f"axpy{show(c, 8)}");
+    axpy4_late(c, c, 1, 0, black_box(0.5));
+    println(f"late{show(c, 5)}");
+    let f: GcBuf<f32> = unsafe { GcBuf::new(4) };
+    unsafe { for i in 0..4 { f.set(i, 1.0 / (i as f32 + 7.0)); } }
+    mix32(f, 0.1, black_box(-0.0), 1e-30, 3.0, black_box(3.0));
+    let fs = unsafe { f"{f.get(0)} {f.get(1)} {f.get(2)} {f.get(3)}" };
+    println(f"mix {fs}");
+    let w: GcBuf<i32> = unsafe { GcBuf::new(8) };
+    unsafe { for i in 0..8 { w.set(i, 2147483600i32.wrapping_add(i as i32 * 7)); } }
+    wrap(w, black_box(-3));
+    let ws = unsafe { f"{w.get(4)} {w.get(5)} {w.get(6)} {w.get(7)}" };
+    println(f"wrap {ws}");
+    shift(c);
+    println(f"shift{show(c, 5)}");
+    views(c, c);
+    println(f"views{show(c, 3)}");
+    let p = pair(P2 { x: black_box(0.1), y: 0.7 }, P2 { x: 0.3, y: black_box(1e-17) }, 3.0);
+    println(f"pair {p.x} {p.y}");
+    let qs: List<Q> = List::filled(4, Q { x: 0.0, y: 0.0, z: 0.0, w: 0.0 });
+    let g: GcBuf<f32> = unsafe { GcBuf::new(8) };
+    let h: GcBuf<f32> = unsafe { GcBuf::new(8) };
+    unsafe {
+        for i in 0..8 {
+            g.set(i, i as f32 * 0.7);
+            h.set(i, 1.0 / (i as f32 + 1.0));
+        }
+        h.set(4, black_box(f32::INFINITY));
+    }
+    gather(qs, g, h, 2, black_box(3.0));
+    println(f"gather {qs[0].x} {qs[0].y} {qs[2].z} {qs[2].w}");
+    return 0;
+}

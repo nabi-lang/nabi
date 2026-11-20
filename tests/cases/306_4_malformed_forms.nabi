@@ -1,0 +1,17 @@
+// expect-error: 12:16: expected index expression
+// expect-error: 13:21: expected `]`, found `:`
+// expect-error: 14:11: expected `;`, found `=`
+// expect-error: 15:17: range operators cannot be chained
+
+// Empty brackets and three or more colons are rejected by
+// the parser. Chained assignment `a = b = 1` is not allowed.
+// The range operators are non-associative.
+fn main() -> i32 {
+    let xs = [1, 2];
+    let a = 0;
+    let y = xs[];
+    let z = xs[0:1:1:1];
+    a = a = 1;
+    let r = 1..2..3;
+    return 0;
+}

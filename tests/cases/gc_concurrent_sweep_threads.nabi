@@ -1,0 +1,55 @@
+// needs: threads
+// expect-exit: 0
+// gc-stress: 200
+// run-env: NABIR_GC_CONCURRENT=always
+// run-env: NABIR_GC_YOUNG=2097152
+// expect-stdout:
+// threads 8 ok
+
+// Eight threads store fresh strings at scattered places of large old
+// lists (the snapshot barrier logs one card at a time) while concurrent
+// marks finish, lazy sweeps hand blocks back and allocating threads
+// assist the marker; every value is checked against a shadow count.
+use std::thread;
+
+fn worker(seed: i64) -> i64 {
+    let n: i64 = 4096;
+    let slots: List<str> = [];
+    for i in 0..n { slots.push(f"{seed}:{i}:0"); }
+    let count: List<i64> = List::filled(n as usize, 0);
+    let bad: i64 = 0;
+    let x: i64 = seed * 7919 + 1;
+    for r in 0..20000 {
+        x = (x * 1103515245 + 12345) % 2147483648;
+        let i = (x % n) as usize;
+        count[i] += 1;
+        slots[i] = f"{seed}:{i}:{count[i]}";
+        let junk: List<i64> = [r, r + 1, r + 2];
+        if junk[2] != r + 2 { bad += 1; }
+        if r % 2000 == 0 {
+            for k in 0..n as usize {
+                if slots[k] != f"{seed}:{k}:{count[k]}" { bad += 1; }
+            }
+        }
+    }
+    for k in 0..n as usize {
+        if slots[k] != f"{seed}:{k}:{count[k]}" { bad += 1; }
+    }
+    bad
+}
+
+fn main() -> i32 {
+    let hs: List<thread::JoinHandle<i64>> = [];
+    for t in 0..8 {
+        let seed = t;
+        hs.push(thread::spawn(|| worker(seed)));
+    }
+    let bad: i64 = 0;
+    for h in hs { bad += try! h.join(); }
+    if bad != 0 {
+        println(f"bad {bad}");
+        return 1;
+    }
+    println("threads 8 ok");
+    return 0;
+}

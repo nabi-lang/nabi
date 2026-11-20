@@ -1,0 +1,7 @@
+// expect-error: `int` is a keyword registered with `#[keyword("int")]` and can't be used as a name
+// `int` is the standard library's
+// type keyword in every package, so it can't name a binding.
+fn main() {
+    let int = 4;
+}
+

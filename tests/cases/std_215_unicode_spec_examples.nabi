@@ -1,0 +1,25 @@
+// expect-exit: 0
+// expect-stdout:
+// false true 6 true fi1 가
+// strasse σασ true true
+// 7 3 ["é", "🇰🇷", "👩‍💻"] é🇰🇷
+// ["can't", "stop", "3.14"] ["a", ",", " ", "b"]
+// é 1 true
+
+// The examples of the Unicode text section: normalization, case
+// folding, grapheme clusters and words; `normalize` in a constant too.
+const SHORT: str = "e\u{301}".normalize(Nfc);
+const N: usize = "\u{1F1F0}\u{1F1F7}x".grapheme_count();
+
+fn main() {
+    let a = "caf\u{e9}";
+    let b = "cafe\u{301}";
+    println(a == b, a == b.normalize(Nfc), b.normalize(Nfd).len(), a.is_normalized(Nfc),
+        "ﬁ①".normalize(Nfkc), "\u{1100}\u{1161}".normalize(Nfc));
+    println("Straße".casefold(), "ΣΑΣ".casefold(), "STRASSE".eq_ignore_case("straße"),
+        "Cafe\u{301}".eq_ignore_case("CAFÉ"));
+    let s = "e\u{301}🇰🇷👩\u{200D}💻";
+    println(s.char_count(), s.grapheme_count(), f"{s.graphemes().to_list():?}", s.grapheme_slice(0, 2));
+    println(f"{"can't stop, 3.14!".words().to_list():?}", f"{"a, b".split_word_bounds().to_list():?}");
+    println(SHORT, SHORT.char_count(), N == 2);
+}

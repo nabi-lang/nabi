@@ -1,0 +1,34 @@
+// A nested fn sees no outer variable and is not visible outside its
+// block; a variable and a nested fn of one name in one block conflict.
+// expect-error: 11:17: cannot find value `n`
+// expect-error: 18:5: cannot find function `helper`
+// expect-error: 22:5: `helper` names both a variable and a nested function in this block
+// expect-error: help: a nested function is seen in its whole block, so rename one of them: `let helper2 = ..` or `fn helper2(..)`
+// expect-error: 28:5: nested function `twice` is defined twice in this block
+
+fn outer(n: i32) -> i32 {
+    fn inner() -> i32 {
+        let x = n;
+        x
+    }
+    inner()
+}
+
+fn other() {
+    helper();
+}
+
+fn clash() {
+    let helper = 42;
+    fn helper() {}
+}
+
+fn dup() {
+    fn twice() {}
+    fn twice() {}
+}
+
+fn main() {
+    fn helper() {}
+    helper();
+}

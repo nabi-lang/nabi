@@ -1,0 +1,763 @@
+// Reductions of `Array`: over every element, and along one axis (the
+// `_along` forms, NumPy's `axis=`), which drop that axis. Sums are
+// pairwise. A NaN (an element unequal to itself) propagates through
+// `sum`, `min`, `max`, `mean`, `var`; the `nan` forms leave it out.
+//
+// Every kernel reads one lane: `n` elements of `b` from position `p`,
+// `st` apart.
+
+// Below this many values a run is summed with eight accumulators;
+// above it the run is split in halves. The error is O(eps log2(n / 128))
+// instead of O(eps n) for a plain loop.
+const LEAF: usize = 128;
+
+/// The buffer position `k` steps of `st` past `p`.
+#[inline]
+const fn step_at(p: usize, st: isize, k: usize) -> usize {
+    p.wrapping_add((k as isize).wrapping_mul(st) as usize)
+}
+
+/// Out of line: a panic path is never inlined.
+#[track_caller]
+const fn bad_axis(what: str, axis: usize, n: usize) -> ! {
+    panic(f"{what}: axis {axis} is past the last axis of a rank-{n} array; pass an axis in 0..{n}")
+}
+
+#[track_caller]
+const fn empty_lane(what: str) -> ! {
+    panic(f"{what}: a lane has no elements; reduce an axis of nonzero length, or use `{what}` on a non-empty array")
+}
+
+const fn psum<T: Add<Output = T> + Zero>(b: GcBuf<T>, p: usize, st: isize, n: usize) -> T {
+    if n <= LEAF {
+        return leaf_sum(b, p, st, n);
+    }
+    let h = (n / 2) & !7usize;
+    psum(b, p, st, h) + psum(b, step_at(p, st, h), st, n - h)
+}
+
+const fn leaf_sum<T: Add<Output = T> + Zero>(b: GcBuf<T>, p: usize, st: isize, n: usize) -> T {
+    let z = T::zero();
+    let (a0, a1, a2, a3, a4, a5, a6, a7) = (z, z, z, z, z, z, z, z);
+    let i: usize = 0;
+    unsafe {
+        if st == 1 {
+            while i + 8 <= n {
+                let q = p + i;
+                a0 = a0 + b[q];
+                a1 = a1 + b[q + 1];
+                a2 = a2 + b[q + 2];
+                a3 = a3 + b[q + 3];
+                a4 = a4 + b[q + 4];
+                a5 = a5 + b[q + 5];
+                a6 = a6 + b[q + 6];
+                a7 = a7 + b[q + 7];
+                i += 8;
+            }
+            while i < n {
+                a0 = a0 + b[p + i];
+                i += 1;
+            }
+        } else {
+            let q = p;
+            let s = st as usize;
+            while i + 8 <= n {
+                a0 = a0 + b[q];
+                a1 = a1 + b[q.wrapping_add(s)];
+                a2 = a2 + b[step_at(q, st, 2)];
+                a3 = a3 + b[step_at(q, st, 3)];
+                a4 = a4 + b[step_at(q, st, 4)];
+                a5 = a5 + b[step_at(q, st, 5)];
+                a6 = a6 + b[step_at(q, st, 6)];
+                a7 = a7 + b[step_at(q, st, 7)];
+                q = step_at(q, st, 8);
+                i += 8;
+            }
+            while i < n {
+                a0 = a0 + b[q];
+                q = q.wrapping_add(s);
+                i += 1;
+            }
+        }
+    }
+    let s = (a0 + a1) + (a2 + a3);
+    s + ((a4 + a5) + (a6 + a7))
+}
+
+/// `sum(x - c)` and `sum((x - c)^2)` over the lane, pairwise: the
+/// first is the correction term of the corrected two-pass variance
+/// (Chan, Golub and LeVeque 1983).
+const fn pdev2<T: FloatingPoint>(b: GcBuf<T>, p: usize, st: isize, n: usize, c: T) -> (T, T) {
+    if n <= LEAF {
+        let z = T::zero();
+        let (s1a, s1b, s2a, s2b) = (z, z, z, z);
+        let i: usize = 0;
+        unsafe {
+            while i + 2 <= n {
+                let x = b[step_at(p, st, i)] - c;
+                let y = b[step_at(p, st, i + 1)] - c;
+                s1a = s1a + x;
+                s1b = s1b + y;
+                s2a = s2a + x * x;
+                s2b = s2b + y * y;
+                i += 2;
+            }
+            if i < n {
+                let x = b[step_at(p, st, i)] - c;
+                s1a = s1a + x;
+                s2a = s2a + x * x;
+            }
+        }
+        return (s1a + s1b, s2a + s2b);
+    }
+    let h = (n / 2) & !7usize;
+    let (a1, a2) = pdev2(b, p, st, h, c);
+    let (b1, b2) = pdev2(b, step_at(p, st, h), st, n - h, c);
+    (a1 + b1, a2 + b2)
+}
+
+const fn lane_prod<T: Mul<Output = T> + One>(b: GcBuf<T>, p: usize, st: isize, n: usize) -> T {
+    let r = T::one();
+    unsafe {
+        for i in 0..n {
+            r = r * b[step_at(p, st, i)];
+        }
+    }
+    r
+}
+
+/// The index of the smallest (`big` false) or largest element, the
+/// first of equals; the first NaN's when one is there and `skip` is
+/// false, else NaN is passed over. `none` when no element counts.
+const fn lane_arg<T: PartialEq + PartialOrd>(b: GcBuf<T>, p: usize, st: isize, n: usize, big: bool, skip: bool) -> usize | none {
+    if n == 0 {
+        return none;
+    }
+    let best: usize = 0;
+    let found = false;
+    let v = unsafe { b[p] };
+    unsafe {
+        for i in 0..n {
+            let x = b[step_at(p, st, i)];
+            if x != x {
+                if skip { continue; }
+                return i;
+            }
+            if !found || (big && x > v) || (!big && x < v) {
+                best = i;
+                v = x;
+                found = true;
+            }
+        }
+    }
+    if found { best } else { none }
+}
+
+const fn lane_mean<T: FloatingPoint>(b: GcBuf<T>, p: usize, st: isize, n: usize) -> T {
+    if n == 0 {
+        return T::NAN;
+    }
+    let nn = T::from_usize(n);
+    let m = psum(b, p, st, n) / nn;
+    if !m.is_finite() {
+        return m;
+    }
+    // One correction pass: the mean of the residuals.
+    let (r, _) = pdev2(b, p, st, n, m);
+    m + r / nn
+}
+
+const fn lane_var<T: FloatingPoint>(b: GcBuf<T>, p: usize, st: isize, n: usize, ddof: usize) -> T {
+    if n <= ddof {
+        return T::NAN;
+    }
+    let m = lane_mean(b, p, st, n);
+    let (s1, s2) = pdev2(b, p, st, n, m);
+    let ss = s2 - s1 * s1 / T::from_usize(n);
+    (if ss < T::zero() { T::zero() } else { ss }) / T::from_usize(n - ddof)
+}
+
+/// The lane's elements that are not NaN, packed into a fresh buffer.
+const fn lane_valid<T: PartialEq>(b: GcBuf<T>, p: usize, st: isize, n: usize) -> (GcBuf<T>, usize) {
+    let out: Array<T, 1> = unsafe { Array::alloc([n]) };
+    let k: usize = 0;
+    unsafe {
+        for i in 0..n {
+            let x = b[step_at(p, st, i)];
+            if x == x {
+                out.buf[k] = x;
+                k += 1;
+            }
+        }
+    }
+    (out.buf, k)
+}
+
+impl<T, const N: usize> Array<T, N> {
+    /// Every element as one lane in row-major order: the array's own
+    /// buffer when it is contiguous or of rank 1, else a contiguous copy.
+    pub(pkg) const fn flat(self) -> (GcBuf<T>, usize, isize, usize) {
+        if self.is_contiguous() {
+            return (self.buf, self.off, 1, self.len());
+        }
+        if N == 1 {
+            return (self.buf, self.off, fused_step(self), self.len());
+        }
+        let c = self.copy();
+        (c.buf, 0, 1, c.len())
+    }
+
+    /// `f` of each lane along `axis`, as an array of the other axes.
+    #[track_caller]
+    pub(pkg) const fn lanes<U>(self, what: str, axis: usize, f: fn(GcBuf<T>, usize, isize, usize) -> U) -> Array<U, { N - 1 }> {
+        if axis >= N {
+            bad_axis(what, axis, N);
+        }
+        let rest: [usize; N - 1] = [0; N - 1];
+        let j: usize = 0;
+        for k in 0..N {
+            if k != axis {
+                rest[j] = self.shape[k];
+                j += 1;
+            }
+        }
+        let out: Array<U, { N - 1 }> = unsafe { Array::alloc(rest) };
+        let m = out.len();
+        let len = self.shape[axis];
+        let st = self.strides[axis];
+        let idx: [usize; N] = [0; N];
+        unsafe {
+            for i in 0..m {
+                out.buf[i] = f(self.buf, self.pos(idx), st, len);
+                let k = N;
+                while k > 0 {
+                    k -= 1;
+                    if k == axis {
+                        continue;
+                    }
+                    idx[k] += 1;
+                    if idx[k] < self.shape[k] {
+                        break;
+                    }
+                    idx[k] = 0;
+                }
+            }
+        }
+        out
+    }
+
+    /// A fresh array of this shape whose lanes along `axis` are `f`'s:
+    /// `f(src, p, st, dst, q, n)` reads the lane at `src[p]` and writes
+    /// the one at `dst[q]` (contiguous along `axis`, step `dst_st`).
+    #[track_caller]
+    pub(pkg) const fn scan<U>(self, what: str, axis: usize, f: fn(GcBuf<T>, usize, isize, GcBuf<U>, usize, isize, usize)) -> Array<U, N> {
+        if axis >= N {
+            bad_axis(what, axis, N);
+        }
+        let out: Array<U, N> = unsafe { Array::alloc(self.shape) };
+        let len = self.shape[axis];
+        let m = if len == 0 { 0 } else { self.len() / len };
+        let st = self.strides[axis];
+        let ost = out.strides[axis];
+        let idx: [usize; N] = [0; N];
+        unsafe {
+            for _ in 0..m {
+                f(self.buf, self.pos(idx), st, out.buf, out.pos(idx), ost, len);
+                let k = N;
+                while k > 0 {
+                    k -= 1;
+                    if k == axis {
+                        continue;
+                    }
+                    idx[k] += 1;
+                    if idx[k] < self.shape[k] {
+                        break;
+                    }
+                    idx[k] = 0;
+                }
+            }
+        }
+        out
+    }
+}
+
+impl<T: Add<Output = T> + Zero, const N: usize> Array<T, N> {
+    /// The sum of every element (`0` when empty), pairwise: runs of
+    /// 128 summed with eight accumulators, halves added, so the float
+    /// error grows with log2 of the count. NumPy: `a.sum()`.
+    ///
+    /// ```nabi
+    /// use core::array::Matrix;
+    ///
+    /// let m: Matrix<f64> = [[1, 2, 3], [4, 5, 6]];
+    /// assert(m.sum() == 21.0);
+    /// ```
+    pub const fn sum(self) -> T {
+        let (b, p, st, n) = self.flat();
+        psum(b, p, st, n)
+    }
+
+    /// The sum of each lane along `axis`; that axis is dropped. Panics
+    /// for an axis past the rank. NumPy: `a.sum(axis=k)`.
+    ///
+    /// ```nabi
+    /// use core::array::Matrix;
+    ///
+    /// let m: Matrix<f64> = [[1, 2, 3], [4, 5, 6]];
+    /// assert(m.sum_along(0).to_list() == [5.0, 7.0, 9.0]);
+    /// assert(m.sum_along(1).to_list() == [6.0, 15.0]);
+    /// ```
+    #[track_caller]
+    pub const fn sum_along(self, axis: usize) -> Array<T, { N - 1 }> {
+        self.lanes("sum_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> T { psum(b, p, st, n) })
+    }
+
+    /// The running sums in row-major order, as a rank-1 array (the
+    /// last is `sum()`). NumPy: `np.cumsum(a)`.
+    ///
+    /// ```nabi
+    /// use core::array::Vector;
+    ///
+    /// let v: Vector<i64> = [1, 2, 3, 4];
+    /// assert(v.cumsum().to_list() == [1, 3, 6, 10]);
+    /// ```
+    pub const fn cumsum(self) -> Array<T, 1> {
+        let (b, p, st, n) = self.flat();
+        let out: Array<T, 1> = unsafe { Array::alloc([n]) };
+        unsafe { run_sum(b, p, st, out.buf, 0, 1, n); }
+        out
+    }
+
+    /// The running sums of each lane along `axis`, same shape. NumPy:
+    /// `np.cumsum(a, axis=k)`.
+    ///
+    /// ```nabi
+    /// use core::array::Matrix;
+    ///
+    /// let m: Matrix<i64> = [[1, 2], [3, 4]];
+    /// assert(m.cumsum_along(0).to_list() == [1, 2, 4, 6]);
+    /// assert(m.cumsum_along(1).to_list() == [1, 3, 3, 7]);
+    /// ```
+    #[track_caller]
+    pub const fn cumsum_along(self, axis: usize) -> Array<T, N> {
+        self.scan("cumsum_along", axis, |b: GcBuf<T>, p: usize, st: isize, o: GcBuf<T>, q: usize, ost: isize, n: usize| {
+            unsafe { run_sum(b, p, st, o, q, ost, n); }
+        })
+    }
+}
+
+const unsafe fn run_sum<T: Add<Output = T> + Zero>(b: GcBuf<T>, p: usize, st: isize, o: GcBuf<T>, q: usize, ost: isize, n: usize) {
+    let s = T::zero();
+    unsafe {
+        for i in 0..n {
+            s = s + b[step_at(p, st, i)];
+            o[step_at(q, ost, i)] = s;
+        }
+    }
+}
+
+const unsafe fn run_prod<T: Mul<Output = T> + One>(b: GcBuf<T>, p: usize, st: isize, o: GcBuf<T>, q: usize, ost: isize, n: usize) {
+    let s = T::one();
+    unsafe {
+        for i in 0..n {
+            s = s * b[step_at(p, st, i)];
+            o[step_at(q, ost, i)] = s;
+        }
+    }
+}
+
+impl<T: Mul<Output = T> + One, const N: usize> Array<T, N> {
+    /// The product of every element (`1` when empty), in row-major
+    /// order. NumPy: `a.prod()`.
+    ///
+    /// ```nabi
+    /// use core::array::Vector;
+    ///
+    /// let v: Vector<i64> = [1, 2, 3, 4];
+    /// assert(v.prod() == 24);
+    /// ```
+    pub const fn prod(self) -> T {
+        let (b, p, st, n) = self.flat();
+        lane_prod(b, p, st, n)
+    }
+
+    /// The product of each lane along `axis`; that axis is dropped.
+    #[track_caller]
+    pub const fn prod_along(self, axis: usize) -> Array<T, { N - 1 }> {
+        self.lanes("prod_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> T { lane_prod(b, p, st, n) })
+    }
+
+    /// The running products in row-major order, as a rank-1 array.
+    /// NumPy: `np.cumprod(a)`.
+    pub const fn cumprod(self) -> Array<T, 1> {
+        let (b, p, st, n) = self.flat();
+        let out: Array<T, 1> = unsafe { Array::alloc([n]) };
+        unsafe { run_prod(b, p, st, out.buf, 0, 1, n); }
+        out
+    }
+
+    /// The running products of each lane along `axis`, same shape.
+    #[track_caller]
+    pub const fn cumprod_along(self, axis: usize) -> Array<T, N> {
+        self.scan("cumprod_along", axis, |b: GcBuf<T>, p: usize, st: isize, o: GcBuf<T>, q: usize, ost: isize, n: usize| {
+            unsafe { run_prod(b, p, st, o, q, ost, n); }
+        })
+    }
+}
+
+impl<T: PartialEq + PartialOrd, const N: usize> Array<T, N> {
+    /// The smallest element; `none` when empty. A NaN anywhere makes
+    /// the result NaN (`nanmin` skips it). NumPy: `a.min()`.
+    ///
+    /// ```nabi
+    /// use core::array::Vector;
+    ///
+    /// let v: Vector<f64> = [3, 1, 2];
+    /// assert((v.min() ?? 0.0) == 1.0 && (v.max() ?? 0.0) == 3.0);
+    /// let e: Vector<f64> = [];
+    /// assert(e.min() is none);
+    /// ```
+    pub const fn min(self) -> T | none {
+        let (b, p, st, n) = self.flat();
+        let i = lane_arg(b, p, st, n, false, false);
+        if let k: usize = i { unsafe { b[step_at(p, st, k)] } } else { none }
+    }
+
+    /// The largest element; `none` when empty. A NaN anywhere makes
+    /// the result NaN (`nanmax` skips it). NumPy: `a.max()`.
+    pub const fn max(self) -> T | none {
+        let (b, p, st, n) = self.flat();
+        let i = lane_arg(b, p, st, n, true, false);
+        if let k: usize = i { unsafe { b[step_at(p, st, k)] } } else { none }
+    }
+
+    /// The smallest element that is not NaN; `none` when there is none.
+    /// NumPy: `np.nanmin(a)`.
+    ///
+    /// ```nabi
+    /// use core::array::Vector;
+    ///
+    /// let v: Vector<f64> = [f64::NAN, 4.0, 2.0];
+    /// assert((v.min() ?? 0.0).is_nan() && (v.nanmin() ?? 0.0) == 2.0);
+    /// ```
+    pub const fn nanmin(self) -> T | none {
+        let (b, p, st, n) = self.flat();
+        let i = lane_arg(b, p, st, n, false, true);
+        if let k: usize = i { unsafe { b[step_at(p, st, k)] } } else { none }
+    }
+
+    /// The largest element that is not NaN; `none` when there is none.
+    pub const fn nanmax(self) -> T | none {
+        let (b, p, st, n) = self.flat();
+        let i = lane_arg(b, p, st, n, true, true);
+        if let k: usize = i { unsafe { b[step_at(p, st, k)] } } else { none }
+    }
+
+    /// The row-major index of the smallest element (the first of
+    /// equals, or of the first NaN); `none` when empty. NumPy:
+    /// `a.argmin()`; `unravel` turns it into an index per axis.
+    ///
+    /// ```nabi
+    /// use core::array::Matrix;
+    ///
+    /// let m: Matrix<i64> = [[4, 1], [0, 9]];
+    /// assert((m.argmin() ?? 9) == 2 && (m.argmax() ?? 9) == 3);
+    /// assert(m.unravel(2) == [1, 0]);
+    /// ```
+    pub const fn argmin(self) -> usize | none {
+        let (b, p, st, n) = self.flat();
+        lane_arg(b, p, st, n, false, false)
+    }
+
+    /// The row-major index of the largest element (the first of equals,
+    /// or of the first NaN); `none` when empty. NumPy: `a.argmax()`.
+    pub const fn argmax(self) -> usize | none {
+        let (b, p, st, n) = self.flat();
+        lane_arg(b, p, st, n, true, false)
+    }
+
+    /// `argmin` over the elements that are not NaN.
+    pub const fn nanargmin(self) -> usize | none {
+        let (b, p, st, n) = self.flat();
+        lane_arg(b, p, st, n, false, true)
+    }
+
+    /// `argmax` over the elements that are not NaN.
+    pub const fn nanargmax(self) -> usize | none {
+        let (b, p, st, n) = self.flat();
+        lane_arg(b, p, st, n, true, true)
+    }
+
+    /// The smallest element of each lane along `axis`; that axis is
+    /// dropped. A lane with a NaN gives NaN. Panics when the axis has
+    /// length 0.
+    ///
+    /// ```nabi
+    /// use core::array::Matrix;
+    ///
+    /// let m: Matrix<i64> = [[4, 1, 7], [0, 9, 2]];
+    /// assert(m.min_along(0).to_list() == [0, 1, 2]);
+    /// assert(m.max_along(1).to_list() == [7, 9]);
+    /// ```
+    #[track_caller]
+    pub const fn min_along(self, axis: usize) -> Array<T, { N - 1 }> {
+        self.lanes("min_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> T { pick(b, p, st, n, false, false, "min_along") })
+    }
+
+    /// The largest element of each lane along `axis`; that axis is
+    /// dropped. A lane with a NaN gives NaN.
+    #[track_caller]
+    pub const fn max_along(self, axis: usize) -> Array<T, { N - 1 }> {
+        self.lanes("max_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> T { pick(b, p, st, n, true, false, "max_along") })
+    }
+
+    /// `min_along` leaving NaN out; a lane of only NaN gives NaN.
+    #[track_caller]
+    pub const fn nanmin_along(self, axis: usize) -> Array<T, { N - 1 }> {
+        self.lanes("nanmin_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> T { pick(b, p, st, n, false, true, "nanmin_along") })
+    }
+
+    /// `max_along` leaving NaN out; a lane of only NaN gives NaN.
+    #[track_caller]
+    pub const fn nanmax_along(self, axis: usize) -> Array<T, { N - 1 }> {
+        self.lanes("nanmax_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> T { pick(b, p, st, n, true, true, "nanmax_along") })
+    }
+
+    /// The index along `axis` of each lane's smallest element.
+    ///
+    /// ```nabi
+    /// use core::array::Matrix;
+    ///
+    /// let m: Matrix<i64> = [[4, 1, 7], [0, 9, 2]];
+    /// assert(m.argmin_along(1).to_list() == [1, 0]);
+    /// assert(m.argmax_along(0).to_list() == [0, 1, 0]);
+    /// ```
+    #[track_caller]
+    pub const fn argmin_along(self, axis: usize) -> Array<usize, { N - 1 }> {
+        self.lanes("argmin_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> usize { pick_at(b, p, st, n, false, "argmin_along") })
+    }
+
+    /// The index along `axis` of each lane's largest element.
+    #[track_caller]
+    pub const fn argmax_along(self, axis: usize) -> Array<usize, { N - 1 }> {
+        self.lanes("argmax_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> usize { pick_at(b, p, st, n, true, "argmax_along") })
+    }
+}
+
+#[track_caller]
+const fn pick<T: PartialEq + PartialOrd>(b: GcBuf<T>, p: usize, st: isize, n: usize, big: bool, skip: bool, what: str) -> T {
+    if n == 0 {
+        empty_lane(what);
+    }
+    let i = lane_arg(b, p, st, n, big, skip) ?? 0;
+    unsafe { b[step_at(p, st, i)] }
+}
+
+#[track_caller]
+const fn pick_at<T: PartialEq + PartialOrd>(b: GcBuf<T>, p: usize, st: isize, n: usize, big: bool, what: str) -> usize {
+    if n == 0 {
+        empty_lane(what);
+    }
+    lane_arg(b, p, st, n, big, false) ?? 0
+}
+
+impl<T, const N: usize> Array<T, N> {
+    /// The index per axis of row-major position `i` (what `argmin`
+    /// gives). Panics when `i` is past the last element. NumPy:
+    /// `np.unravel_index`.
+    #[track_caller]
+    pub const fn unravel(self, i: usize) -> [usize; N] {
+        if i >= self.len() {
+            panic(f"unravel: position {i} is past the {self.len()} elements of shape {self.shape:?}");
+        }
+        let idx: [usize; N] = [0; N];
+        let r = i;
+        let k = N;
+        while k > 0 {
+            k -= 1;
+            idx[k] = r % self.shape[k];
+            r /= self.shape[k];
+        }
+        idx
+    }
+}
+
+impl<T: FloatingPoint, const N: usize> Array<T, N> {
+    /// The mean of every element; NaN when empty. The pairwise sum
+    /// over the count, then one pass adding the mean residual. NumPy:
+    /// `a.mean()`.
+    ///
+    /// ```nabi
+    /// use core::array::Matrix;
+    ///
+    /// let m: Matrix<f64> = [[1, 2, 3], [4, 5, 6]];
+    /// assert(m.mean() == 3.5);
+    /// assert(m.mean_along(0).to_list() == [2.5, 3.5, 4.5]);
+    /// ```
+    pub const fn mean(self) -> T {
+        let (b, p, st, n) = self.flat();
+        lane_mean(b, p, st, n)
+    }
+
+    /// The mean of each lane along `axis`; that axis is dropped.
+    #[track_caller]
+    pub const fn mean_along(self, axis: usize) -> Array<T, { N - 1 }> {
+        self.lanes("mean_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> T { lane_mean(b, p, st, n) })
+    }
+
+    /// The variance, dividing by `n - ddof` (`ddof: 1` for the sample
+    /// variance); NaN when `n <= ddof`. Corrected two-pass. NumPy:
+    /// `a.var(ddof=..)`.
+    ///
+    /// ```nabi
+    /// use core::array::Vector;
+    ///
+    /// let v: Vector<f64> = [2, 4, 4, 4, 5, 5, 7, 9];
+    /// assert(v.var() == 4.0 && v.std() == 2.0);
+    /// assert(v.var(ddof: 1) == 32.0 / 7.0);
+    /// ```
+    pub const fn var(self, ddof: usize = 0) -> T {
+        let (b, p, st, n) = self.flat();
+        lane_var(b, p, st, n, ddof)
+    }
+
+    /// The standard deviation, `sqrt(var(ddof))`.
+    pub const fn std(self, ddof: usize = 0) -> T {
+        self.var(ddof).sqrt()
+    }
+
+    /// The variance of each lane along `axis`; that axis is dropped.
+    #[track_caller]
+    pub const fn var_along(self, axis: usize, ddof: usize = 0) -> Array<T, { N - 1 }> {
+        self.lanes("var_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> T { lane_var(b, p, st, n, ddof) })
+    }
+
+    /// The standard deviation of each lane along `axis`.
+    #[track_caller]
+    pub const fn std_along(self, axis: usize, ddof: usize = 0) -> Array<T, { N - 1 }> {
+        self.lanes("std_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> T { lane_var(b, p, st, n, ddof).sqrt() })
+    }
+
+    /// The sum of the elements that are not NaN (0 when there are
+    /// none). NumPy: `np.nansum(a)`.
+    ///
+    /// ```nabi
+    /// use core::array::Vector;
+    ///
+    /// let v: Vector<f64> = [1.0, f64::NAN, 2.0];
+    /// assert(v.sum().is_nan() && v.nansum() == 3.0 && v.nanmean() == 1.5);
+    /// ```
+    pub const fn nansum(self) -> T {
+        let (b, p, st, n) = self.flat();
+        let (v, k) = lane_valid(b, p, st, n);
+        psum(v, 0, 1, k)
+    }
+
+    /// The mean of the elements that are not NaN; NaN when there are
+    /// none. NumPy: `np.nanmean(a)`.
+    pub const fn nanmean(self) -> T {
+        let (b, p, st, n) = self.flat();
+        let (v, k) = lane_valid(b, p, st, n);
+        lane_mean(v, 0, 1, k)
+    }
+
+    /// `nansum` of each lane along `axis`.
+    #[track_caller]
+    pub const fn nansum_along(self, axis: usize) -> Array<T, { N - 1 }> {
+        self.lanes("nansum_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> T {
+            let (v, k) = lane_valid(b, p, st, n);
+            psum(v, 0, 1, k)
+        })
+    }
+
+    /// `nanmean` of each lane along `axis`.
+    #[track_caller]
+    pub const fn nanmean_along(self, axis: usize) -> Array<T, { N - 1 }> {
+        self.lanes("nanmean_along", axis, |b: GcBuf<T>, p: usize, st: isize, n: usize| -> T {
+            let (v, k) = lane_valid(b, p, st, n);
+            lane_mean(v, 0, 1, k)
+        })
+    }
+}
+
+const fn lane_any(b: GcBuf<bool>, p: usize, st: isize, n: usize) -> bool {
+    unsafe {
+        for i in 0..n {
+            if b[step_at(p, st, i)] { return true; }
+        }
+    }
+    false
+}
+
+const fn lane_all(b: GcBuf<bool>, p: usize, st: isize, n: usize) -> bool {
+    unsafe {
+        for i in 0..n {
+            if !b[step_at(p, st, i)] { return false; }
+        }
+    }
+    true
+}
+
+const fn lane_count(b: GcBuf<bool>, p: usize, st: isize, n: usize) -> usize {
+    let c: usize = 0;
+    unsafe {
+        for i in 0..n {
+            if b[step_at(p, st, i)] { c += 1; }
+        }
+    }
+    c
+}
+
+impl<const N: usize> Array<bool, N> {
+    /// `true` when some element is (`false` when empty). With a dot
+    /// comparison it tests a condition: `(a .> 0.0).any()`.
+    ///
+    /// ```nabi
+    /// use core::array::Vector;
+    ///
+    /// let v: Vector<f64> = [1.0, -2.0, 3.0];
+    /// assert((v .< 0.0).any() && !(v .< 0.0).all() && (v .< 0.0).count() == 1);
+    /// ```
+    pub const fn any(self) -> bool {
+        let (b, p, st, n) = self.flat();
+        lane_any(b, p, st, n)
+    }
+
+    /// `true` when every element is (`true` when empty).
+    pub const fn all(self) -> bool {
+        let (b, p, st, n) = self.flat();
+        lane_all(b, p, st, n)
+    }
+
+    /// The number of `true` elements. NumPy: `np.count_nonzero(a)`.
+    pub const fn count(self) -> usize {
+        let (b, p, st, n) = self.flat();
+        lane_count(b, p, st, n)
+    }
+
+    /// `any` of each lane along `axis`.
+    ///
+    /// ```nabi
+    /// use core::array::Matrix;
+    ///
+    /// let m: Matrix<bool> = [[true, false], [false, false]];
+    /// assert(m.any_along(1).to_list() == [true, false]);
+    /// assert(m.all_along(0).to_list() == [false, false]);
+    /// ```
+    #[track_caller]
+    pub const fn any_along(self, axis: usize) -> Array<bool, { N - 1 }> {
+        self.lanes("any_along", axis, |b: GcBuf<bool>, p: usize, st: isize, n: usize| -> bool { lane_any(b, p, st, n) })
+    }
+
+    /// `all` of each lane along `axis`.
+    #[track_caller]
+    pub const fn all_along(self, axis: usize) -> Array<bool, { N - 1 }> {
+        self.lanes("all_along", axis, |b: GcBuf<bool>, p: usize, st: isize, n: usize| -> bool { lane_all(b, p, st, n) })
+    }
+
+    /// `count` of each lane along `axis`.
+    #[track_caller]
+    pub const fn count_along(self, axis: usize) -> Array<usize, { N - 1 }> {
+        self.lanes("count_along", axis, |b: GcBuf<bool>, p: usize, st: isize, n: usize| -> usize { lane_count(b, p, st, n) })
+    }
+}

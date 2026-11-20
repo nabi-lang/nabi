@@ -1,0 +1,38 @@
+// Counting: `comb` and `perm`, exact as `int`.
+
+/// The number of ways to choose `k` of `n` items without order: `n! /
+/// (k! (n - k)!)`, 0 when `k > n`. Exact, as an `int`. Python:
+/// `math.comb(n, k)`.
+///
+/// ```nabi
+/// use core::num;
+///
+/// assert(num::comb(5, 2) == 10 && num::comb(3, 5) == 0);
+/// assert(num::comb(100, 50) == 100891344545564193334812497256);
+/// assert(num::perm(5, 2) == 20);
+/// ```
+pub const fn comb(n: u64, k: u64) -> int {
+    if k > n {
+        return 0;
+    }
+    let k = k.min(n - k);
+    let r: int = 1;
+    for i in 0..k {
+        // Exact at every step: r holds comb(n, i) times (n - i).
+        r = r * Int::from_u64(n - i) / Int::from_u64(i + 1);
+    }
+    r
+}
+
+/// The number of ordered choices of `k` of `n` items: `n! / (n - k)!`,
+/// 0 when `k > n`. Python: `math.perm(n, k)`.
+pub const fn perm(n: u64, k: u64) -> int {
+    if k > n {
+        return 0;
+    }
+    let r: int = 1;
+    for i in 0..k {
+        r = r * Int::from_u64(n - i);
+    }
+    r
+}

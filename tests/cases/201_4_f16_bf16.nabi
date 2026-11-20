@@ -1,0 +1,113 @@
+// expect-exit: 0
+//
+// `f16` / `bf16`: literals rounded once from the decimal, `as` both
+// ways, arithmetic through `f32`, shortest Display, storage in lists
+// and arrays, constants. The checksums run every 16-bit value into
+// `f32` and back, and a spread of `f32` / `f64` values into both: the
+// same on every target, whether the CPU converts (x86-64 F16C, arm64
+// `fcvt`) or the runtime does.
+// expect-stdout:
+// 1.5 0.1 3.14 -2
+// 1.6 2.25 0.5 -1.5
+// 3e00 2e66 4049 c000
+// 65500 65500 true
+// 2048 2048 300 3.140625 3.140625
+// [1.0, 2.0, 3.0] false true
+// 2e66 1.500
+// [[0.0, 0.0, 0.0], [0.0, 0.0, 4.5]] -0.5 1
+// 2.5 1.0 NaN -inf 0.00006104
+// 4.5 1.414 1.5 0.5 1
+// 1e0 65500.0 0.0001 0.0000001
+// 300 inf 0 0.1 1 -3
+// 3c00 3c01 3f80 3f81 5e81
+// 2 2 2 2
+// ab483b91c8000000 4c2a7b3b78000000 128772
+// bc0435e323ffd4a4 2c1ad8972cbec728 826cf40211cadbd9 a7b88977f433df9
+
+use bare::mem::size_of;
+use core::array::Array;
+use core::hint::black_box;
+
+const H: f16 = -0.5;
+static S: bf16 = 1.0;
+
+fn main() {
+    let a: f16 = 1.5;
+    let b = 0.1f16;
+    let c: bf16 = 3.14;
+    let d = -2bf16;
+    println(f"{a} {b} {c} {d}");
+    println(f"{a + b} {a * a} {a / 3.0} {-a}");
+    println(f"{a.to_bits():x} {b.to_bits():x} {c.to_bits():x} {d.to_bits():x}");
+    let x = 65504.0 as f16;
+    println(f"{x} {f16::MAX} {(x * 2.0).is_infinite()}");
+    let i = 2049 as f16;
+    println(f"{i} {i as i32} {300 as bf16} {c as f32} {c as f64}");
+    let xs: List<f16> = [3.0, 1.0, 2.0];
+    xs.sort_by(f16::total_cmp);
+    println(f"{xs:?} {a < b} {a == 1.5}");
+    let p: f16 = try! "0.1".parse();
+    println(f"{p.to_bits():x} {a:.3}");
+
+    let m: Array<f16, 2> = Array::zeros([2, 3]);
+    m[1, 2] = 4.5;
+    println(f"{m:?} {H} {S}");
+    let o: f16 | none = 2.5;
+    let one: f16 = 1.0;
+    println(f"{o:?} {one:?} {f16::NAN} {-f16::INFINITY} {f16::MIN_POSITIVE}");
+    let t = 1.0f16;
+    t += 0.5;
+    t *= 3.0;
+    println(f"{t} {√(2.0f16)} {7.5f16 % 2.0} {(-7.5f16) %% 2.0} {one.max(f16::NAN)}");
+    println(f"{one:e} {65504f16:?} {0.0001f16} {1e-7f16}");
+    let n: i32 = (300.7f16) as i32;
+    let u = black_box(70000.0f32) as f16;
+    println(f"{n} {u} {(-1.0f16) as u8} {(0.1f16) as bf16} {1u8 as f16} {-3i8 as bf16}");
+
+    // Ties to even, decided by the decimal past `f64`'s digits, and an
+    // `i64` rounded straight to `bf16` (through `f64` it would land on a tie).
+    let t0: f16 = 1.00048828125;
+    let t1: f16 = 1.000488281250000000000000000001;
+    let b0: bf16 = 1.00390625;
+    let b1: bf16 = 1.0039062500000000000000000001;
+    let big = black_box(-4629700416936869889i64) as bf16;
+    println(f"{t0.to_bits():x} {t1.to_bits():x} {b0.to_bits():x} {b1.to_bits():x} {(-big).to_bits():x}");
+    println(f"{f16::from_bits(0x3c00u16) + one} {bf16::from_f32(1.0) + 1.0} {size_of::<f16>()} {size_of::<bf16>()}");
+
+    let s16 = 0u64;
+    let sb = 0u64;
+    let back = 0;
+    for h in 0..65536 {
+        let bits = black_box(h as u16);
+        let x = f16::from_bits(bits);
+        let y = bf16::from_bits(bits);
+        if !x.is_nan() {
+            s16 = s16.wrapping_mul(31u64).wrapping_add(x.to_f32().to_bits() as u64);
+            if (x.to_f32() as f16).to_bits() == bits { back += 1; }
+        }
+        if !y.is_nan() {
+            sb = sb.wrapping_mul(31u64).wrapping_add(y.to_f32().to_bits() as u64);
+            if (y.to_f32() as bf16).to_bits() == bits { back += 1; }
+        }
+    }
+    println(f"{s16:x} {sb:x} {back}");
+    let t16 = 0u64;
+    let tb = 0u64;
+    let u16s = 0u64;
+    let ub = 0u64;
+    let k = 0u32;
+    for _ in 0..200000 {
+        k = k.wrapping_mul(1664525u32).wrapping_add(1013904223u32);
+        let x = f32::from_bits(black_box(k));
+        let d = f64::from_bits(black_box((k as u64) << 32u64 | (k.wrapping_mul(2654435761u32) as u64)));
+        if !x.is_nan() {
+            t16 = t16.wrapping_mul(31u64).wrapping_add(f16::from_f32(x).to_bits() as u64);
+            tb = tb.wrapping_mul(31u64).wrapping_add(bf16::from_f32(x).to_bits() as u64);
+        }
+        if !d.is_nan() {
+            u16s = u16s.wrapping_mul(31u64).wrapping_add((d as f16).to_bits() as u64);
+            ub = ub.wrapping_mul(31u64).wrapping_add((d as bf16).to_bits() as u64);
+        }
+    }
+    println(f"{t16:x} {tb:x} {u16s:x} {ub:x}");
+}

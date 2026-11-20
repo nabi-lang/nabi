@@ -1,0 +1,18 @@
+//! A file, whose close can fail, handed from an async function (compiled
+//! by each dependent) to a function the archive holds.
+
+use std::fs::File;
+
+pub struct Log { f: File }
+
+impl Log {
+    pub fn new(f: File) -> Log { Log { f: f } }
+    pub fn close(self) throws { try self.f.close(); }
+}
+
+async fn create(path: str) throws -> File { try File::create(path) }
+
+pub async fn open(path: str) throws -> Log {
+    let f = try await create(path);
+    Log::new(f)
+}

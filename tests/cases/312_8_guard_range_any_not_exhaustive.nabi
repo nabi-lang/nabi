@@ -1,0 +1,23 @@
+// expect-error: 8:5: non-exhaustive match on `bool`
+// expect-error: 14:5: non-exhaustive match on `u8`
+// expect-error: 19:5: non-exhaustive match on `any`
+
+// Guarded arms never count as a catch-all. Ranges
+// are open sets even when they span the type; `any` needs a catch-all.
+fn f(x: bool) -> i32 {
+    match x {
+        a if a == true => 1,
+        a if a == false => 2,
+    }
+}
+fn g(x: u8) -> i32 {
+    match x {
+        0..=255 => 1,
+    }
+}
+fn h(x: any) -> i32 {
+    match x {
+        n: i32 => n,
+    }
+}
+fn main() -> i32 { f(true) + g(1) + h(1) }

@@ -1,0 +1,50 @@
+// expect-error: 21:40: this `impl` is declared inside `f` and can't use `x`, a local of `f`; pass it as a parameter instead
+// expect-error: 23:21: `S` is declared inside `f` and can't use `x`, a local of `f`; a `static` is made once, so its value can use only items
+// expect-error: 24:31: `B` is declared inside `f` and can't use `x`, a local of `f`; pass it as a field or a parameter instead
+// expect-error: 29:24: `Holder` is declared inside `g` and can't use `T`, a generic parameter of `g`; declare its own instead: `struct Holder<T>`
+// expect-error: 30:16: `Q` is declared inside `g` and can't use `T`, a generic parameter of `g`; declare its own instead: `enum Q<T>`
+// expect-error: 31:33: this `impl` is declared inside `g` and can't use `T`, a generic parameter of `g`; declare it on the impl instead: `impl<T>`
+// expect-error: 36:20: `K` is declared inside `h` and can't use `n`, a local of `h`; a `const` is computed at compile time, so it can use only items
+// (`M` in `c` reads the const parameter `N`: a value per instance, no error.)
+// expect-error: 46:13: cannot find struct `P` in this scope
+// expect-error: `P` is declared inside `f` and visible only in its block; move it to module level to use it here
+// expect-error: 47:12: cannot find type `Holder` in this scope
+// expect-error: `Holder` is declared inside `g` and visible only in its block; move it to module level to use it here
+// forbid-error: cannot find value `x`
+// forbid-error: cannot find type `T`
+
+// An item in a block sees no local or generic parameter of the code
+// around it, and nothing outside the block sees it.
+fn f(x: i32) -> i32 {
+    struct P { a: i32; }
+    impl P {
+        fn get(self) -> i32 { self.a + x }
+    }
+    static S: i32 = x;
+    struct B { a: [i32; 1] = [x]; }
+    P { a: 1 }.get()
+}
+
+fn g<T>(t: T) -> i32 {
+    struct Holder { v: T; }
+    enum Q { A(T) }
+    impl Holder { fn n(self) -> T { self.v } }
+    0
+}
+
+fn h(n: i32) -> i32 {
+    const K: i32 = n;
+    0
+}
+
+fn c<const N: usize>() -> usize {
+    const M: usize = N * 2;
+    M
+}
+
+fn main() {
+    let p = P { a: 1 };
+    let q: Holder = Holder { v: 1 };
+    println(f"{f(1)} {g(1)} {h(1)} {c::<1>()}");
+}
+// expect-error: 47:21: cannot find struct `Holder` in this scope

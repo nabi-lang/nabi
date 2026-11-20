@@ -1,0 +1,1124 @@
+//! Calling conventions: where each scalar of a signature goes.
+//!
+//! A nabi function's parameters and result follow the plain platform C ABI,
+//! an aggregate leaf by leaf, except aggregates over 64 bytes, passed by
+//! address (`FnLower::nabi_shapes`). C signatures are classified by
+//! `nabic_codegen::abi` first, then placed the same way.
+
+mod arm32;
+mod i386;
+mod ppc64;
+mod riscv;
+mod s390x;
+mod wasm;
+
+pub(crate) use crate::cc::arm32::*;
+pub(crate) use crate::cc::i386::*;
+pub(crate) use crate::cc::ppc64::*;
+pub(crate) use crate::cc::riscv::*;
+pub(crate) use crate::cc::s390x::*;
+pub(crate) use crate::cc::wasm::*;
+
+use crate::lir::{K, Loc, Part};
+use nabic_codegen::abi::{CScalar, CType};
+use nabic_ir_common::PrimTy;
+use nabic_mir::{MirTy, Target};
+
+/// A scalar of a value's memory: its byte offset and kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Leaf {
+    pub off: u32,
+    pub k: K,
+    pub signed: bool,
+}
+
+/// A value's shape as C compilers pass it, as far as
+/// the calling convention cares.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct Shape {
+    pub leaves: Vec<Leaf>,
+    /// A top-level array of one kind (consecutive registers).
+    pub array: bool,
+    /// ABI alignment.
+    pub align: u32,
+    /// Passed as a copy on the stack (`x86_64` `byval`): the leaves are
+    /// its 8-byte words.
+    pub byval: bool,
+    /// An aggregate: on Apple arm64 its narrow stack leaves take 4-byte
+    /// slots, a scalar its own size (`SelectionDAG`).
+    pub aggregate: bool,
+    /// 32-bit ARM: one block of consecutive registers, or of the stack
+    /// (a homogeneous float aggregate of 1-4 members, an integer
+    /// array, a `byval` copy).
+    pub block: bool,
+    /// A 16-byte C vector: one leaf, a whole float register
+    /// (`Loc::Vec`) or 16 aligned bytes of the stack (`Loc::VecStack`).
+    pub vector: bool,
+}
+
+/// The scalar kind of a primitive (`str` excluded).
+#[must_use]
+pub const fn prim_k(p: PrimTy, pw: u32) -> K {
+    match p {
+        PrimTy::I8 | PrimTy::U8 | PrimTy::CChar | PrimTy::Bool => K::I8,
+        PrimTy::I16 | PrimTy::U16 => K::I16,
+        PrimTy::I32 | PrimTy::U32 | PrimTy::Char => K::I32,
+        PrimTy::F32 => K::F32,
+        PrimTy::F64 => K::F64,
+        PrimTy::Isize | PrimTy::Usize if pw == 32 => K::I32,
+        _ => K::I64,
+    }
+}
+
+/// The scalar kind of `ty` when it is one (`None`: an aggregate, `str`,
+/// `()`).
+#[must_use]
+pub fn scalar_k(ty: &MirTy, t: &Target) -> Option<K> {
+    let word = if t.pointer_width == 32 {
+        K::I32
+    } else {
+        K::I64
+    };
+    match ty {
+        MirTy::Prim(PrimTy::Str) => None,
+        MirTy::Prim(p) => Some(prim_k(*p, t.pointer_width)),
+        MirTy::Any | MirTy::GcRef | MirTy::Fn(..) => Some(word),
+        _ => None,
+    }
+}
+
+/// Scalar leaves of `ty` at offset `at`.
+pub fn leaves(ty: &MirTy, t: &Target, at: u32, out: &mut Vec<Leaf>) {
+    let word = if t.pointer_width == 32 {
+        K::I32
+    } else {
+        K::I64
+    };
+    let wb = t.pointer_width / 8;
+    match ty {
+        MirTy::Unit => {}
+        MirTy::Prim(PrimTy::Str) => {
+            out.push(Leaf {
+                off: at,
+                k: word,
+                signed: false,
+            });
+            out.push(Leaf {
+                off: at + wb,
+                k: word,
+                signed: false,
+            });
+        }
+        MirTy::Prim(p) => out.push(Leaf {
+            off: at,
+            k: prim_k(*p, t.pointer_width),
+            signed: p.is_signed_int() || *p == PrimTy::CChar,
+        }),
+        MirTy::Any | MirTy::GcRef | MirTy::Fn(..) => out.push(Leaf {
+            off: at,
+            k: word,
+            signed: false,
+        }),
+        MirTy::Tuple(ps) | MirTy::Struct(_, ps) => {
+            let offs = t.field_offsets(ty);
+            if t.explicit_layout(ty) {
+                // A packed struct with `[k x i8]` padding fields:
+                // the padding bytes are leaves too.
+                let size = t.size_align(ty).0;
+                let mut cur = 0;
+                for (p, off) in ps.iter().zip(&offs) {
+                    for b in cur..*off {
+                        out.push(Leaf {
+                            off: at + b,
+                            k: K::I8,
+                            signed: false,
+                        });
+                    }
+                    leaves(p, t, at + off, out);
+                    cur = off + t.size_align(p).0;
+                }
+                for b in cur..size {
+                    out.push(Leaf {
+                        off: at + b,
+                        k: K::I8,
+                        signed: false,
+                    });
+                }
+            } else {
+                for (p, off) in ps.iter().zip(offs) {
+                    leaves(p, t, at + off, out);
+                }
+            }
+        }
+        MirTy::Array(e, n) => {
+            let s = t.size_align(e).0;
+            for i in 0..*n {
+                leaves(e, t, at + i * s, out);
+            }
+        }
+        MirTy::Union(_, n, _) => {
+            for i in 0..*n {
+                out.push(Leaf {
+                    off: at + i * wb,
+                    k: word,
+                    signed: false,
+                });
+            }
+        }
+    }
+}
+
+#[must_use]
+pub fn shape(ty: &MirTy, t: &Target) -> Shape {
+    let mut ls = Vec::new();
+    leaves(ty, t, 0, &mut ls);
+    let array = matches!(ty, MirTy::Array(..) | MirTy::Union(..))
+        && ls.first().is_some_and(|f| ls.iter().all(|l| l.k == f.k));
+    Shape {
+        block: float_block(ty, t).is_some_and(|(_, n)| (1..=4).contains(&n))
+            || matches!(ty, MirTy::Union(..))
+            || matches!(ty, MirTy::Array(e, _) if matches!(**e, MirTy::Prim(p) if p != PrimTy::Str && !p.is_float())),
+        leaves: ls,
+        array,
+        align: t.size_align(ty).1,
+        byval: false,
+        aggregate: matches!(
+            ty,
+            MirTy::Tuple(_)
+                | MirTy::Struct(..)
+                | MirTy::Array(..)
+                | MirTy::Union(..)
+                | MirTy::Prim(PrimTy::Str)
+        ),
+        vector: false,
+    }
+}
+
+/// `ty` as a homogeneous float aggregate: its float kind and
+/// member count (`None`: another leaf, padding, or no member).
+fn float_block(ty: &MirTy, t: &Target) -> Option<(K, u32)> {
+    let join = |acc: Option<(K, u32)>, x: (K, u32)| match acc {
+        None => Some(x),
+        Some((k, n)) if k == x.0 => Some((k, n + x.1)),
+        Some(_) => None,
+    };
+    match ty {
+        MirTy::Prim(PrimTy::F32) => Some((K::F32, 1)),
+        MirTy::Prim(PrimTy::F64) => Some((K::F64, 1)),
+        MirTy::Tuple(ps) | MirTy::Struct(_, ps) if !t.explicit_layout(ty) => {
+            let mut acc = None;
+            for p in ps {
+                acc = Some(join(acc, float_block(p, t)?)?);
+            }
+            acc
+        }
+        MirTy::Array(e, n) if *n > 0 => float_block(e, t).map(|(k, m)| (k, m * n)),
+        _ => None,
+    }
+}
+
+/// A coerced C type of `abi::classify` as a shape, pointers `pw` bits
+/// wide.
+#[must_use]
+pub fn coerced(c: &CType, pw: u32) -> Shape {
+    let one = |s: CScalar| -> (K, u32) {
+        match s {
+            CScalar::F32 => (K::F32, 4),
+            // Its two bytes, moved as a float register's low four
+            // (`half_leaves` widens them).
+            CScalar::F16 => (K::F32, 2),
+            CScalar::V128 => (K::F64, 16),
+            // Both halves in one SSE register (or an 8-byte vector): its
+            // 8 bytes.
+            CScalar::F64 | CScalar::F32x2 | CScalar::V64 => (K::F64, 8),
+            CScalar::Ptr if pw == 32 => (K::I32, 4),
+            CScalar::Ptr => (K::I64, 8),
+            CScalar::Int(bits) => match bits {
+                1..=8 => (K::I8, 1),
+                9..=16 => (K::I16, 2),
+                17..=32 => (K::I32, 4),
+                _ => (K::I64, 8),
+            },
+        }
+    };
+    let leaf = |off, k| Leaf {
+        off,
+        k,
+        signed: false,
+    };
+    match c {
+        // powerpc64's quadwords: two doublewords each, 16-aligned.
+        CType::Array(n, CScalar::Int(128)) => Shape {
+            leaves: (0..2 * n).map(|i| leaf(i * 8, K::I64)).collect(),
+            array: true,
+            align: 16,
+            byval: false,
+            aggregate: true,
+            block: true,
+            vector: false,
+        },
+        CType::Array(n, elem) => {
+            let (k, size) = one(*elem);
+            Shape {
+                leaves: (0..*n).map(|i| leaf(i * size, k)).collect(),
+                array: true,
+                align: size,
+                byval: false,
+                aggregate: true,
+                block: true,
+                vector: false,
+            }
+        }
+        CType::Struct(fields) => {
+            let mut ls = Vec::new();
+            let mut at = 0u32;
+            let mut align = 1;
+            for f in fields {
+                let (k, size) = one(*f);
+                at = at.next_multiple_of(size);
+                ls.push(leaf(at, k));
+                at += size;
+                align = align.max(size);
+            }
+            Shape {
+                leaves: ls,
+                array: false,
+                align,
+                byval: false,
+                aggregate: true,
+                block: false,
+                vector: false,
+            }
+        }
+        CType::At(fields) => {
+            let ls: Vec<Leaf> = fields.iter().map(|&(off, f)| leaf(off, one(f).0)).collect();
+            // Packed when a field sits off its own alignment.
+            let packed = fields.iter().any(|&(off, f)| off % one(f).1 != 0);
+            let align = if packed {
+                1
+            } else {
+                fields.iter().map(|&(_, f)| one(f).1).max().unwrap_or(1)
+            };
+            Shape {
+                leaves: ls,
+                array: false,
+                align,
+                byval: false,
+                aggregate: true,
+                block: false,
+                vector: false,
+            }
+        }
+        // A 2*XLEN integer (RISC-V `i128` / rv32 `i64` are split by the
+        // conventions themselves): its two words.
+        CType::Scalar(CScalar::Int(128)) => Shape {
+            leaves: vec![leaf(0, K::I64), leaf(8, K::I64)],
+            array: false,
+            align: 16,
+            byval: false,
+            aggregate: false,
+            block: false,
+            vector: false,
+        },
+        CType::Scalar(CScalar::V128) => Shape {
+            leaves: vec![leaf(0, K::F64)],
+            array: false,
+            align: 16,
+            byval: false,
+            aggregate: true,
+            block: false,
+            vector: true,
+        },
+        // An aggregate of one `f64` leaf, which only a vector coerces to.
+        CType::Scalar(CScalar::V64) => Shape {
+            leaves: vec![leaf(0, K::F64)],
+            array: false,
+            align: 8,
+            byval: false,
+            aggregate: true,
+            block: false,
+            vector: false,
+        },
+        CType::Scalar(s) => {
+            let (k, size) = one(*s);
+            Shape {
+                leaves: vec![leaf(0, k)],
+                array: false,
+                align: size,
+                byval: false,
+                aggregate: false,
+                block: false,
+                vector: false,
+            }
+        }
+    }
+}
+
+/// Per leaf of [`coerced`]`(c)`: a half (`CScalar::F16`), which moves
+/// through four bytes of its own.
+#[must_use]
+pub fn half_leaves(c: &CType) -> Vec<bool> {
+    let h = |s: &CScalar| *s == CScalar::F16;
+    match c {
+        CType::Array(n, CScalar::Int(128)) => vec![false; 2 * *n as usize],
+        CType::Array(n, e) => vec![h(e); *n as usize],
+        CType::Struct(fs) => fs.iter().map(h).collect(),
+        CType::At(fs) => fs.iter().map(|(_, f)| h(f)).collect(),
+        CType::Scalar(CScalar::Int(128)) => vec![false; 2],
+        CType::Scalar(s) => vec![h(s)],
+    }
+}
+
+/// A `byval` copy of `size` bytes aligned to `align`: its words (`pw`
+/// bits).
+#[must_use]
+pub fn byval(size: u32, align: u32, pw: u32) -> Shape {
+    let (w, k) = if pw == 32 { (4, K::I32) } else { (8, K::I64) };
+    Shape {
+        leaves: (0..size.div_ceil(w))
+            .map(|i| Leaf {
+                off: w * i,
+                k,
+                signed: false,
+            })
+            .collect(),
+        array: false,
+        align,
+        byval: true,
+        aggregate: true,
+        block: true,
+        vector: false,
+    }
+}
+
+/// The locations of one signature: per parameter its parts (one per
+/// leaf, in leaf order); the result's parts, or `None` for a hidden
+/// result pointer (`Loc::Sret`).
+#[derive(Clone, Debug)]
+pub struct SigLocs {
+    pub params: Vec<Vec<Part>>,
+    pub ret: Option<Vec<Part>>,
+    /// Bytes of the stack argument area.
+    pub stack: u32,
+    /// Bytes of it the callee pops (i386 System V: the hidden result
+    /// pointer).
+    pub pop: u32,
+}
+
+/// Which convention lowers a signature.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Conv {
+    /// AAPCS64 as Apple runs it: stack arguments packed at their own
+    /// size, not 8-byte slots.
+    Darwin64,
+    /// AAPCS64 elsewhere.
+    Aapcs64,
+    /// AAPCS64 on Windows: a C variadic call passes floats in integer
+    /// registers, fixed arguments too.
+    WinArm64,
+    /// System V `x86_64` (Linux, FreeBSD).
+    SysV64,
+    /// Windows x64: four register positions shared by both classes (an
+    /// argument takes the next one, integer or float), then 8-byte stack
+    /// slots past the caller's 32-byte home area.
+    Win64,
+    /// i386 cdecl, System V: every argument on the stack in 4-byte
+    /// slots; results in `eax edx ecx` and `st0`; the callee pops the
+    /// hidden result pointer.
+    X86,
+    /// i386 cdecl as MSVC runs it: the caller pops the hidden result
+    /// pointer too.
+    X86Win,
+    /// 32-bit ARM AAPCS-VFP (`r0`-`r3`, `s0`-`s15` / `d0`-`d7` with
+    /// back-filling); a C variadic call is the base AAPCS (floats in
+    /// integer registers).
+    ArmHf,
+    /// RISC-V LP64D: `a0`-`a7` and, for fixed arguments, `fa0`-`fa7`.
+    Riscv64,
+    /// RISC-V ILP32 (soft float): `a0`-`a7` only.
+    Riscv32,
+    /// powerpc64 `ELFv2`: each argument a doubleword of the parameter save
+    /// area, the first eight in `r3`-`r10`; fixed floats in `f1`-`f13`.
+    Ppc64,
+    /// s390x: `r2`-`r6`, `f0 f2 f4 f6`, then 8-byte stack slots.
+    S390x,
+    /// wasm32: each scalar a typed parameter (`Loc::Int` is its position),
+    /// one result at most, else through the hidden pointer (the first
+    /// parameter); a C variadic call's extra arguments in a buffer
+    /// (`Loc::Stack`), its address the last parameter.
+    Wasm32,
+}
+
+impl Conv {
+    #[must_use]
+    pub fn of(t: &Target) -> Option<Self> {
+        let windows = t.os == "windows";
+        match t.arch.as_str() {
+            "aarch64" if matches!(t.os.as_str(), "macos" | "ios") => Some(Self::Darwin64),
+            "aarch64" if windows => Some(Self::WinArm64),
+            "aarch64" => Some(Self::Aapcs64),
+            "x86_64" if windows => Some(Self::Win64),
+            "x86_64" => Some(Self::SysV64),
+            "x86" if windows => Some(Self::X86Win),
+            "x86" => Some(Self::X86),
+            "arm" => Some(Self::ArmHf),
+            "riscv64" => Some(Self::Riscv64),
+            "riscv32" => Some(Self::Riscv32),
+            "powerpc64" => Some(Self::Ppc64),
+            "s390x" => Some(Self::S390x),
+            "wasm32" => Some(Self::Wasm32),
+            _ => None,
+        }
+    }
+
+    /// Integer / float argument registers.
+    const fn arg_regs(self) -> (u8, u8) {
+        match self {
+            Self::SysV64 => (6, 8),
+            Self::Win64 => (4, 4),
+            _ => (8, 8),
+        }
+    }
+
+    /// Integer / float result registers (`x86_64`: `rax rdx rcx`;
+    /// `xmm0 xmm1` then the x87 `st0 st1`, as LLVM returns them).
+    const fn ret_regs(self) -> (usize, usize) {
+        match self {
+            Self::SysV64 | Self::Win64 => (3, 4),
+            _ => (8, 8),
+        }
+    }
+
+    const fn x86(self) -> bool {
+        matches!(self, Self::SysV64 | Self::Win64)
+    }
+
+    /// i386: no argument registers.
+    #[must_use]
+    pub const fn i386(self) -> bool {
+        matches!(self, Self::X86 | Self::X86Win)
+    }
+}
+
+const fn part(loc: Loc, l: Leaf) -> Part {
+    Part {
+        loc,
+        k: l.k,
+        signed: l.signed,
+    }
+}
+
+/// Place `params` and `ret` (`None`: nothing, or with `sret` a C result
+/// through a hidden pointer); parameters from `variadic_from` on are C
+/// variadics.
+#[must_use]
+pub fn assign(
+    conv: Conv,
+    params: &[Shape],
+    ret: Option<&Shape>,
+    sret: bool,
+    variadic_from: Option<usize>,
+) -> SigLocs {
+    if conv.i386() {
+        return assign_i386(conv, params, ret, sret);
+    }
+    if conv == Conv::ArmHf {
+        return assign_arm(params, ret, sret, variadic_from.is_none());
+    }
+    if matches!(conv, Conv::Riscv64 | Conv::Riscv32) {
+        return assign_riscv(params, ret, sret, variadic_from, conv == Conv::Riscv32);
+    }
+    if conv == Conv::Ppc64 {
+        return assign_ppc64(params, ret, sret, variadic_from);
+    }
+    if conv == Conv::S390x {
+        return assign_s390x(params, ret, sret);
+    }
+    if conv == Conv::Wasm32 {
+        return assign_wasm(params, ret, sret, variadic_from);
+    }
+    let (max_int, max_fp) = conv.ret_regs();
+    let ret = match ret {
+        None if sret => None,
+        None => Some(Vec::new()),
+        Some(r) if r.vector => Some(vec![part(Loc::Vec(0), r.leaves[0])]),
+        Some(r) => {
+            let ints = r.leaves.iter().filter(|l| !l.k.is_float()).count();
+            let fps = r.leaves.len() - ints;
+            (ints <= max_int && fps <= max_fp).then(|| {
+                let (mut gi, mut fi) = (0u8, 0u8);
+                r.leaves
+                    .iter()
+                    .map(|l| {
+                        let loc = if l.k.is_float() {
+                            fi += 1;
+                            Loc::Fp(fi - 1)
+                        } else {
+                            gi += 1;
+                            Loc::Int(gi - 1)
+                        };
+                        part(loc, *l)
+                    })
+                    .collect()
+            })
+        }
+    };
+    let (gpr, fpr) = conv.arg_regs();
+    // `x86_64`: the hidden result pointer is the first integer argument.
+    let mut ngrn = u8::from(conv.x86() && ret.is_none());
+    let win64 = conv == Conv::Win64;
+    let (mut nsrn, mut stack) = (0u8, if win64 { 32u32 } else { 0 });
+    let darwin = conv == Conv::Darwin64;
+    let as_ints: Vec<Shape>;
+    let params = if conv == Conv::WinArm64 && variadic_from.is_some() {
+        // A vector stays in `v` registers: a 16-byte one, or the one
+        // coerced aggregate of a lone `f64` leaf (`CScalar::V64`).
+        let simd = |p: &Shape| {
+            p.vector || (p.aggregate && !p.array && p.leaves.len() == 1 && p.leaves[0].k == K::F64)
+        };
+        as_ints = params
+            .iter()
+            .map(|p| {
+                if simd(p) {
+                    return p.clone();
+                }
+                Shape {
+                    leaves: p
+                        .leaves
+                        .iter()
+                        .map(|l| Leaf {
+                            k: match l.k {
+                                K::F64 => K::I64,
+                                K::F32 => K::I32,
+                                k => k,
+                            },
+                            ..*l
+                        })
+                        .collect(),
+                    ..p.clone()
+                }
+            })
+            .collect();
+        &as_ints
+    } else {
+        params
+    };
+    // Apple packs a stack argument at its own size, an aggregate's
+    // narrow leaves at 4 bytes.
+    let packed = |k: K, agg: bool| match (darwin, agg) {
+        (true, false) => k.size(),
+        (true, true) => k.size().max(4),
+        (false, _) => 8,
+    };
+    let mut out = Vec::new();
+    for (i, p) in params.iter().enumerate() {
+        let mut parts = Vec::new();
+        if p.byval {
+            // A copy on the stack (System V MEMORY class).
+            stack = stack.next_multiple_of(p.align.max(8));
+            for l in &p.leaves {
+                parts.push(part(Loc::Stack(stack + l.off), *l));
+            }
+            stack += p.leaves.last().map_or(0, |l| l.off + 8);
+            out.push(parts);
+            continue;
+        }
+        if p.vector {
+            // A whole `v` / `xmm` register, else 16 aligned bytes.
+            let l = p.leaves[0];
+            if nsrn < fpr {
+                parts.push(part(Loc::Vec(nsrn), l));
+                nsrn += 1;
+            } else {
+                stack = stack.next_multiple_of(16);
+                parts.push(part(Loc::VecStack(stack), l));
+                stack += 16;
+            }
+            out.push(parts);
+            continue;
+        }
+        if darwin && variadic_from.is_some_and(|v| i >= v) {
+            // Apple: every variadic argument in its own 8-byte stack
+            // slot (narrow integers widened, `f32` already `f64`).
+            for l in &p.leaves {
+                let k = if l.k.is_float() { K::F64 } else { K::I64 };
+                stack = stack.next_multiple_of(8);
+                parts.push(Part {
+                    loc: Loc::Stack(stack),
+                    k,
+                    signed: l.signed,
+                });
+                stack += 8;
+            }
+            out.push(parts);
+            continue;
+        }
+        // AArch64: an array of one kind takes consecutive registers, or
+        // the stack (and no more registers of its class).
+        let block_k = p
+            .leaves
+            .first()
+            .map(|l| l.k)
+            .filter(|k| !conv.x86() && p.array && matches!(k, K::I64 | K::F32 | K::F64));
+        if let Some(k) = block_k {
+            let next = if k.is_float() { &mut nsrn } else { &mut ngrn };
+            if usize::from(*next) + p.leaves.len() <= 8 {
+                for l in &p.leaves {
+                    let loc = if k.is_float() {
+                        Loc::Fp(*next)
+                    } else {
+                        Loc::Int(*next)
+                    };
+                    *next += 1;
+                    parts.push(part(loc, *l));
+                }
+            } else {
+                *next = 8;
+                let align = if darwin {
+                    p.align.min(16)
+                } else {
+                    p.align.clamp(8, 16)
+                };
+                stack = stack.next_multiple_of(align);
+                // At their offsets: halves (two-aligned `f32` leaves) are
+                // two bytes each, their four-byte moves in order.
+                let base = stack;
+                let size = if k == K::F32 && p.align == 2 {
+                    2
+                } else {
+                    k.size()
+                };
+                for l in &p.leaves {
+                    parts.push(part(Loc::Stack(base + l.off), *l));
+                    stack = stack.max(base + l.off + size);
+                }
+            }
+            out.push(parts);
+            continue;
+        }
+        // AAPCS64 but Apple's: an `i128` takes an even register pair, or
+        // 16 aligned bytes of the stack.
+        if matches!(conv, Conv::WinArm64 | Conv::Aapcs64)
+            && p.align == 16
+            && !p.aggregate
+            && p.leaves.len() == 2
+        {
+            ngrn += ngrn % 2;
+            if ngrn + 2 > gpr {
+                ngrn = gpr;
+                stack = stack.next_multiple_of(16);
+            }
+        }
+        for l in &p.leaves {
+            let loc = if win64 && ngrn < gpr {
+                // `ngrn` is the register position, of either class.
+                ngrn += 1;
+                if l.k.is_float() {
+                    Loc::Fp(ngrn - 1)
+                } else {
+                    Loc::Int(ngrn - 1)
+                }
+            } else if win64 {
+                stack += 8;
+                Loc::Stack(stack - 8)
+            } else if l.k.is_float() && nsrn < fpr {
+                nsrn += 1;
+                Loc::Fp(nsrn - 1)
+            } else if !l.k.is_float() && ngrn < gpr {
+                ngrn += 1;
+                Loc::Int(ngrn - 1)
+            } else {
+                let s = packed(l.k, p.aggregate);
+                stack = stack.next_multiple_of(s);
+                stack += s;
+                Loc::Stack(stack - s)
+            };
+            parts.push(part(loc, *l));
+        }
+        out.push(parts);
+    }
+    SigLocs {
+        params: out,
+        ret,
+        stack,
+        pop: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t() -> Target {
+        Target::builtin("aarch64-apple-darwin")
+    }
+
+    /// Checked against `llc -global-isel=0 -mtriple=arm64-apple-macosx`
+    /// (`SelectionDAG`) on the same first-class
+    /// aggregate signatures.
+    #[test]
+    fn darwin_matches_llvm() {
+        let t = t();
+        let s = |ty: &MirTy| shape(ty, &t);
+        let str_ = MirTy::Prim(PrimTy::Str);
+        let i64_ = MirTy::Prim(PrimTy::I64);
+        // Five `str`s: the fifth on the stack, then packed narrow ints.
+        let mut ps: Vec<Shape> = (0..5).map(|_| s(&str_)).collect();
+        for p in [
+            PrimTy::I8,
+            PrimTy::Bool,
+            PrimTy::I16,
+            PrimTy::I32,
+            PrimTy::I64,
+        ] {
+            ps.push(s(&MirTy::Prim(p)));
+        }
+        let l = assign(Conv::Darwin64, &ps, None, false, None);
+        assert_eq!(l.params[3][1].loc, Loc::Int(7));
+        assert_eq!(l.params[4][0].loc, Loc::Stack(0));
+        let at: Vec<Loc> = l.params[5..].iter().map(|p| p[0].loc).collect();
+        assert_eq!(
+            at,
+            [16, 17, 18, 20, 24].map(Loc::Stack).to_vec(),
+            "packed narrow stack args"
+        );
+        // `[2 x i64]` with one register left: wholly on the stack, and
+        // the register is gone; a `{i64, i64}` splits.
+        let mut ps: Vec<Shape> = (0..7).map(|_| s(&i64_)).collect();
+        ps.push(s(&MirTy::Array(Box::new(i64_.clone()), 2)));
+        ps.push(s(&i64_));
+        let l = assign(Conv::Darwin64, &ps, None, false, None);
+        assert_eq!(l.params[7][0].loc, Loc::Stack(0));
+        assert_eq!(l.params[8][0].loc, Loc::Stack(16));
+        ps[7] = s(&MirTy::Tuple(vec![i64_.clone(), i64_.clone()]));
+        let l = assign(Conv::Darwin64, &ps, None, false, None);
+        assert_eq!(l.params[7][0].loc, Loc::Int(7));
+        assert_eq!(l.params[7][1].loc, Loc::Stack(0));
+        // An aggregate's narrow leaves past the registers: 4-byte slots
+        // (`[10 x i1]`, then `[3 x i16]`).
+        let bools = s(&MirTy::Array(Box::new(MirTy::Prim(PrimTy::Bool)), 10));
+        let shorts = s(&MirTy::Array(Box::new(MirTy::Prim(PrimTy::I16)), 3));
+        let l = assign(Conv::Darwin64, &[bools, shorts], None, false, None);
+        assert_eq!(l.params[0][7].loc, Loc::Int(7));
+        assert_eq!(l.params[0][8].loc, Loc::Stack(0));
+        assert_eq!(l.params[0][9].loc, Loc::Stack(4));
+        assert_eq!(l.params[1][2].loc, Loc::Stack(16));
+        // Results: 8 integers in registers, 9 through `x8`.
+        let r8 = s(&MirTy::Tuple(vec![i64_.clone(); 8]));
+        assert!(
+            assign(Conv::Darwin64, &[], Some(&r8), false, None)
+                .ret
+                .is_some()
+        );
+        let r9 = s(&MirTy::Tuple(vec![i64_; 9]));
+        assert!(
+            assign(Conv::Darwin64, &[], Some(&r9), false, None)
+                .ret
+                .is_none()
+        );
+    }
+
+    /// Checked against `llc -mtriple=x86_64-pc-windows-msvc`: `g({ptr,
+    /// i64}, double, {ptr, i64}, i32)` takes `rcx rdx xmm2 r9`, then
+    /// `[rsp + 32]`, `[rsp + 40]`; four `i64` come back through `sret`
+    /// (in `rcx`, so the arguments start at the second position).
+    #[test]
+    fn win64_matches_llvm() {
+        let t = Target::builtin("x86_64-pc-windows-msvc");
+        let s = |ty: &MirTy| shape(ty, &t);
+        let str_ = s(&MirTy::Prim(PrimTy::Str));
+        let ps = [
+            str_.clone(),
+            s(&MirTy::Prim(PrimTy::F64)),
+            str_,
+            s(&MirTy::Prim(PrimTy::I32)),
+        ];
+        let l = assign(Conv::Win64, &ps, None, false, None);
+        let at: Vec<Loc> = l.params.iter().flatten().map(|p| p.loc).collect();
+        assert_eq!(
+            at,
+            [
+                Loc::Int(0),
+                Loc::Int(1),
+                Loc::Fp(2),
+                Loc::Int(3),
+                Loc::Stack(32),
+                Loc::Stack(40)
+            ]
+        );
+        let r4 = s(&MirTy::Tuple(vec![MirTy::Prim(PrimTy::I64); 4]));
+        let l = assign(Conv::Win64, &ps[1..2], Some(&r4), false, None);
+        assert!(l.ret.is_none());
+        assert_eq!(l.params[0][0].loc, Loc::Fp(1));
+    }
+
+    /// i386: 4-byte stack slots (an `i64` in two), the hidden result
+    /// pointer first and popped by a System V callee; `str` back in `eax
+    /// edx`, three `i64`s through memory.
+    #[test]
+    fn i386_slots_and_results() {
+        let t = Target::builtin("i686-unknown-linux-gnu");
+        let s = |ty: &MirTy| shape(ty, &t);
+        let ps = [
+            s(&MirTy::Prim(PrimTy::I8)),
+            s(&MirTy::Prim(PrimTy::I64)),
+            s(&MirTy::Prim(PrimTy::F64)),
+            s(&MirTy::Prim(PrimTy::Str)),
+        ];
+        let l = assign(Conv::X86, &ps, None, false, None);
+        let at: Vec<Loc> = l.params.iter().flatten().map(|p| p.loc).collect();
+        assert_eq!(at, [0, 4, 12, 20, 24].map(Loc::Stack).to_vec());
+        assert_eq!((l.stack, l.pop), (28, 0));
+        let str_ = s(&MirTy::Prim(PrimTy::Str));
+        let r = assign(Conv::X86, &[], Some(&str_), false, None)
+            .ret
+            .unwrap();
+        assert_eq!((r[0].loc, r[1].loc), (Loc::Int(0), Loc::Int(1)));
+        let r3 = s(&MirTy::Tuple(vec![MirTy::Prim(PrimTy::I64); 3]));
+        let l = assign(Conv::X86, &ps[..1], Some(&r3), false, None);
+        assert!(l.ret.is_none());
+        assert_eq!((l.params[0][0].loc, l.pop), (Loc::Stack(4), 4));
+        let l = assign(Conv::X86Win, &ps[..1], Some(&r3), false, None);
+        assert_eq!(l.pop, 0);
+    }
+
+    /// AAPCS-VFP as LLVM's `CC_ARM_AAPCS_VFP` places it: VFP back-filling,
+    /// 8-byte integers in even pairs or 8-aligned stack, blocks whole or
+    /// split while the stack is empty; variadic calls the base standard.
+    #[test]
+    fn arm_hard_float_placement() {
+        let t = Target::builtin("armv7-unknown-linux-gnueabihf");
+        let s = |ty: &MirTy| shape(ty, &t);
+        let p = |x: PrimTy| s(&MirTy::Prim(x));
+        let at = |l: &SigLocs| -> Vec<Loc> { l.params.iter().flatten().map(|p| p.loc).collect() };
+        let fs = [p(PrimTy::F32), p(PrimTy::F64), p(PrimTy::F32)];
+        let l = assign(Conv::ArmHf, &fs, None, false, None);
+        assert_eq!(at(&l), [Loc::Fp(0), Loc::Fp(1), Loc::Fp(1)]);
+        let is = [p(PrimTy::I32), p(PrimTy::I64), p(PrimTy::I32)];
+        let l = assign(Conv::ArmHf, &is, None, false, None);
+        assert_eq!(at(&l), [Loc::Int(0), Loc::Int(2), Loc::Stack(0)]);
+        let is = [
+            p(PrimTy::I32),
+            p(PrimTy::I32),
+            p(PrimTy::I32),
+            p(PrimTy::I64),
+            p(PrimTy::I32),
+        ];
+        let l = assign(Conv::ArmHf, &is, None, false, None);
+        assert_eq!(at(&l)[3..], [Loc::Stack(0), Loc::Stack(8)]);
+        // An HFA in the first consecutive free registers (not the hole at
+        // s1), an `f32` after it back-fills.
+        let hfa = s(&MirTy::Array(Box::new(MirTy::Prim(PrimTy::F32)), 3));
+        let ps = [p(PrimTy::F32), p(PrimTy::F64), hfa, p(PrimTy::F32)];
+        let l = assign(Conv::ArmHf, &ps, None, false, None);
+        assert_eq!(at(&l), [0, 1, 4, 5, 6, 1].map(Loc::Fp).to_vec());
+        // An integer array split between r1-r3 and the stack.
+        let ints = s(&MirTy::Array(Box::new(MirTy::Prim(PrimTy::I32)), 5));
+        let l = assign(
+            Conv::ArmHf,
+            &[p(PrimTy::I32), ints.clone()],
+            None,
+            false,
+            None,
+        );
+        let mut want: Vec<Loc> = (0..4).map(Loc::Int).collect();
+        want.extend([Loc::Stack(0), Loc::Stack(4)]);
+        assert_eq!(at(&l), want);
+        // With the stack used, the whole array goes there.
+        let l = assign(
+            Conv::ArmHf,
+            &[p(PrimTy::I64), p(PrimTy::I64), p(PrimTy::I32), ints],
+            None,
+            false,
+            None,
+        );
+        assert_eq!(at(&l)[2..4], [Loc::Stack(0), Loc::Stack(4)]);
+        // Variadic: floats in integer registers, an `f64` in an even pair.
+        let l = assign(
+            Conv::ArmHf,
+            &[p(PrimTy::I32), p(PrimTy::F64)],
+            None,
+            false,
+            Some(1),
+        );
+        assert_eq!(at(&l), [Loc::Int(0), Loc::Int(2)]);
+        // Results: `str` in r0 r1; three `i64` through the hidden pointer
+        // in r0.
+        let str_ = s(&MirTy::Prim(PrimTy::Str));
+        let r = assign(Conv::ArmHf, &[], Some(&str_), false, None)
+            .ret
+            .unwrap();
+        assert_eq!((r[0].loc, r[1].loc), (Loc::Int(0), Loc::Int(1)));
+        let r3 = s(&MirTy::Tuple(vec![MirTy::Prim(PrimTy::I64); 3]));
+        let l = assign(Conv::ArmHf, &[p(PrimTy::I32)], Some(&r3), false, None);
+        assert!(l.ret.is_none());
+        assert_eq!(at(&l), [Loc::Int(1)]);
+    }
+
+    /// RISC-V as LLVM's `CC_RISCV` places first-class aggregates: LP64D
+    /// floats in `fa` registers, then integer ones; rv32 8-byte scalars
+    /// in pairs, split with the stack, or aligned on it; results in two
+    /// registers' worth, else `sret` in `a0`.
+    #[test]
+    fn riscv_placement() {
+        let t = Target::builtin("riscv64gc-unknown-linux-gnu");
+        let p = |x: PrimTy| shape(&MirTy::Prim(x), &t);
+        let at = |l: &SigLocs| -> Vec<Loc> { l.params.iter().flatten().map(|p| p.loc).collect() };
+        let mut ps: Vec<Shape> = (0..9).map(|_| p(PrimTy::F64)).collect();
+        ps.push(p(PrimTy::I32));
+        let l = assign(Conv::Riscv64, &ps, None, false, None);
+        let mut want: Vec<Loc> = (0..8).map(Loc::Fp).collect();
+        want.extend([Loc::Int(0), Loc::Int(1)]);
+        assert_eq!(at(&l), want);
+        let l = assign(
+            Conv::Riscv64,
+            &[p(PrimTy::I32), p(PrimTy::F64)],
+            None,
+            false,
+            Some(1),
+        );
+        assert_eq!(at(&l), [Loc::Int(0), Loc::Int(1)]);
+        let r3 = shape(&MirTy::Tuple(vec![MirTy::Prim(PrimTy::I64); 3]), &t);
+        let l = assign(Conv::Riscv64, &[p(PrimTy::I32)], Some(&r3), false, None);
+        assert!(l.ret.is_none());
+        assert_eq!(at(&l), [Loc::Int(1)]);
+        let fi = shape(
+            &MirTy::Tuple(vec![MirTy::Prim(PrimTy::F64), MirTy::Prim(PrimTy::I64)]),
+            &t,
+        );
+        let r = assign(Conv::Riscv64, &[], Some(&fi), false, None)
+            .ret
+            .unwrap();
+        assert_eq!((r[0].loc, r[1].loc), (Loc::Fp(0), Loc::Int(0)));
+        // A packed `{i8, f32}`: the float from offset 1 in `fa0`.
+        let pk = coerced(
+            &CType::At(vec![(0, CScalar::Int(8)), (1, CScalar::F32)]),
+            64,
+        );
+        assert_eq!((pk.leaves[1].off, pk.align), (1, 1));
+        let l = assign(Conv::Riscv64, &[pk], None, false, None);
+        assert_eq!(
+            (l.params[0][0].loc, l.params[0][1].loc),
+            (Loc::Int(0), Loc::Fp(0))
+        );
+        // `i128` wholly on the stack is 16-aligned; split, it is not.
+        let wide = coerced(&CType::int(128), 64);
+        let mut ps: Vec<Shape> = (0..7).map(|_| p(PrimTy::I64)).collect();
+        ps.push(wide.clone());
+        let l = assign(Conv::Riscv64, &ps, None, false, None);
+        assert_eq!(
+            (l.params[7][0].loc, l.params[7][1].loc),
+            (Loc::Int(7), Loc::Stack(0))
+        );
+        let mut ps: Vec<Shape> = (0..9).map(|_| p(PrimTy::I64)).collect();
+        ps.push(wide);
+        let l = assign(Conv::Riscv64, &ps, None, false, None);
+        assert_eq!(
+            (l.params[9][0].loc, l.params[9][1].loc),
+            (Loc::Stack(16), Loc::Stack(24))
+        );
+
+        let t = Target::builtin("riscv32imac-unknown-none-elf");
+        let p = |x: PrimTy| shape(&MirTy::Prim(x), &t);
+        let mut ps: Vec<Shape> = (0..7).map(|_| p(PrimTy::I32)).collect();
+        ps.extend([p(PrimTy::I64), p(PrimTy::I32), p(PrimTy::F64)]);
+        let l = assign(Conv::Riscv32, &ps, None, false, None);
+        assert_eq!(at(&l)[7..], [Loc::Int(7), Loc::Stack(4), Loc::Stack(8)]);
+        assert_eq!(l.stack, 16);
+        let l = assign(
+            Conv::Riscv32,
+            &[p(PrimTy::I32), p(PrimTy::F64), p(PrimTy::F32)],
+            None,
+            false,
+            Some(1),
+        );
+        assert_eq!(at(&l), [Loc::Int(0), Loc::Int(2), Loc::Int(4)]);
+        let r = assign(Conv::Riscv32, &[], Some(&p(PrimTy::I64)), false, None)
+            .ret
+            .unwrap();
+        assert_eq!(r[0].loc, Loc::Int(0));
+        let r2 = shape(
+            &MirTy::Tuple(vec![MirTy::Prim(PrimTy::I64), MirTy::Prim(PrimTy::I32)]),
+            &t,
+        );
+        assert!(
+            assign(Conv::Riscv32, &[], Some(&r2), false, None)
+                .ret
+                .is_none()
+        );
+    }
+
+    /// powerpc64 `ELFv2`: each argument a doubleword whose GPR it would be
+    /// (a fixed float in the next FPR instead, a variadic one in the GPR),
+    /// past eight on the stack; an `f32` array packed; `sret` takes `r3`.
+    #[test]
+    fn ppc64_placement() {
+        let t = Target::builtin("powerpc64le-unknown-linux-gnu");
+        let p = |x: PrimTy| shape(&MirTy::Prim(x), &t);
+        let at = |l: &SigLocs| -> Vec<Loc> { l.params.iter().flatten().map(|p| p.loc).collect() };
+        let ps = [
+            p(PrimTy::F64),
+            p(PrimTy::I32),
+            p(PrimTy::F32),
+            p(PrimTy::I64),
+        ];
+        let l = assign(Conv::Ppc64, &ps, None, false, None);
+        assert_eq!(at(&l), [Loc::Fp(0), Loc::Int(1), Loc::Fp(1), Loc::Int(3)]);
+        let mut ps: Vec<Shape> = (0..9).map(|_| p(PrimTy::I64)).collect();
+        ps.push(p(PrimTy::F64));
+        let l = assign(Conv::Ppc64, &ps, None, false, Some(8));
+        assert_eq!(at(&l)[7..], [Loc::Int(7), Loc::Stack(64), Loc::Stack(72)]);
+        let hfa = coerced(&CType::Array(3, CScalar::F32), 64);
+        let l = assign(Conv::Ppc64, &[hfa, p(PrimTy::I32)], None, true, None);
+        assert_eq!(at(&l), [Loc::Fp(0), Loc::Fp(1), Loc::Fp(2), Loc::Int(3)]);
+        let r = shape(&MirTy::Tuple(vec![MirTy::Prim(PrimTy::I64); 8]), &t);
+        assert!(
+            assign(Conv::Ppc64, &[], Some(&r), false, None)
+                .ret
+                .is_some()
+        );
+    }
+
+    /// s390x: five integer and four float registers, then 8-byte stack
+    /// slots; `sret` takes `r2`; results in four of each.
+    #[test]
+    fn s390x_placement() {
+        let t = Target::builtin("s390x-unknown-linux-gnu");
+        let p = |x: PrimTy| shape(&MirTy::Prim(x), &t);
+        let at = |l: &SigLocs| -> Vec<Loc> { l.params.iter().flatten().map(|p| p.loc).collect() };
+        let mut ps: Vec<Shape> = (0..6).map(|_| p(PrimTy::I32)).collect();
+        ps.extend((0..5).map(|_| p(PrimTy::F32)));
+        let l = assign(Conv::S390x, &ps, None, false, None);
+        let mut want: Vec<Loc> = (0..5).map(Loc::Int).collect();
+        want.push(Loc::Stack(0));
+        want.extend((0..4).map(Loc::Fp));
+        want.push(Loc::Stack(8));
+        assert_eq!(at(&l), want);
+        assert_eq!(l.stack, 16);
+        let l = assign(Conv::S390x, &[p(PrimTy::I64)], None, true, None);
+        assert_eq!(at(&l), [Loc::Int(1)]);
+        let r5 = shape(&MirTy::Tuple(vec![MirTy::Prim(PrimTy::I64); 5]), &t);
+        assert!(
+            assign(Conv::S390x, &[], Some(&r5), false, None)
+                .ret
+                .is_none()
+        );
+    }
+
+    /// Windows arm64: a C variadic call passes every float in an integer
+    /// register (`CC_AArch64_Win64_VarArg`).
+    #[test]
+    fn win_arm64_variadic_floats_in_integer_registers() {
+        let t = Target::builtin("aarch64-pc-windows-msvc");
+        let ps = [
+            shape(&MirTy::Prim(PrimTy::F64), &t),
+            shape(&MirTy::Prim(PrimTy::F64), &t),
+        ];
+        let l = assign(Conv::WinArm64, &ps, None, false, Some(1));
+        let at: Vec<(Loc, K)> = l.params.iter().flatten().map(|p| (p.loc, p.k)).collect();
+        assert_eq!(at, [(Loc::Int(0), K::I64), (Loc::Int(1), K::I64)]);
+        let l = assign(Conv::WinArm64, &ps, None, false, None);
+        assert_eq!(l.params[1][0].loc, Loc::Fp(1));
+    }
+}

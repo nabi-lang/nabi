@@ -1,0 +1,25 @@
+// expect-exit: 0
+// expect-stdout:
+// 2
+
+// `GcBuf::clone` (and a derived `Clone` over a `GcBuf` field) beside a
+// derived `Clone` of a const-generic struct with an array field: the
+// generic impl of `T<N>` never applies to `GcBuf<f64>`.
+use bare::mem::GcBuf;
+
+#[derive(Clone)]
+pub struct K {
+    c: GcBuf<f64>;
+}
+
+#[derive(Clone)]
+pub struct T<const N: usize> {
+    k: [usize; N];
+}
+
+fn main() {
+    let t: T<2> = T { k: [1, 2] };
+    let k = K { c: unsafe { GcBuf::new(2) } };
+    _ = k.clone();
+    println(f"{t.clone().k[1]}");
+}

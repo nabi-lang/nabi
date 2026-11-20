@@ -1,0 +1,11 @@
+// expect-error: error[E0099]
+
+// An arm after a catch-all is unreachable, a compile error.
+fn main() -> i32 {
+    let n = 1;
+    let r = match n {
+        _ => 0,
+        1 => 1,    // ERROR: the `_` above always matches
+    };
+    return r;
+}

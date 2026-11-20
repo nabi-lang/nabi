@@ -1,0 +1,47 @@
+// expect-exit: 0
+// expect-stdout:
+// [[1, 2], [3, 4], [5, 6]] [[1, 2, 1, 3], [3, 4, 2, 4]]
+// [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]] [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]] [1, 3]
+// [4.0, 2.0, 3.0] [[10, 2], [30, 40]]
+// [[1.0, 3.0, NaN], [-1.0, 0.0, 2.0]] [[2.0, 0.0, -1.0], [3.0, NaN, 1.0]] [[2, 0, 1], [2, 1, 0]]
+// [1, 1, 3, 4] [1, 1, 3, 4]
+// [[9, 1], [2, 8]]
+// [0.0, 0.25, 0.5, 0.75, 1.0] [1.0, 1.25, 1.5, 1.75] [3.0] 0
+// [1.0, 2.0, 3.0] 2
+// [true, false, false, true] [true, true, false, true] [true, true, true, true]
+// false true true
+// true
+// true false true true
+
+// Arrays from arrays: concat, stack, where; sorting along an axis
+// (NaN last), argsort; linspace / arange / cast; is_close / all_close.
+use core::array::{Matrix, Vector, arange, concat, linspace, stack, where};
+
+let a: Matrix<i64> = [[1, 2], [3, 4]];
+let b: Matrix<i64> = [[5, 6]];
+println(f"{concat([a, b]):?} {concat([a, a.t()], axis: 1):?}");
+let x: Vector<f64> = [1, 2, 3];
+let y: Vector<f64> = [4, 5, 6];
+println(f"{stack([x, y]):?} {stack([x, y], axis: 1):?} {stack([x]).shape():?}");
+println(f"{where(x .> 1.5, x, y):?} {where(a .== 2, a, a .* 10):?}");
+let m: Matrix<f64> = [[3, f64::NAN, 1], [2, 0, -1]];
+println(f"{m.sorted_along(1):?} {m.sorted_along(0):?} {m.argsort_along(1):?}");
+let v: Vector<i64> = [4, 1, 3, 1];
+v.sort();
+println(f"{v:?} {v.sorted():?}");
+let col = a[:, 0];
+col.sort_along(0);
+let w: Matrix<i64> = [[9, 8], [2, 1]];
+w[:, 1].sort_along(0);
+println(f"{w:?}");
+println(f"{linspace(0.0, 1.0, 5):?} {arange(1.0, 2.0, 0.25):?} {linspace(3.0, 3.0, 1):?} {linspace(0.0f32, 1.0f32, 0).len()}");
+let iv: Vector<i32> = [1, 2, 3];
+let fv: Vector<f64> = iv.cast();
+println(f"{fv:?} {fv.mean()}");
+let p: Vector<f64> = [1.0, 0.0, f64::NAN, f64::INFINITY];
+let q: Vector<f64> = [1.0 + 1e-12, 1e-15, f64::NAN, f64::INFINITY];
+println(f"{p.is_close(q):?} {p.is_close(q, abs: 1e-12):?} {p.is_close(q, abs: 1e-12, equal_nan: true):?}");
+println(f"{p.all_close(q)} {p.all_close(q, abs: 1e-12, equal_nan: true)} {x.all_close(x .+ 1e-7, rel: 1e-6)}");
+let f32s: Vector<f32> = [0.1f32, 0.2f32];
+println(f"{(f32s .* 3.0f32).all_close(f32s .+ f32s .+ f32s)}");
+println(f"{(0.1 + 0.2).is_close(0.3)} {1e-12.is_close(0.0)} {1e-12.is_close(0.0, abs: 1e-9)} {f64::NAN.is_close(f64::NAN, equal_nan: true)}");

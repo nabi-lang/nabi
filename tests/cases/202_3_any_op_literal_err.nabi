@@ -1,0 +1,12 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at *
+// expect-stderr: `+` on an `any` holding `u8`: `300` does not fit `u8`
+// expect-stdout:
+
+// A literal that cannot take the tag's type panics naming both.
+
+fn main() {
+    let b: any = 42u8;
+    let c = b + 300;
+    println(f"{c is u8}");
+}

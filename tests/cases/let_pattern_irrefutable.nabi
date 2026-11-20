@@ -1,0 +1,33 @@
+// expect-exit: 0
+// expect-stdout:
+// 5
+// 1 2
+// 3 4 7
+// 1 9 10
+// 6 6
+// 2 5
+
+// `let (a) = ..` groups (only `(a,)` is a 1-tuple);
+// after `@`, `let` and `for` take any irrefutable pattern.
+struct Point { x: i32; y: i32; }
+struct Line { a: Point; b: Point; }
+
+fn main() -> i32 {
+    let (a) = 5;
+    println(f"{a}");
+    let ((b), c) = (1, 2);
+    println(f"{b} {c}");
+    let l @ Line { a: Point { x, y }, b: _ } = Line { a: Point { x: 3, y: 4 }, b: Point { x: 7, y: 8 } };
+    println(f"{x} {y} {l.b.x}");
+    let t @ (n, Point { x: px, y: py }) = (1, Point { x: 9, y: 10 });
+    println(f"{n} {px} {py}");
+    let _ = t;
+    let pts = [Point { x: 6, y: 6 }];
+    for p @ Point { x: qx, .. } in pts {
+        println(f"{qx} {p.y}");
+    }
+    for (i, Point { y, .. }) in [(2, Point { x: 0, y: 5 })] {
+        println(f"{i} {y}");
+    }
+    return 0;
+}

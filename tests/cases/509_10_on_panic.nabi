@@ -1,0 +1,69 @@
+// only-os: linux macos freebsd windows
+// needs: process
+// expect-exit: 0
+// gc-stress: 50
+// expect-stderr: thread 'main' panicked at *509_10_on_panic.nabi:*:
+// expect-stderr: index 9 out of bounds for length 0
+// expect-stderr: hook: index 9 out of bounds for length 0
+// expect-stderr: thread 'main' panicked at *509_10_on_panic.nabi:*:
+// expect-stderr: index 9 out of bounds for length 0
+// expect-stderr: hook: index 9 out of bounds for length 0
+// expect-stderr: thread 'main' panicked at *509_10_on_panic.nabi:*:
+// expect-stderr: too big
+// expect-stderr: hook: too big
+// expect-stderr: thread 'main' panicked at *509_10_on_panic.nabi:*:
+// expect-stderr: boom
+// expect-stderr: hook: boom
+// expect-stdout:
+// [1, 4, 5]
+// 3 sorted anyway
+// -1.5 -2
+// after
+
+// `#[on_panic(return = v)]`: a panic in a function C called is reported,
+// then the function returns `v` to its caller instead of aborting. The
+// panic hook (`std::panic::set_hook`) sees each one first.
+use bare::ptr::Ptr;
+
+extern "C" {
+    fn qsort(base: Ptr<i32>, n: usize, size: usize, cmp: extern "C" fn(Ptr<i32>, Ptr<i32>) -> c_int);
+}
+
+#[on_panic(return = 0)]
+extern "C" fn cmp(a: Ptr<i32>, b: Ptr<i32>) -> c_int {
+    let (x, y) = unsafe { (a.read(), b.read()) };
+    if x == 3 || y == 3 {
+        let xs: List<i32> = [];
+        return xs[9];
+    }
+    if x < y { -1 } else if x > y { 1 } else { 0 }
+}
+
+#[on_panic(return = -1.5)]
+extern "C" fn half(x: f64) -> f64 {
+    if x > 0.0 { panic("too big") }
+    x
+}
+
+#[on_panic]
+extern "C" fn nothing(x: i32) {
+    if x > 0 { panic("boom") }
+}
+
+fn main() {
+    std::panic::set_hook(|info| { eprintln(f"hook: {info.message}"); });
+    let xs: List<i32> = [5, 1, 4];
+    let p = bare::gc::pin(xs);
+    unsafe { qsort(p.as_data_ptr(), 3, 4, cmp) };
+    println(f"{xs:?}");
+    let ys: List<i32> = [5, 3];
+    let q = bare::gc::pin(ys);
+    unsafe { qsort(q.as_data_ptr(), 2, 4, cmp) };
+    unsafe { qsort(q.as_data_ptr(), 2, 4, cmp) };
+    println(f"{ys.len() + 1} sorted anyway");
+    let f: extern "C" fn(f64) -> f64 = half;
+    println(f"{unsafe { f(2.0) }} {unsafe { f(-2.0) }}");
+    let g: extern "C" fn(i32) = nothing;
+    unsafe { g(1) };
+    println("after");
+}

@@ -1,0 +1,46 @@
+// expect-error: operator `*` cannot be applied to `V3` and `f64`: there is no `impl ops::Mul<f64> for V3`
+// expect-error: `V3::X` is `V3<f32>` here; write `V3::<f64>::X`, or convert `x as f32`
+
+// The operator's trait exists for another right operand: the message
+// names both sides and the impl that is missing.
+
+use core::ops::{Add, AddAssign, Mul};
+use core::num::Num;
+
+struct V3<T = f32> { x: T; y: T; z: T; }
+
+impl<T: Num> V3<T> {
+    fn new(x: T, y: T, z: T) -> V3<T> { V3 { x: x, y: y, z: z } }
+}
+
+impl<T: Num> Add for V3<T> {
+    type Output = V3<T>;
+    fn add(self, o: V3<T>) -> V3<T> { V3 { x: self.x + o.x, y: self.y + o.y, z: self.z + o.z } }
+}
+
+impl<T: Num> AddAssign for V3<T> {
+    fn add_assign(ref self, o: V3<T>) {
+        self.x = self.x + o.x;
+        self.y = self.y + o.y;
+        self.z = self.z + o.z;
+    }
+}
+
+impl<T: Num> Mul<T> for V3<T> {
+    type Output = V3<T>;
+    fn mul(self, k: T) -> V3<T> { V3 { x: self.x * k, y: self.y * k, z: self.z * k } }
+}
+
+impl V3<f32> { const X: V3<f32> = V3 { x: 1.0, y: 0.0, z: 0.0 }; }
+impl V3<f64> { const X: V3<f64> = V3 { x: 1.0, y: 0.0, z: 0.0 }; }
+
+struct D<T = f64> { v: T; }
+
+impl<T: Num> D<T> { fn new(v: T) -> D<T> { D { v: v } } }
+
+fn name<T>(x: T) -> str { x.type_name_of_val() }
+
+fn main() {
+    let x: f64 = 2.0;
+    let v = V3::X * x;
+}

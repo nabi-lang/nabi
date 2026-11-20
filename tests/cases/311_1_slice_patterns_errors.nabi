@@ -1,0 +1,15 @@
+// expect-error: E0098
+// expect-error: `[_, _, ..]` not covered
+
+// A list match without a case for every length is not exhaustive; the
+// missing case is written as a slice pattern.
+fn f(xs: List<i32>) -> i32 {
+    match xs {
+        [] => 0,
+        [x] => x,
+    }
+}
+
+fn main() {
+    println(f"{f([1])}");
+}

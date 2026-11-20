@@ -1,0 +1,42 @@
+// expect-exit: 0
+// expect-stdout:
+// 3 0 10 3
+// [1, 2, 3]
+
+// A list literal in a sum slot builds its one member a literal can
+// build: an `Array` (`Vector<f64> | none`, `Matrix<f64> | none`) or a
+// fixed array of its length; a `List` member is still taken first.
+use core::array::{Matrix, Vector};
+
+fn total(x: Vector<f64> | none = none) -> f64 {
+    match x {
+        none => 0.0,
+        v: Vector<f64> => v.sum(),
+    }
+}
+
+fn grid(m: Matrix<f64> | none) -> f64 {
+    match m {
+        none => 0.0,
+        a: Matrix<f64> => a.sum(),
+    }
+}
+
+fn three(a: [i32; 3] | none) -> i32 {
+    match a {
+        none => 0,
+        x: [i32; 3] => x[0] + x[1] + x[2],
+    }
+}
+
+fn pick(x: List<i64> | Vector<f64>) -> str {
+    match x {
+        l: List<i64> => f"{l:?}",
+        _ => "array",
+    }
+}
+
+fn main() {
+    println(f"{total([1.0, 2.0])} {total()} {grid([[1.0, 2.0], [3.0, 4.0]])} {three([0, 1, 2])}");
+    println(pick([1, 2, 3]));
+}

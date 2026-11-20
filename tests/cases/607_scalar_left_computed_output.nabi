@@ -1,0 +1,34 @@
+// expect-exit: 0
+// expect-stdout:
+// 6
+// 1.5
+// [1.0, 0.5]
+
+// A scalar-left impl whose output type computes from the right operand's
+// parameters (`f64 / G<L>` is `G<{ -L }>`) is solved from that operand.
+use core::array::{Array, Vector};
+
+pub struct G<const L: i32> { v: f64; }
+impl<const L: i32> ops::Mul<G<L>> for f64 {
+    type Output = G<L>;
+    fn mul(self, rhs: G<L>) -> G<L> { G { v: self * rhs.v } }
+}
+impl<const L: i32> ops::Div<G<L>> for f64 {
+    type Output = G<{ -L }>;
+    fn div(self, rhs: G<L>) -> G<{ -L }> { G { v: self / rhs.v } }
+}
+pub struct A<const L: i32> { v: Vector<f64>; }
+impl<const L: i32> ops::DotDiv<A<L>> for f64 {
+    type Output = A<{ -L }>;
+    fn dot_div(self, rhs: A<L>) -> A<{ -L }> { A { v: self ./ rhs.v } }
+}
+
+fn main() {
+    let g: G<2> = G { v: 2.0 };
+    println((3.0 * g).v);
+    let b: G<-2> = 3.0 / g;
+    println(b.v);
+    let a: A<1> = A { v: [1.0, 2.0] };
+    let r: A<-1> = 1.0 ./ a;
+    println(f"{r.v:?}");
+}

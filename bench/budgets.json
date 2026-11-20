@@ -1,0 +1,22 @@
+{
+ "compile": {
+  "compile/hello-O0": {"date": "2026-11-15", "host": "Darwin-arm64", "insns": 1317000000, "tolerance": 10},
+  "compile/hello-O2": {"date": "2026-11-15", "host": "Darwin-arm64", "insns": 1359000000, "tolerance": 10},
+  "compile/hello-cold-O0": {"date": "2026-11-15", "host": "Darwin-arm64", "insns": 6613000000, "tolerance": 5},
+  "compile/hello-cold-O2": {"date": "2026-11-15", "host": "Darwin-arm64", "insns": 6960000000, "tolerance": 5}
+ },
+ "scaling": {
+  "cpu": {"2": 1.6, "4": 3.0, "8": 5.0}
+ },
+ "pauses": {
+  "pause/live-100": {"date": "2026-11-16", "host": "Darwin-arm64", "tolerance": 100, "ms": {"max": 9, "minor_p99": 1}, "count": {"full_stw": 1}},
+  "pause/live-1000": {"date": "2026-11-16", "host": "Darwin-arm64", "tolerance": 100, "ms": {"max": 90, "minor_p99": 48}, "count": {"full_stw": 1}},
+  "pause/cache-64": {"date": "2026-11-16", "host": "Darwin-arm64", "tolerance": 100, "ms": {"max": 9, "minor_p99": 8}, "count": {"full_stw": 1}},
+  "pause/frame": {"date": "2026-11-16", "host": "Darwin-arm64", "tolerance": 100, "ms": {"max": 7, "frame_p999": 8}},
+  "pause/ttsp-count": {"date": "2026-11-16", "host": "Darwin-arm64", "tolerance": 100, "ms": {"max": 2, "ttsp_max": 1}},
+  "pause/ttsp-find": {"date": "2026-11-16", "host": "Darwin-arm64", "tolerance": 100, "ms": {"max": 2, "ttsp_max": 1}},
+  "pause/ttsp-grow": {"date": "2026-11-16", "host": "Darwin-arm64", "tolerance": 100, "ms": {"max": 11, "ttsp_max": 1}},
+  "pause/ttsp-hand": {"date": "2026-11-16", "host": "Darwin-arm64", "tolerance": 100, "ms": {"max": 4, "ttsp_max": 1}},
+  "pause/satb": {"date": "2026-11-16", "host": "Darwin-arm64", "tolerance": 100, "ms": {"max": 66, "first_store_max": 1}}
+ }
+}

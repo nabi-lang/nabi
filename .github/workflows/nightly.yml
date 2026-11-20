@@ -1,0 +1,471 @@
+name: Nightly / Extended targets
+
+# What ci.yml's nightly leaves out: the corpora of the targets no gate host
+# runs (wasm32, the qemu-user Linux targets, i686 Windows, FreeBSD), the
+# FreeBSD host archive, the other opt levels, and the GC stress lane. ci.yml's nightly runs -O0 and
+# -O2 on every host; this runs -O1, -O3, -Os and -O2 -g.
+on:
+  schedule:
+    - cron: "0 22 * * *" # 07:00 KST, an hour after ci.yml's
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Jobs: all, or some of wasm qemu i686-windows freebsd freebsd-dist opts gc-stress timing fuzz incr-verify"
+        default: all
+      filter:
+        description: "NABI_TEST_FILTER: the integration cases to run (empty: all)"
+        default: ""
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NABI_TEST_FILTER: ${{ inputs.filter }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: Plan jobs
+    if: github.event_name != 'schedule' || vars.NABI_NIGHTLY == 'on'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      jobs: ${{ steps.plan.outputs.jobs }}
+    steps:
+      - name: Pick the jobs to run
+        id: plan
+        env:
+          IN_JOBS: ${{ inputs.jobs }}
+        run: |
+          jobs=${IN_JOBS:-all}
+          [ "$jobs" = all ] && jobs="wasm qemu i686-windows freebsd freebsd-dist opts gc-stress fuzz incr-verify"
+          echo "jobs= $jobs " | tee -a "$GITHUB_OUTPUT"
+
+  # The three wasm32 targets at -O0 and -O2 under wasmtime and node
+  # (scripts/test/wasm.sh pins and checks both downloads).
+  wasm:
+    name: Test wasm32 corpus (linux-x64)
+    needs: [plan]
+    if: contains(needs.plan.outputs.jobs, ' wasm ')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      id-token: write # OIDC -> the sccache role
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Configure AWS credentials for sccache writes
+        if: vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Build the host C library
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
+      - name: Run the wasm32 corpora with wasm.sh
+        run: scripts/test/wasm.sh
+
+  # Linux targets no runner has, under qemu-user from linux-x64 (i686 runs
+  # natively with the 32-bit loader). Sharded: emulation is slow.
+  # riscv64gc, powerpc64le and s390x are in progress: maintainer-only,
+  # built with NABI_IN_PROGRESS_TARGETS. armv7 (glibc and musl) also runs
+  # natively on a maintainer's AArch32-capable arm64 box before a release.
+  qemu:
+    needs: [plan]
+    if: contains(needs.plan.outputs.jobs, ' qemu ')
+    strategy:
+      fail-fast: false
+      matrix:
+        entry:
+          - { target: i686-unknown-linux-gnu, apt: libc6-i386, runner: "" }
+          - { target: armv7-unknown-linux-gnueabihf, apt: libc6-armhf-cross, runner: "qemu-arm -L /usr/arm-linux-gnueabihf" }
+          - { target: riscv64gc-unknown-linux-gnu, apt: libc6-riscv64-cross, runner: "qemu-riscv64 -L /usr/riscv64-linux-gnu" }
+          - { target: powerpc64le-unknown-linux-gnu, apt: libc6-ppc64el-cross, runner: "qemu-ppc64le -L /usr/powerpc64le-linux-gnu" }
+          - { target: s390x-unknown-linux-gnu, apt: libc6-s390x-cross, runner: "qemu-s390x -L /usr/s390x-linux-gnu" }
+        opt: ["-O0", "-O2"]
+        shard: [1, 2]
+    name: Test corpus under QEMU (linux-x64, ${{ matrix.entry.target }}, ${{ matrix.opt }}, ${{ matrix.shard }}/2)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    permissions:
+      contents: read
+      id-token: write # OIDC -> the sccache role
+    env:
+      NABI_TEST_TARGET: ${{ matrix.entry.target }}
+      NABI_TEST_RUNNER: ${{ matrix.entry.runner }}
+      NABI_TEST_OPT: ${{ matrix.opt != '-O0' && matrix.opt || '' }}
+      NABI_TEST_SHARD: ${{ matrix.shard }}/2
+      NABI_TEST_CASE_TIMEOUT: "1200"
+      NABI_IN_PROGRESS_TARGETS: "1"
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install qemu-user and the target's loader
+        env:
+          APT: ${{ matrix.entry.apt }}
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends qemu-user qemu-user-binfmt "$APT"
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Configure AWS credentials for sccache writes
+        if: vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Build the target sysroot with targets/build.sh
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')" "$NABI_TEST_TARGET"
+      - name: Run the corpora on the target
+        run: scripts/test/filter.sh -p nabic --test main -- "integration::" "differential::" "native::abi::" "native::ffi::"
+
+  # i686 Windows runs natively (WOW64) on x64 Windows.
+  i686-windows:
+    needs: [plan]
+    if: contains(needs.plan.outputs.jobs, ' i686-windows ')
+    strategy:
+      fail-fast: false
+      matrix:
+        opt: ["-O0", "-O2", "-O2 -g"]
+    name: Test corpus (windows-x64, i686-pc-windows-msvc, ${{ matrix.opt }})
+    runs-on: windows-2022
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      id-token: write # OIDC -> the sccache role
+    env:
+      NABI_TEST_TARGET: i686-pc-windows-msvc
+      NABI_TEST_OPT: ${{ matrix.opt != '-O0' && matrix.opt || '' }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Configure AWS credentials for sccache writes
+        if: vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Build the target sysroot with targets/build.sh
+        run: targets/build.sh "$NABI_TEST_TARGET"
+      - name: Run the corpora on the target
+        run: scripts/test/filter.sh -p nabic --test main -- "integration::" "differential::" "native::abi::" "native::ffi::"
+
+  # x86_64-unknown-freebsd in a FreeBSD VM on linux-x64 (KVM), its
+  # executables copied in over ssh (scripts/test/freebsd.sh).
+  freebsd:
+    name: Test corpus in a FreeBSD VM (linux-x64, x86_64-unknown-freebsd, -O2)
+    needs: [plan]
+    if: contains(needs.plan.outputs.jobs, ' freebsd ')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    permissions:
+      contents: read
+      id-token: write # OIDC -> the sccache role
+    env:
+      NABI_TEST_TARGET: x86_64-unknown-freebsd
+      NABI_TEST_OPT: -O2
+      NABI_TEST_CASE_TIMEOUT: "1200"
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install qemu and enable KVM
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends qemu-system-x86 qemu-utils genisoimage
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Configure AWS credentials for sccache writes
+        if: vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Build the target sysroot with targets/build.sh
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')" "$NABI_TEST_TARGET"
+      - name: Boot the FreeBSD VM
+        run: scripts/test/freebsd.sh up
+      - name: Run the corpora in the VM
+        run: |
+          export NABI_TEST_RUNNER="$PWD/scripts/test/freebsd.sh run"
+          scripts/test/filter.sh -p nabic --test main -- "integration::" "differential::" "native::abi::" "native::ffi::"
+      - name: Stop the FreeBSD VM
+        if: always()
+        run: scripts/test/freebsd.sh down
+
+  # The x86_64-unknown-freebsd host archive, as release-build.yml builds
+  # it: dist/native.sh in a FreeBSD VM, then installed there, with a new
+  # project built and run (scripts/dist/freebsd.sh).
+  freebsd-dist:
+    name: Build FreeBSD archive (linux-x64, x86_64-unknown-freebsd)
+    needs: [plan]
+    if: contains(needs.plan.outputs.jobs, ' freebsd-dist ')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install qemu and enable KVM
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends qemu-system-x86 qemu-utils genisoimage
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Build and install the archive with dist/freebsd.sh
+        run: scripts/dist/freebsd.sh --out "$RUNNER_TEMP/dist"
+
+  # The opt levels ci.yml's nightly does not run, on one host of each
+  # object format the gate builds most (ELF, Mach-O).
+  opts:
+    needs: [plan]
+    if: contains(needs.plan.outputs.jobs, ' opts ')
+    strategy:
+      fail-fast: false
+      matrix:
+        host:
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: macos-arm64, os: macos-26 }
+        opt: ["-O1", "-O3", "-Os", "-O2 -g"]
+        shard: [1, 2]
+    name: Test corpus (${{ matrix.host.name }}, ${{ matrix.opt }}, ${{ matrix.shard }}/2)
+    runs-on: ${{ matrix.host.os }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      id-token: write # OIDC -> the sccache role
+    env:
+      NABI_TEST_OPT: ${{ matrix.opt }}
+      NABI_TEST_SHARD: ${{ matrix.shard }}/2
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Configure AWS credentials for sccache writes
+        if: vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Build the host C library (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
+      - name: Run the corpora
+        run: scripts/test/filter.sh -p nabic --test main -- "integration::" "differential::" "native::abi::" "native::ffi::"
+
+  # Every allocation a collection, and every collection moves the objects
+  # it can (evacuation), so a GC ref not rooted across a safepoint fails.
+  gc-stress:
+    needs: [plan]
+    if: contains(needs.plan.outputs.jobs, ' gc-stress ')
+    strategy:
+      fail-fast: false
+      matrix:
+        host:
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+        shard: [1, 2, 3, 4]
+    name: Test corpus under GC stress (${{ matrix.host.name }}, -O2, ${{ matrix.shard }}/4)
+    runs-on: ${{ matrix.host.os }}
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      id-token: write # OIDC -> the sccache role
+    env:
+      NABI_TEST_OPT: -O2
+      NABI_TEST_SHARD: ${{ matrix.shard }}/4
+      NABIR_GC_STRESS: "50"
+      NABIR_GC_EVAC: always
+      NABI_TEST_CASE_TIMEOUT: "1200"
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Configure AWS credentials for sccache writes
+        if: vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Build the host C library
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
+      - name: Run the integration corpus
+        run: scripts/test/filter.sh -p nabic --test main -- "integration::"
+
+  # Secret-dependent timing of the crypto primitives at -O2 and -O3
+  # (tests/timing.nabi, a dudect-style probe with a leaky control).
+  timing:
+    needs: [plan]
+    if: contains(needs.plan.outputs.jobs, ' timing ')
+    strategy:
+      fail-fast: false
+      matrix:
+        host:
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: macos-arm64, os: macos-26 }
+    name: Test constant-time crypto (${{ matrix.host.name }})
+    runs-on: ${{ matrix.host.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Build the host C library
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
+      - name: Run the timing tests
+        run: scripts/test/filter.sh -p nabic --test main -- "timing::" --ignored
+
+  # Every fuzz target ten minutes, the seed the run number
+  # (each night new inputs). A new crash fails the job; its minimized
+  # repro is the artifact, to add under tests/crashes/.
+  fuzz:
+    needs: [plan]
+    if: contains(needs.plan.outputs.jobs, ' fuzz ')
+    strategy:
+      fail-fast: false
+      matrix:
+        host:
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: macos-arm64, os: macos-26 }
+    name: Fuzz the compiler (${{ matrix.host.name }})
+    runs-on: ${{ matrix.host.os }}
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      NABI_FUZZ_SEED: ${{ github.run_number }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Build the host C library
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
+      # As `just fuzz 600`.
+      - name: Run every fuzz target for ten minutes
+        run: |
+          NABI_FUZZ_SECS=600 cargo test --release -p nabic --test main -- fuzz:: \
+            --include-ignored --test-threads=1
+      - name: Upload the fuzz crashes
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crashes-${{ matrix.host.name }}
+          path: tests/crashes/
+
+  # The corpus twice through one incremental store under
+  # NABI_INCREMENTAL_VERIFY: the cold run fills it, the warm run replays
+  # every reused parse and body and fails on one that differs from a
+  # fresh lowering.
+  incr-verify:
+    name: Verify incremental reuse (linux-x64)
+    needs: [plan]
+    if: contains(needs.plan.outputs.jobs, ' incr-verify ')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      NABI_INCREMENTAL_VERIFY: "1"
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Build the host C library
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
+      - name: Run the integration corpus cold, then warm
+        run: |
+          export NABI_INCREMENTAL="$RUNNER_TEMP/incr"
+          scripts/test/filter.sh -p nabic --test main -- "integration::"
+          scripts/test/filter.sh -p nabic --test main -- "integration::"
+
+  # A failing nightly opens one issue, or comments on it while it stays
+  # open; the next passing nightly closes it.
+  report:
+    name: Report nightly result
+    needs: [plan, wasm, qemu, i686-windows, freebsd, freebsd-dist, opts, gc-stress, timing, fuzz, incr-verify]
+    if: always() && github.event_name == 'schedule' && vars.NABI_NIGHTLY == 'on'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open, update or close the nightly matrix issue
+        run: |
+          title="Nightly target matrix is failing"
+          failed=$(gh api --paginate "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | .name')
+          issue=$(gh issue list --state open --label "type: bug" --limit 200 --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$failed" ]; then
+            body=$(printf 'Nightly run %s failed on %s.\n\nFailed jobs:\n\n%s\n' "$RUN" "$GITHUB_SHA" "- ${failed//$'\n'/$'\n- '}")
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "$body"
+            else
+              gh issue create --title "$title" --label "type: bug" --body "$body"
+            fi
+          elif [ -n "$issue" ]; then
+            gh issue close "$issue" --comment "Nightly run $RUN passed on $GITHUB_SHA."
+          fi

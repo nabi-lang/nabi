@@ -1,0 +1,40 @@
+// Without `-> T`, a body whose every path diverges gets `!` (usable in
+// any slot), and an `async fn` takes its result type from the body.
+// expect-exit: 0
+// expect-stdout: 42 7 42 1 2 9 true
+
+#[derive(Debug)]
+struct E { code: i32; }
+impl Error for E {}
+impl Display for E {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("E") }
+}
+
+fn boom(s: str) { panic(s); }
+fn spin() { loop { } }
+fn fail_always(c: i32) throws (E) { throw E { code: c }; }
+fn either(b: bool) { if b { boom("a") } else { boom("b") } }
+
+async fn answer() { 40 + 2 }
+async fn early(b: bool) { if b { return 1; } 2 }
+async fn nothing() { }
+
+fn pick(c: bool) -> i32 {
+    let x: i32 = if c { 42 } else { boom("no") };
+    x
+}
+
+fn never_called() -> str { if false { spin() } else { either(true) } }
+
+fn main() {
+    let y: i32 = try fail_always(7) catch e { e.code };
+    let a = core::task::block_on(answer());
+    let b1 = core::task::block_on(early(true));
+    let b2 = core::task::block_on(early(false));
+    let u: () = core::task::block_on(nothing());
+    // A throwing `-> !` fn value fits a `-> R` slot with the same error.
+    let f: fn(i32) throws (E) -> i32 = fail_always;
+    let z = try f(9) catch e { e.code };
+    let r: Result<str, E> = Result::catching(|| try fail_always(4));
+    println(f"{pick(true)} {y} {a} {b1} {b2} {z} {r.is_err()}");
+}

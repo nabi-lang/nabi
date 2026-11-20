@@ -1,0 +1,8 @@
+// expect-error: `coutner` is not declared; a variable is created only by `let`
+// expect-error: help: did you mean `counter`?
+
+// Assigning to an undeclared name suggests the near one.
+fn main() {
+    let counter: i32 = 0i32;
+    coutner = counter + 1i32;
+}

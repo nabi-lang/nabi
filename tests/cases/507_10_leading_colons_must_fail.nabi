@@ -1,0 +1,11 @@
+// expect-error: cannot find struct `::A` in this scope
+// expect-error: help: a leading `::` names the standard library or a dependency (`::std::fs`): write `pkg::A` for an item of this package
+
+// A leading `::` starts at the packages: `::std::..`, `::core::..`,
+// `::bare::..` or a dependency's name; not this package's items.
+struct A {}
+
+fn main() {
+    let a: A = A {};
+    let b = ::A {};
+}

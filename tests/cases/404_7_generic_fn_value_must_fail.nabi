@@ -1,0 +1,5 @@
+// expect-error: its type arguments are not determined
+
+// Nothing fixes `T`.
+fn id<T>(x: T) -> T { x }
+let f = id;

@@ -1,0 +1,21 @@
+// expect-error: std_306_stdio_ownership_error.nabi:16:9: `f` was moved at line 15, and is used here
+// expect-error: error[E0034]: field `stdout` of `Child` is private to module `std::process` (take it with `.take_stdout()`)
+// only-os: macos linux
+
+// A file moved into `Stdio::File` is the command's: the program cannot
+// close it again. A child's pipes are taken, not read off its fields.
+use core::io::IoError;
+use std::fs::File;
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+fn main() throws (IoError) {
+    let f = try File::create("/dev/null");
+    let cmd = Command::new(Path::new("/bin/sh")).args(["-c", "echo x"]);
+    let st = try cmd.stdout(Stdio::File(f)).status();
+    try f.close();
+    println(f"{st}");
+    let child = try cmd.stdout(Stdio::Piped).spawn();
+    println(f"{child.stdout is none}");
+    _ = try child.wait();
+}

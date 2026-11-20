@@ -1,0 +1,28 @@
+// needs: objc
+// expect-error: `initWithBytes_length` has 3 parameter(s), so its selector has 3 part(s): name it after the selector with `_` between the parts
+// expect-error: `#[selector("isEqualToString:")]` has 1 argument(s), but `same` passes 2
+// expect-error: `#[selector]` is for methods of an `extern "objc"` block, not an `extern "C"` one
+// expect-error: `alloc_init` is an `init` method: it takes `self`
+// expect-error: `retain`: an Objective-C method takes `self`, not `ref self`
+
+// Selectors come from the method name, one `_`-separated part per
+// argument, or from `#[selector]`; both must match the parameters.
+use bare::ffi::objc::Id;
+use bare::ptr::ConstPtr;
+
+#[objc::class(NSData)]
+extern "objc" {
+    fn initWithBytes_length(self, bytes: ConstPtr<u8>, n: usize, more: usize) -> Id<NSData>;
+    #[selector("isEqualToString:")]
+    fn same(self, a: Id<NSData>, b: Id<NSData>) -> bool;
+    #[selector("initWithData:")]
+    fn alloc_init(d: Id<NSData>) -> Id<NSData>;
+    fn retain(ref self) -> Id<NSData>;
+}
+
+extern "C" {
+    #[selector("abs")]
+    fn abs(x: i32) -> i32;
+}
+
+fn main() {}

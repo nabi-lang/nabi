@@ -1,0 +1,60 @@
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// 7
+// 7
+// -10
+// was false
+// now true
+// 3
+// cmp ok
+// 42
+// 6
+// 9
+// 1
+// 5
+
+// core::sync on one thread: `Atomic` ops (default `SeqCst`,
+// explicit orderings, CAS success / failure, `bool`, `u64` bit ops),
+// `Mutex` / `RwLock` guards under `using`, `Once`, `Cell`. Bare
+// `Ordering` stays `cmp::Ordering`.
+use core::sync::{LoadOrdering, UpdateOrdering};
+
+fn main() -> i32 {
+    let a = Atomic::new(5);
+    a.fetch_add(3);
+    a.fetch_sub(1, UpdateOrdering::Relaxed);
+    println(f"{a.load()}");
+    let r = a.compare_exchange(7, 10, UpdateOrdering::SeqCst, LoadOrdering::SeqCst);
+    match r { Result::Ok(v) => println(f"{v}"), Result::Err(v) => println(f"{0 - v}"), };
+    let r2 = a.compare_exchange(7, 11, UpdateOrdering::SeqCst, LoadOrdering::SeqCst);
+    match r2 { Result::Ok(v) => println(f"{v}"), Result::Err(v) => println(f"{0 - v}"), };
+    let f = Atomic::new(false);
+    if !f.swap(true) { println("was false"); }
+    if f.load() { println("now true"); }
+    let u = Atomic::new(0u64);
+    u.fetch_or(6u64); u.fetch_and(3u64); u.fetch_xor(1u64);
+    println(f"{u.load() as i64}");
+    let o = Ordering::Less;
+    if o.is_lt() { println("cmp ok"); }
+
+    let m = Mutex::new(1);
+    using g = m.lock() {
+        g.update(|v| v + 41);
+    }
+    using g = m.lock() { println(f"{g.get()}"); }
+    let l = RwLock::new(3);
+    using r = l.read(), r2 = l.read() { println(f"{r.get() + r2.get()}"); }
+    using w = l.write() { w.set(9); }
+    using r = l.read() { println(f"{r.get()}"); }
+    let once = sync::Once::new();
+    let n = Atomic::new(0);
+    once.call_once(|| { n.fetch_add(1); });
+    once.call_once(|| { n.fetch_add(1); });
+    println(f"{n.load()}");
+    let c = Cell::new(4);
+    let v = c.get() + 1;
+    c.set(v);
+    println(f"{c.replace(0)}");
+    return 0;
+}

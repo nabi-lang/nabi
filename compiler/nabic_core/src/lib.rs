@@ -1,0 +1,618 @@
+//! Definitions shared by the compiler and the `nabi` tool.
+
+pub mod cli;
+pub mod codec;
+pub mod completions;
+pub mod def;
+pub mod hash;
+pub mod leb;
+pub mod lint;
+pub mod local;
+pub mod suggest;
+pub mod term;
+pub mod tmp;
+
+pub use def::{DefId, DefInfo, DefKind, DefTable, Visibility};
+pub use hash::{HashMap, HashSet};
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+use std::path::{Path, PathBuf};
+
+/// `$NABI_HOME`, else the home the running executable sits in, else
+/// `~/.nabi` (`%USERPROFILE%\.nabi`).
+#[must_use]
+pub fn nabi_home() -> Option<PathBuf> {
+    if let Some(h) = std::env::var_os("NABI_HOME").filter(|h| !h.is_empty()) {
+        return Some(PathBuf::from(h));
+    }
+    if let Some(h) = std::env::current_exe().ok().and_then(|e| home_of(&e)) {
+        return Some(h);
+    }
+    Some(user_home()?.join(".nabi"))
+}
+
+/// Env knob `name`; `None` if unset or empty. An invalid value warns once
+/// (naming `expected`) and reads as unset.
+pub fn env_knob<T>(
+    name: &'static str,
+    expected: &str,
+    parse: impl FnOnce(&str) -> Option<T>,
+) -> Option<T> {
+    static WARNED: std::sync::Mutex<std::collections::BTreeSet<&str>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let v = std::env::var_os(name).filter(|v| !v.is_empty())?;
+    let r = v.to_str().and_then(parse);
+    if r.is_none()
+        && WARNED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name)
+    {
+        let v = v.to_string_lossy();
+        eprintln!(
+            "{}: warning: ignoring {name}={v} (expected {expected})",
+            cli::invoked_as()
+        );
+    }
+    r
+}
+
+/// Exit code of an internal compiler error (`EX_SOFTWARE`), apart from a
+/// program panic's 101.
+pub const ICE_EXIT: i32 = 70;
+
+/// Where an internal error is reported.
+pub const ISSUES: &str = "https://github.com/nabi-lang/nabi/issues/new";
+
+thread_local! {
+    /// The passes this thread is in, outermost first (`Pass::enter`).
+    static PASSES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A compiler pass this thread is in until the guard drops: what an
+/// internal error report names.
+pub struct Pass(());
+
+impl Pass {
+    #[must_use]
+    pub fn enter(name: &str) -> Self {
+        PASSES.with(|p| p.borrow_mut().push(name.to_owned()));
+        Self(())
+    }
+}
+
+impl Drop for Pass {
+    fn drop(&mut self) {
+        PASSES.with(|p| p.borrow_mut().pop());
+    }
+}
+
+/// The passes the calling thread is in: `hir > bodies`; empty outside.
+#[must_use]
+pub fn current_passes() -> String {
+    PASSES.with(|p| p.try_borrow().map(|v| v.join(" > ")).unwrap_or_default())
+}
+
+/// What an internal error prints after the panic message: what to do,
+/// and what a report needs (`version`, `host`, the command line, the
+/// pass it was in).
+#[must_use]
+pub fn ice_report(tool: &str, what: &str, version: &str, host: &str) -> String {
+    let args: Vec<String> = std::env::args()
+        .skip(1)
+        .map(|a| {
+            if a.is_empty() || a.contains(char::is_whitespace) {
+                format!("'{a}'")
+            } else {
+                a
+            }
+        })
+        .collect();
+    format!(
+        "{tool}: {what}\n\
+         note: this is a bug in nabi, not in your code; please report it, with the code that \
+         triggers it, at {ISSUES}\n\
+         note: {tool} {version} on {host}\n\
+         note: command: {tool} {}{}",
+        args.join(" "),
+        Some(current_passes())
+            .filter(|p| !p.is_empty())
+            .map_or_else(String::new, |p| format!("\nnote: in pass: {p}"))
+    )
+}
+
+/// `nabic: warning: <msg>` (`nabi: ..` under nabi) on stderr, once per
+/// process.
+pub fn warn_once(msg: &str) {
+    static WARNED: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    if WARNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(msg.to_owned())
+    {
+        eprintln!(
+            "{}: {} {msg}",
+            cli::invoked_as(),
+            term::label(term::Stream::Stderr, term::Role::Warning)
+        );
+    }
+}
+
+/// Hand-offs `nabi` set in this process for a tool it runs itself;
+/// they beat the environment's (`None`: unset).
+static HANDOFFS: std::sync::Mutex<Vec<(String, Option<std::ffi::OsString>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Set hand-off `__<name>` for the rest of this process.
+pub fn set_handoff(name: &str, value: Option<&std::ffi::OsStr>) {
+    let mut h = HANDOFFS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    h.retain(|(n, _)| n != name);
+    h.push((name.to_owned(), value.map(ToOwned::to_owned)));
+}
+
+/// Hand-off variable `__<name>` from `nabi`.
+#[must_use]
+pub fn handoff_var(name: &str) -> Option<std::ffi::OsString> {
+    let h = HANDOFFS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, v)) = h.iter().find(|(n, _)| n == name) {
+        return v.clone();
+    }
+    drop(h);
+    std::env::var_os(format!("__{name}"))
+}
+
+/// Whether environment name `k` is a `nabi` hand-off (`__NABI`,
+/// `__NABI_CLI`, ..). Windows names are case-insensitive.
+#[must_use]
+pub fn is_handoff(k: &std::ffi::OsStr) -> bool {
+    let k = k.as_encoded_bytes();
+    k.get(..6).is_some_and(|p| {
+        if cfg!(windows) {
+            p.eq_ignore_ascii_case(b"__NABI")
+        } else {
+            p == b"__NABI"
+        }
+    })
+}
+
+/// Keep the `nabi` hand-offs out of the program `c` runs: they are for
+/// `nabic` alone.
+pub fn strip_handoffs(c: &mut std::process::Command) {
+    for (k, _) in std::env::vars_os() {
+        if is_handoff(&k) {
+            c.env_remove(k);
+        }
+    }
+}
+
+/// Knob `name` set to one of `choices` (`a|b|c`): that choice.
+pub fn env_choice(name: &'static str, choices: &'static str) -> Option<&'static str> {
+    env_knob(name, choices, |v| choices.split('|').find(|&c| c == v))
+}
+
+/// Knob `name` = `0|1`.
+#[must_use]
+pub fn env_flag(name: &'static str) -> bool {
+    env_choice(name, "0|1") == Some("1")
+}
+
+/// The user's home directory: `%USERPROFILE%` on Windows, else `$HOME`.
+#[must_use]
+pub fn user_home() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var)
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+}
+
+/// `fs::canonicalize` without Windows' `\\?\` / `\\?\UNC\` prefixes.
+pub fn real_path(p: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    let real = std::fs::canonicalize(p)?;
+    if cfg!(windows) {
+        if let Some(plain) = real.to_str().and_then(unverbatim) {
+            return Ok(PathBuf::from(plain));
+        }
+    }
+    Ok(real)
+}
+
+/// An exclusive lock on the file at `path` (created, with its directory,
+/// if missing), held until the returned file is dropped. Blocks while
+/// another process holds it.
+pub fn lock_file(path: &Path) -> std::io::Result<std::fs::File> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let f = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn flock(fd: i32, op: i32) -> i32;
+        }
+        const LOCK_EX: i32 = 2;
+        loop {
+            // SAFETY: `f` is an open file.
+            if unsafe { flock(f.as_raw_fd(), LOCK_EX) } == 0 {
+                break;
+            }
+            let e = std::io::Error::last_os_error();
+            if e.kind() != std::io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        struct Overlapped {
+            internal: usize,
+            internal_high: usize,
+            offset: u32,
+            offset_high: u32,
+            event: *mut std::ffi::c_void,
+        }
+        unsafe extern "system" {
+            fn LockFileEx(
+                file: *mut std::ffi::c_void,
+                flags: u32,
+                reserved: u32,
+                low: u32,
+                high: u32,
+                ov: *mut Overlapped,
+            ) -> i32;
+        }
+        const LOCKFILE_EXCLUSIVE_LOCK: u32 = 2;
+        let mut ov = Overlapped {
+            internal: 0,
+            internal_high: 0,
+            offset: 0,
+            offset_high: 0,
+            event: std::ptr::null_mut(),
+        };
+        // SAFETY: `f` is an open synchronous handle; `ov` outlives the call.
+        let ok = unsafe {
+            LockFileEx(
+                f.as_raw_handle(),
+                LOCKFILE_EXCLUSIVE_LOCK,
+                0,
+                u32::MAX,
+                u32::MAX,
+                &raw mut ov,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(f)
+}
+
+/// A stamp that changes whenever the file at `p` is written or replaced.
+///
+/// Size, mtime, inode and ctime, without reading the file (Windows: file
+/// id and creation time; the id because NTFS gives a recreated name the
+/// old creation time). `-` when missing.
+#[must_use]
+pub fn file_stamp(p: &Path) -> String {
+    let Ok(m) = std::fs::metadata(p) else {
+        return "-".to_owned();
+    };
+    let nanos = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos())
+    };
+    #[cfg(unix)]
+    let made = format!("{:x}-{:x}.{:x}", m.ino(), m.ctime(), m.ctime_nsec());
+    #[cfg(windows)]
+    let made = format!("{}-{:x}", windows_file_id(p), nanos(m.created()));
+    #[cfg(not(any(unix, windows)))]
+    let made = format!("{:x}", nanos(m.created()));
+    format!("{:x}-{:x}-{made}", m.len(), nanos(m.modified()))
+}
+
+/// The volume serial number and file index of `p` (`0.0` when it cannot
+/// be opened): what an inode is on Unix.
+#[cfg(windows)]
+fn windows_file_id(p: &Path) -> String {
+    unsafe extern "system" {
+        // BY_HANDLE_FILE_INFORMATION is 13 DWORDs.
+        fn GetFileInformationByHandle(file: *mut std::ffi::c_void, info: *mut [u32; 13]) -> i32;
+    }
+    let mut info = [0u32; 13];
+    let ok = std::fs::File::open(p).is_ok_and(
+        |f| unsafe { GetFileInformationByHandle(f.as_raw_handle(), &raw mut info) } != 0,
+    );
+    if !ok {
+        return "0.0".to_owned();
+    }
+    // dwVolumeSerialNumber, nFileIndexHigh, nFileIndexLow.
+    format!(
+        "{:x}.{:x}",
+        info[7],
+        (u64::from(info[11]) << 32) | u64::from(info[12])
+    )
+}
+
+/// A Windows verbatim path without its `\\?\` prefix, when it has an
+/// ordinary spelling.
+fn unverbatim(s: &str) -> Option<String> {
+    if let Some(unc) = s.strip_prefix(r"\\?\UNC\") {
+        return Some(format!(r"\\{unc}"));
+    }
+    let rest = s.strip_prefix(r"\\?\")?;
+    let drive = rest.as_bytes();
+    (drive.len() >= 3 && drive[0].is_ascii_alphabetic() && &drive[1..3] == b":\\")
+        .then(|| rest.to_owned())
+}
+
+/// The running executable, through symlinks ([`real_path`]).
+#[must_use]
+pub fn current_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(real_path(&exe).unwrap_or(exe))
+}
+
+/// The compiler binary whose build this process runs: `nabic` itself, or
+/// the `nabic` beside `nabi` / `nabils`, which link the same compiler and
+/// run tools with it in-process (else the running executable).
+#[must_use]
+pub fn compiler_exe() -> Option<PathBuf> {
+    let exe = current_exe()?;
+    let nabic = format!("nabic{}", std::env::consts::EXE_SUFFIX);
+    if exe.file_name().is_some_and(|n| n == nabic.as_str()) {
+        return Some(exe);
+    }
+    let beside = exe.with_file_name(&nabic);
+    Some(if beside.is_file() { beside } else { exe })
+}
+
+/// The nabi home an executable is installed in: `<home>/bin/<exe>` (a
+/// proxy: `<home>/toolchains/` exists) or `<home>/toolchains/<name>/bin/<exe>`.
+#[must_use]
+pub fn home_of(exe: &Path) -> Option<PathBuf> {
+    let exe = real_path(exe).unwrap_or_else(|_| exe.to_path_buf());
+    let up = exe.parent()?.parent()?;
+    if up.join("toolchains").is_dir() {
+        return Some(up.to_path_buf());
+    }
+    let tcs = up.parent()?;
+    (tcs.file_name()? == "toolchains").then(|| tcs.parent().map(Path::to_path_buf))?
+}
+
+/// The standard library's tiers, each a path root of its own (`std::fs`,
+/// `core::List`, `bare::ptr`) and a package name no one else may take.
+pub const TIERS: [&str; 3] = ["bare", "core", "std"];
+
+/// `path` (a module or item path) is in one of the [`TIERS`].
+#[must_use]
+pub fn in_toolchain(path: &str) -> bool {
+    TIERS.contains(&path.split("::").next().unwrap_or_default())
+}
+
+/// Reserved keywords; the lexer's list.
+///
+/// The last six ([`UNUSED_KEYWORDS`]) have no syntax (but `move` in a
+/// capture list): the lexer gives them as identifiers and the parser
+/// rejects them where a name is expected.
+pub const KEYWORDS: &[&str] = &[
+    "let", "fn", "if", "else", "match", "while", "loop", "for", "return", "break", "continue",
+    "try", "throw", "async", "await", "yield", "unsafe", "using", "struct", "enum", "trait",
+    "impl", "pub", "mod", "use", "as", "is", "ref", "true", "false", "none", "self", "Self",
+    "macro", "defer", "dyn", "move", "gen", "do",
+];
+
+/// Reserved keywords no syntax uses (`move` only in `[move x]`): a
+/// name spelled so needs `r#`.
+pub const UNUSED_KEYWORDS: &[&str] = &["macro", "defer", "dyn", "move", "gen", "do"];
+
+/// Why `name` (code name: `-` spelled `_`) can't be a package name: code
+/// could not name it, or it is one of the standard library's tiers.
+#[must_use]
+pub fn reserved_package(name: &str) -> Option<String> {
+    let why = if TIERS.contains(&name) {
+        "is the standard library, which ships with the toolchain".to_owned()
+    } else if name == "pkg" {
+        "already names a package's own root (`pkg::`), so code can't name a package called that"
+            .to_owned()
+    } else if name == "sup" {
+        "already names the parent module (`sup::`), so code can't name a package called that"
+            .to_owned()
+    } else if KEYWORDS.contains(&name) {
+        "is a keyword, so code can't name a package called that".to_owned()
+    } else {
+        return None;
+    };
+    Some(format!(
+        "`{name}` {why}; name the package something else, e.g. `{name}_util`"
+    ))
+}
+
+/// Longest package or environment name.
+pub const MAX_NAME: usize = 64;
+
+/// Why `name` can't name a `kind` ("package", "environment") stored as a
+/// file or directory on every supported OS.
+///
+/// A Windows device name (any
+/// case, any extension), a separator or other character Windows refuses,
+/// `.` / `..`, a leading `.` (hidden), a trailing `.` or space (dropped
+/// by Windows), or longer than `MAX_NAME`.
+pub fn check_os_name(kind: &str, name: &str) -> Result<(), String> {
+    const DEVICES: [&str; 4] = ["con", "prn", "aux", "nul"];
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    let lower = stem.to_ascii_lowercase();
+    let device = DEVICES.contains(&lower.as_str())
+        || ["com", "lpt"].iter().any(|p| {
+            lower
+                .strip_prefix(p)
+                .is_some_and(|n| n.len() == 1 && matches!(n.as_bytes()[0], b'1'..=b'9'))
+        });
+    if name.is_empty() {
+        return Err(format!(
+            "the {kind} name is empty; write one, e.g. `my_{kind}`"
+        ));
+    }
+    let why = if device && stem == name {
+        "is a device name on Windows, so no file can be called that".to_owned()
+    } else if device {
+        format!("starts with a Windows device name (`{stem}`), so no file can be called that")
+    } else if let Some(c) = name.chars().find(|c| {
+        c.is_control() || matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*')
+    }) {
+        format!("contains {c:?}, which a file name can't hold on every system")
+    } else if name == "." || name == ".." {
+        "is a path, not a name".to_owned()
+    } else if name.starts_with('.') {
+        "starts with `.`, which hides it".to_owned()
+    } else if name.ends_with(['.', ' ']) {
+        "ends with `.` or a space, which Windows drops".to_owned()
+    } else if name.chars().count() > MAX_NAME {
+        let short: String = name.chars().take(16).collect();
+        return Err(format!(
+            "the {kind} name `{short}...` is {} characters long; keep it to {MAX_NAME} or fewer",
+            name.chars().count()
+        ));
+    } else {
+        return Ok(());
+    };
+    let fixed = name
+        .trim_matches(['.', ' '])
+        .replace(|c: char| !c.is_ascii_alphanumeric() && c != '.', "_");
+    let fixed = if fixed.is_empty() { kind } else { &fixed };
+    Err(format!(
+        "`{name}` {why}; name the {kind} something else, e.g. `my_{fixed}`"
+    ))
+}
+
+/// Length of the shebang line, terminator excluded; 0 if
+/// none. `#!` followed (past whitespace and comments) by `[` is an inner
+/// attribute, not a shebang.
+#[must_use]
+pub fn shebang_len(src: &str) -> usize {
+    let Some(mut rest) = src.strip_prefix("#!") else {
+        return 0;
+    };
+    let b = |s: &str, i: usize| s.as_bytes().get(i).copied();
+    loop {
+        rest = rest.trim_start_matches(['\t', '\n', '\u{b}', '\u{c}', '\r', ' ']);
+        if rest.starts_with("//") && !rest.starts_with("///") && !rest.starts_with("//!")
+            || rest.starts_with("////")
+        {
+            rest = rest.find(['\n', '\r']).map_or("", |i| &rest[i..]);
+        } else if rest.starts_with("/*")
+            && b(rest, 2) != Some(b'!')
+            && (b(rest, 2) != Some(b'*') || matches!(b(rest, 3), Some(b'*' | b'/')))
+        {
+            let mut depth = 0usize;
+            let mut i = 0;
+            while i + 1 < rest.len() {
+                match &rest.as_bytes()[i..i + 2] {
+                    b"/*" => (depth, i) = (depth + 1, i + 2),
+                    b"*/" => (depth, i) = (depth - 1, i + 2),
+                    _ => i += 1,
+                }
+                if depth == 0 {
+                    break;
+                }
+            }
+            if depth > 0 {
+                break;
+            }
+            rest = &rest[i..];
+        } else {
+            break;
+        }
+    }
+    if rest.starts_with('[') {
+        return 0;
+    }
+    src.find(['\n', '\r']).unwrap_or(src.len())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn os_names() {
+        let c = |n: &str| super::check_os_name("package", n);
+        for ok in [
+            "app", "con-app", "console", "com0", "com10", "lpt", "a..b", "x.y",
+        ] {
+            assert_eq!(c(ok), Ok(()), "{ok}");
+        }
+        for (bad, why) in [
+            ("nul", "is a device name on Windows, so"),
+            ("CON", "is a device name on Windows"),
+            ("Aux.txt", "starts with a Windows device name (`Aux`)"),
+            ("com1", "device name"),
+            ("LPT9.x.y", "device name"),
+            ("a/b", "contains '/'"),
+            ("a\\b", "contains '\\\\'"),
+            ("c:x", "contains ':'"),
+            ("..", "is a path"),
+            (".hidden", "starts with `.`"),
+            ("x.", "ends with `.`"),
+            ("", "is empty; write one, e.g. `my_package`"),
+        ] {
+            let e = c(bad).unwrap_err();
+            assert!(e.contains(why), "{bad}: {e}");
+            assert!(e.contains("e.g. `my_"), "{bad}: {e}");
+        }
+        assert_eq!(
+            c("nul").unwrap_err(),
+            "`nul` is a device name on Windows, so no file can be called that; name the \
+             package something else, e.g. `my_nul`"
+        );
+        assert_eq!(c(&"a".repeat(64)), Ok(()));
+        let e = c(&"a".repeat(65)).unwrap_err();
+        assert!(
+            e.contains("is 65 characters long; keep it to 64 or fewer"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn shebang_lines() {
+        let s = super::shebang_len;
+        assert_eq!(s("#!/usr/bin/env nabi\nprintln(1);"), 19);
+        assert_eq!(s("#!/usr/bin/env nabi"), 19);
+        assert_eq!(s("#!nabi\r\nx"), 6);
+        assert_eq!(s("#![allow(unused)]\n"), 0);
+        assert_eq!(s("#! [allow(unused)]\n"), 0);
+        assert_eq!(s("#!\n// c\n/* d /* e */ */ [x]"), 0);
+        // A doc comment is a token: not `[`.
+        assert_eq!(s("#!/// d\n[x]"), 7);
+        assert_eq!(s("#!/** d */[x]"), 13);
+        assert_eq!(s("#!/**/[x]"), 0);
+        assert_eq!(s("#!/* open"), 9);
+        assert_eq!(s(" #!/bin/nabi"), 0);
+        assert_eq!(s("x\n#!/bin/nabi"), 0);
+    }
+
+    #[test]
+    fn verbatim_windows_paths_get_their_plain_spelling() {
+        let u = super::unverbatim;
+        assert_eq!(
+            u(r"\\?\C:\Users\é\a.nabi").as_deref(),
+            Some(r"C:\Users\é\a.nabi")
+        );
+        assert_eq!(u(r"\\?\UNC\srv\share\x").as_deref(), Some(r"\\srv\share\x"));
+        assert_eq!(u(r"\\?\Volume{1}\x"), None);
+        assert_eq!(u(r"C:\x"), None);
+    }
+}

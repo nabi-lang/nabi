@@ -1,0 +1,60 @@
+//! bare::ffi::types - C's integer and float types under their C names,
+//! as the target's C compiler sizes them. Each is an alias: on one target
+//! `c_int` and `i32` are the same type. `long` is 32 bits on Windows and
+//! on 32-bit targets, `wchar_t` 16 bits on Windows.
+
+/// C `signed char`.
+pub type c_schar = i8;
+/// C `unsigned char`.
+pub type c_uchar = u8;
+/// C `short`.
+pub type c_short = i16;
+/// C `unsigned short`.
+pub type c_ushort = u16;
+/// C `int`.
+pub type c_int = i32;
+/// C `unsigned int`.
+pub type c_uint = u32;
+/// C `long`: 32 bits on Windows and 32-bit targets, else 64.
+#[cfg(any(target_os = "windows", target_pointer_width = "32"))]
+pub type c_long = i32;
+/// C `long`: 32 bits on Windows and 32-bit targets, else 64.
+#[cfg(not(any(target_os = "windows", target_pointer_width = "32")))]
+pub type c_long = i64;
+/// C `unsigned long`: 32 bits on Windows and 32-bit targets, else 64.
+#[cfg(any(target_os = "windows", target_pointer_width = "32"))]
+pub type c_ulong = u32;
+/// C `unsigned long`: 32 bits on Windows and 32-bit targets, else 64.
+#[cfg(not(any(target_os = "windows", target_pointer_width = "32")))]
+pub type c_ulong = u64;
+/// C `long long`.
+pub type c_longlong = i64;
+/// C `unsigned long long`.
+pub type c_ulonglong = u64;
+/// C `size_t`.
+pub type c_size_t = usize;
+/// C `ssize_t`.
+pub type c_ssize_t = isize;
+/// C `ptrdiff_t`.
+pub type c_ptrdiff_t = isize;
+/// C `intptr_t`.
+pub type c_intptr_t = isize;
+/// C `uintptr_t`.
+pub type c_uintptr_t = usize;
+/// C `wchar_t`: a UTF-16 unit on Windows, unsigned on Linux on Arm.
+#[cfg(target_os = "windows")]
+pub type c_wchar = u16;
+/// C `wchar_t`: a UTF-16 unit on Windows, unsigned on Linux on Arm.
+// Linux on Arm makes `wchar_t` unsigned.
+#[cfg(all(not(target_os = "windows"), any(target_os = "linux", target_os = "android"), any(target_arch = "aarch64", target_arch = "arm")))]
+pub type c_wchar = u32;
+/// C `wchar_t`: a UTF-16 unit on Windows, unsigned on Linux on Arm.
+#[cfg(all(not(target_os = "windows"), not(all(any(target_os = "linux", target_os = "android"), any(target_arch = "aarch64", target_arch = "arm")))))]
+pub type c_wchar = i32;
+/// C `float`.
+pub type c_float = f32;
+/// C `double`.
+pub type c_double = f64;
+
+/// C's `void`, only behind a pointer: `CPtr<c_void>` is a `void*`.
+pub struct c_void {}

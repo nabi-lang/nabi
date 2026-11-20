@@ -1,0 +1,7 @@
+// expect-error: this literal pattern can't match a value of type `f16`
+// A 16-bit float matches no literal pattern; the help writes the guard.
+fn main() {
+    let h: f16 = 1.5;
+    let s = match h { 1.5 => "a", _ => "b" };
+    println(s);
+}

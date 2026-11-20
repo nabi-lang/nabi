@@ -1,0 +1,13 @@
+// expect-exit: 0
+// expect-stdout: 200000 200000 28 3 0.5
+
+// A suffix may start with `b`, `o` or `x` after any number but `0`: a
+// radix letter only follows a leading `0`.
+#[literal(number "bar")]
+pub const fn bars(n: f64) -> f64 { n * 1e5 }
+#[literal(number "oz")]
+pub const fn ounces(n: f64) -> f64 { n * 28.0 }
+#[literal(number "xu")]
+pub const fn xus(n: i64) -> i64 { n }
+
+fn main() { println(f"{2.0bar} {2bar} {1oz} {3xu} {0x1 as f64 * 0.5}"); }

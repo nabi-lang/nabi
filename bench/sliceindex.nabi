@@ -1,0 +1,30 @@
+// Indexed loops over a `Slice` of a list and over a list at an offset
+// (`x[k + m]`, an FFT butterfly's shape): bounds checks made once in
+// front, then the loops vectorize. Compare vecsum over a whole list.
+fn ssum(s: Slice<u64>) -> u64 {
+    let t: u64 = 0;
+    for i in 0..s.len() {
+        t = t.wrapping_add(s[i]);
+    }
+    t
+}
+
+fn shift(x: List<f64>, y: List<f64>, n: usize, m: usize) {
+    for k in 0..n {
+        y[k] = x[k + m] * 2.0 - y[k];
+    }
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 18;
+    let xs: List<u64> = List::from_fn(2 * n, |i: usize| -> u64 { (i as u64).wrapping_mul(0x9e3779b97f4a7c15u64) });
+    let x: List<f64> = List::from_fn(2 * n, |i: usize| -> f64 { (i % 13) as f64 });
+    let y: List<f64> = List::filled(n, 0.0);
+    let t: u64 = 0;
+    for r in 0..200usize {
+        t = t.wrapping_add(ssum(xs[r:r + n]));
+        shift(x, y, n, r + 1);
+    }
+    println(f"{t} {y[5]}");
+    return 0;
+}

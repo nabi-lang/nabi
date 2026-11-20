@@ -1,0 +1,23 @@
+// expect-exit: 0
+// expect-stdout: 3 1 2 3
+
+// An impl header computing an argument (`Q<{ 2 * A }>`) applies where the
+// parameter solves exactly.
+pub struct Q<const L: i32> { v: f64; }
+pub trait Root { type Output; fn root(self) -> Output; }
+impl<const A: i32> Root for Q<{ 2 * A }> {
+    type Output = Q<A>;
+    fn root(self) -> Q<A> { Q { v: self.v.sqrt() } }
+}
+pub trait Lower { fn down(self) -> i32; }
+impl<const A: i32> Lower for Q<{ A + 1 }> {
+    fn down(self) -> i32 { A }
+}
+fn level<const L: i32>(q: Q<L>) -> i32 { L }
+
+fn main() {
+    let area: Q<2> = Q { v: 9.0 };
+    let r = area.root();
+    let c: Q<4> = Q { v: 1.0 };
+    println(f"{r.v} {level(r)} {level(c.root())} {c.down()}");
+}

@@ -1,0 +1,12 @@
+// expect-error: 9:22: `H` is declared inside `main` and can't use `n`, a local of `main`
+// expect-error: help: a `const` reads only constants and const parameters; for a value write `let h = n / 2;`
+// expect-error: 10:21: a `const` block can't use `n`, a run-time variable
+// expect-error: help: a `const` block reads only constants and const parameters; for a value drop the `const`: `{ .. }`
+
+// A `const` and a `const { .. }` block read no `let` variable.
+fn main() {
+    let n = 3;
+    const H: usize = n / 2;
+    let q = const { n + 1 };
+    println(f"{H} {q}");
+}

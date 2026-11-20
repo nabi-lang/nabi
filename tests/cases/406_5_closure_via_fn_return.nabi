@@ -1,0 +1,16 @@
+// expect-exit: 8
+// expect-stdout:
+// 8 10 0
+
+// A capturing closure is a value of its `fn` type -
+// it can be returned through a `fn(...)` return type (`make_adder`).
+fn make_adder(n: i32) -> fn(i32) -> i32 {
+    return |x| { x + n };
+}
+
+fn main() -> i32 {
+    let add5 = make_adder(5);
+    let add7 = make_adder(7);
+    println(f"{add5(3)} {add7(3)} {add5(-5)}");
+    return add5(3);
+}

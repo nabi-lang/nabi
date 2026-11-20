@@ -1,0 +1,112 @@
+// Sorting the lanes of an array along an axis; NaN sorts last.
+
+/// Ascending with NaN (an element unequal to itself) after everything.
+const fn nan_last<T: PartialEq + PartialOrd>(a: T, b: T) -> Ordering {
+    if a < b {
+        return Ordering::Less;
+    }
+    if b < a {
+        return Ordering::Greater;
+    }
+    let (an, bn) = (a != a, b != b);
+    if an && !bn {
+        return Ordering::Greater;
+    }
+    if bn && !an {
+        return Ordering::Less;
+    }
+    Ordering::Equal
+}
+
+const unsafe fn sort_lane<T: PartialEq + PartialOrd>(b: GcBuf<T>, p: usize, st: isize, o: GcBuf<T>, q: usize, ost: isize, n: usize) {
+    let xs: List<T> = List::with_capacity(n);
+    unsafe {
+        for i in 0..n {
+            xs.push(b[p.wrapping_add((i as isize).wrapping_mul(st) as usize)]);
+        }
+        xs.sort_by(|x: T, y: T| -> Ordering { nan_last(x, y) });
+        for i in 0..n {
+            o[q.wrapping_add((i as isize).wrapping_mul(ost) as usize)] = xs[i];
+        }
+    }
+}
+
+const unsafe fn argsort_lane<T: PartialEq + PartialOrd>(b: GcBuf<T>, p: usize, st: isize, o: GcBuf<usize>, q: usize, ost: isize, n: usize) {
+    let ix: List<usize> = List::from_fn(n, |i: usize| -> usize { i });
+    unsafe {
+        ix.sort_by(|i: usize, j: usize| -> Ordering {
+            nan_last(b[p.wrapping_add((i as isize).wrapping_mul(st) as usize)], b[p.wrapping_add((j as isize).wrapping_mul(st) as usize)])
+        });
+        for i in 0..n {
+            o[q.wrapping_add((i as isize).wrapping_mul(ost) as usize)] = ix[i];
+        }
+    }
+}
+
+impl<T: PartialEq + PartialOrd, const N: usize> Array<T, N> {
+    /// A copy with each lane along `axis` sorted ascending, stable; NaN
+    /// last. NumPy: `np.sort(a, axis)`.
+    ///
+    /// ```nabi
+    /// use core::array::Matrix;
+    ///
+    /// let m: Matrix<f64> = [[3, 1, 2], [0, f64::NAN, -1]];
+    /// let s = m.sorted_along(1);
+    /// assert(s[0, :].to_list() == [1.0, 2.0, 3.0]);
+    /// assert(s[1, 0] == -1.0 && s[1, 2].is_nan());
+    /// assert(m.sorted_along(0)[0, :].to_list() == [0.0, 1.0, -1.0]);
+    /// ```
+    #[track_caller]
+    pub const fn sorted_along(self, axis: usize) -> Array<T, N> {
+        self.scan("sorted_along", axis, |b: GcBuf<T>, p: usize, st: isize, o: GcBuf<T>, q: usize, ost: isize, n: usize| {
+            unsafe { sort_lane(b, p, st, o, q, ost, n); }
+        })
+    }
+
+    /// Each lane along `axis` sorted in place (through a view too).
+    #[track_caller]
+    pub const fn sort_along(self, axis: usize) {
+        self.assign(self.sorted_along(axis));
+    }
+
+    /// A sorted copy: a vector's elements ascending; for more axes,
+    /// each lane of the last. NumPy: `np.sort(a)`.
+    ///
+    /// ```nabi
+    /// use core::array::Vector;
+    ///
+    /// let v: Vector<i64> = [3, 1, 2];
+    /// assert(v.sorted().to_list() == [1, 2, 3]);
+    /// v.sort();
+    /// assert(v.to_list() == [1, 2, 3]);
+    /// ```
+    pub const fn sorted(self) -> Array<T, N> {
+        if N == 0 {
+            return self.copy();
+        }
+        self.sorted_along(N - 1)
+    }
+
+    /// `sorted` in place.
+    pub const fn sort(self) {
+        if N > 0 {
+            self.sort_along(N - 1);
+        }
+    }
+
+    /// The order that sorts each lane along `axis`: positions along it,
+    /// stable, NaN last. NumPy: `np.argsort(a, axis, kind="stable")`.
+    ///
+    /// ```nabi
+    /// use core::array::Vector;
+    ///
+    /// let v: Vector<f64> = [0.5, -2.0, 9.0];
+    /// assert(v.argsort_along(0).to_list() == [1, 0, 2]);
+    /// ```
+    #[track_caller]
+    pub const fn argsort_along(self, axis: usize) -> Array<usize, N> {
+        self.scan("argsort_along", axis, |b: GcBuf<T>, p: usize, st: isize, o: GcBuf<usize>, q: usize, ost: isize, n: usize| {
+            unsafe { argsort_lane(b, p, st, o, q, ost, n); }
+        })
+    }
+}

@@ -1,0 +1,11 @@
+// nabic-arg: --extern anytr=tests/cases/any_seed_dependency_path/anytr --extern anyuse=tests/cases/any_seed_dependency_path/anyuse
+// expect-exit: 0
+// expect-stdout: 5
+
+// The `any` dispatch seeds a dependency passes on name another
+// package's trait by its public path (`anytr::Tr`), not the private one
+// (`anytr::inner::Tr`) the dependent cannot see.
+fn main() {
+    let xs: List<any anytr::Tr> = [anyuse::mk(2), anyuse::mk(3)];
+    println(f"{anytr::total(xs)}");
+}

@@ -1,0 +1,17 @@
+// A `ref` parameter changes a variable: a literal or a computed value
+// is bound to one first, an element copied out and stored back.
+// expect-error: 13:5: parameter `n` of `inc` is `ref`, so it changes a variable, and `3` is not one - bind it first, `let v = 3;`, and pass `ref v`
+// expect-error: 14:5: parameter `n` of `inc` is `ref`, so it changes a variable, and `x + 1` is not one - bind it first, `let v = x + 1;`, and pass `ref v`
+// expect-error: 15:5: parameter `n` of `inc` is `ref`, and an element cannot be passed `ref` - copy it into a variable, `let v = xs[0];`, pass `ref v`, and store it back, `xs[0] = v;`
+// expect-error: 16:5: parameter `n` of `inc` is `ref` - pass `ref x` at the call site
+
+fn inc(ref n: i32) { n += 1; }
+
+fn main() {
+    let x = 1;
+    let xs = [1, 2];
+    inc(3);
+    inc(x + 1);
+    inc(xs[0]);
+    inc(x);
+}

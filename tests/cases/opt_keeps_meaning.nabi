@@ -1,0 +1,38 @@
+// nabic-arg: -O2
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/opt_keeps_meaning.nabi:16:33:
+// expect-stderr: attempt to add with overflow
+// expect-stdout:
+// 9 42 7
+// 20000000 -1 2
+
+// Optimized code means what the source says: values through inlined
+// calls and folded constants, a loop counter's checks dropped only where
+// the loop bound proves them, a self tail call 20 million deep in one
+// frame, and an overflow in an inlined body still panicking at its own
+// position after what came before it ran.
+use std::env;
+
+fn add(a: i32, b: i32) -> i32 { a + b }
+fn pick(c: bool, x: i64) -> i64 { if c { x * 2 } else { x - 1 } }
+fn down(n: i64, acc: i64) -> i64 { if n == 0 { acc } else { down(n - 1, acc + 1) } }
+
+fn main() {
+    let xs: List<i64> = [1, 2, 3];
+    let s = 0i64;
+    for i in 0..xs.len() {
+        s += pick(i % 2 == 0, xs[i]);
+    }
+    let k: u8 = 250;
+    let steps = 0;
+    while k < 255 {
+        k += 1;
+        steps += 1;
+    }
+    println(f"{s} {add(40, 2)} {steps + 2}");
+    let n = env::args().len() as i64;
+    let lo: i64 = -9223372036854775807;
+    println(f"{down(n * 20000000, 0)} {(lo - n + 1) / 9223372036854775807} {xs[n as usize]}");
+    let m = 2147483647i32;
+    println(f"{add(m, n as i32)}");
+}

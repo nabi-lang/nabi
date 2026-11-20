@@ -1,0 +1,588 @@
+//! OS primitives shared by the runtime crates: POSIX (macOS, Linux)
+//! and WASI through wasi-libc.
+//!
+//! WASI has no reservations: the heap takes its blocks from `malloc`,
+//! which owns `memory.grow`. WASI without threads (no `atomics`:
+//! `wasm32-wasip2`, the browser) has one thread: locks are no-ops and a
+//! wait nobody can end is a deadlock; `wasm32-wasip1-threads` has
+//! wasi-libc's pthreads.
+
+// `static` primitives: `const fn new` is the constructor.
+#![allow(clippy::new_without_default)]
+
+#[cfg(any(unix, nabi_wasi_threads))]
+use core::cell::UnsafeCell;
+
+/// The calling thread's `errno`.
+pub fn errno() -> i32 {
+    // SAFETY: the libc errno accessor has no preconditions.
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+    unsafe {
+        *libc::__error()
+    }
+    // SAFETY: as above.
+    #[cfg(target_os = "android")]
+    unsafe {
+        *libc::__errno()
+    }
+    // SAFETY: as above.
+    #[cfg(not(any(target_vendor = "apple", target_os = "freebsd", target_os = "android")))]
+    unsafe {
+        *libc::__errno_location()
+    }
+}
+
+/// Write `parts` to `fd` back to back with `writev`, finishing short
+/// writes and retrying `EINTR`: 0 or `-errno`. At most 16 parts.
+pub fn write_all(fd: i32, parts: &[&[u8]]) -> i32 {
+    let mut iov = [libc::iovec {
+        iov_base: core::ptr::null_mut(),
+        iov_len: 0,
+    }; 16];
+    let mut n = 0;
+    for p in parts.iter().filter(|p| !p.is_empty()) {
+        iov[n] = libc::iovec {
+            iov_base: p.as_ptr().cast_mut().cast(),
+            iov_len: p.len(),
+        };
+        n += 1;
+    }
+    let mut first = 0;
+    while first < n {
+        // SAFETY: `iov[first..n]` describe live caller buffers.
+        let r = unsafe { libc::writev(fd, iov[first..].as_ptr(), (n - first) as libc::c_int) };
+        if r < 0 {
+            let e = errno();
+            if e == libc::EINTR {
+                continue;
+            }
+            return -e;
+        }
+        let mut done = r as usize;
+        while first < n && done >= iov[first].iov_len {
+            done -= iov[first].iov_len;
+            first += 1;
+        }
+        if first < n {
+            // SAFETY: `done < iov_len`, inside the part.
+            iov[first].iov_base = unsafe { iov[first].iov_base.cast::<u8>().add(done) }.cast();
+            iov[first].iov_len -= done;
+        }
+    }
+    0
+}
+
+/// One `read` of stdin into `dst` (`len` bytes), retrying `EINTR`: the
+/// count (0 at the end) or `-errno`.
+///
+/// # Safety
+/// `dst` must be writable for `len` bytes.
+pub unsafe fn read_stdin(dst: *mut u8, len: usize) -> isize {
+    loop {
+        // SAFETY: caller contract.
+        let n = unsafe { libc::read(0, dst.cast(), len) };
+        if n >= 0 {
+            return n;
+        }
+        let e = errno();
+        if e != libc::EINTR {
+            return -(e as isize);
+        }
+    }
+}
+
+/// Whether `fd` is a terminal.
+pub fn is_terminal(fd: i32) -> bool {
+    // SAFETY: plain libc call.
+    unsafe { libc::isatty(fd) != 0 }
+}
+
+/// Run `f` at `exit`.
+pub fn atexit(f: extern "C" fn()) {
+    // SAFETY: registers a plain `extern "C"` function.
+    unsafe { libc::atexit(f) };
+}
+
+/// A mutex usable from a `static`.
+#[cfg(any(unix, nabi_wasi_threads))]
+pub struct Lock(UnsafeCell<libc::pthread_mutex_t>);
+
+// SAFETY: pthread mutexes are designed for shared use.
+#[cfg(any(unix, nabi_wasi_threads))]
+unsafe impl Sync for Lock {}
+
+/// wasi-libc's initializers are all zero (not in the `libc` crate).
+#[cfg(unix)]
+const MUTEX_INIT: libc::pthread_mutex_t = libc::PTHREAD_MUTEX_INITIALIZER;
+#[cfg(unix)]
+const COND_INIT: libc::pthread_cond_t = libc::PTHREAD_COND_INITIALIZER;
+// SAFETY: all-zero is wasi-libc's static initializer.
+#[cfg(nabi_wasi_threads)]
+const MUTEX_INIT: libc::pthread_mutex_t = unsafe { core::mem::zeroed() };
+// SAFETY: as above.
+#[cfg(nabi_wasi_threads)]
+const COND_INIT: libc::pthread_cond_t = unsafe { core::mem::zeroed() };
+
+/// [`Lock::lock`]'s tries before it blocks, and the pauses between.
+#[cfg(any(unix, nabi_wasi_threads))]
+const SPIN_TRIES: u32 = 16;
+#[cfg(any(unix, nabi_wasi_threads))]
+const SPIN_PAUSES: u32 = 32;
+
+#[cfg(any(unix, nabi_wasi_threads))]
+impl Lock {
+    pub const fn new() -> Self {
+        Self(UnsafeCell::new(MUTEX_INIT))
+    }
+
+    pub fn lock(&self) {
+        // Holders keep it briefly (a TLAB refill, a wait-queue walk): a
+        // few tries first keep a contended lock out of the kernel.
+        for _ in 0..SPIN_TRIES {
+            if self.try_lock() {
+                return;
+            }
+            for _ in 0..SPIN_PAUSES {
+                core::hint::spin_loop();
+            }
+        }
+        // SAFETY: a statically initialized mutex.
+        unsafe { libc::pthread_mutex_lock(self.0.get()) };
+    }
+
+    /// Take the lock if it is free.
+    pub fn try_lock(&self) -> bool {
+        // SAFETY: as above.
+        unsafe { libc::pthread_mutex_trylock(self.0.get()) == 0 }
+    }
+
+    /// The caller holds the lock.
+    pub fn unlock(&self) {
+        // SAFETY: caller contract.
+        unsafe { libc::pthread_mutex_unlock(self.0.get()) };
+    }
+}
+
+/// A condition variable usable from a `static` (or a stack slot that
+/// does not move while waited on).
+#[cfg(any(unix, nabi_wasi_threads))]
+pub struct Cond(UnsafeCell<libc::pthread_cond_t>);
+
+#[cfg(any(unix, nabi_wasi_threads))]
+impl Drop for Cond {
+    fn drop(&mut self) {
+        // SAFETY: nobody waits on a condvar being dropped.
+        unsafe { libc::pthread_cond_destroy(self.0.get()) };
+    }
+}
+
+// SAFETY: pthread condvars are designed for shared use.
+#[cfg(any(unix, nabi_wasi_threads))]
+unsafe impl Sync for Cond {}
+
+#[cfg(any(unix, nabi_wasi_threads))]
+impl Cond {
+    pub const fn new() -> Self {
+        Self(UnsafeCell::new(COND_INIT))
+    }
+
+    /// Release `lock` (held by the caller), sleep until woken (or
+    /// spuriously), take it again.
+    pub fn wait(&self, lock: &Lock) {
+        // SAFETY: caller holds `lock`.
+        unsafe { libc::pthread_cond_wait(self.0.get(), lock.0.get()) };
+    }
+
+    /// [`Self::wait`] for at most `ns` nanoseconds.
+    pub fn wait_timeout(&self, lock: &Lock, ns: u64) {
+        // `pthread_cond_timedwait` takes a CLOCK_REALTIME deadline.
+        let at = realtime_ns().saturating_add(ns.min(i64::MAX as u64) as i64);
+        // SAFETY: a zeroed `timespec` is valid; `as _` fits each
+        // target's field types (musl's `time_t` alias is deprecated).
+        let mut ts: libc::timespec = unsafe { core::mem::zeroed() };
+        ts.tv_sec = (at / 1_000_000_000) as _;
+        ts.tv_nsec = (at % 1_000_000_000) as _;
+        // SAFETY: caller holds `lock`; valid timespec.
+        unsafe { libc::pthread_cond_timedwait(self.0.get(), lock.0.get(), &ts) };
+    }
+
+    pub fn broadcast(&self) {
+        // SAFETY: a statically initialized condvar.
+        unsafe { libc::pthread_cond_broadcast(self.0.get()) };
+    }
+}
+
+#[allow(clippy::unnecessary_cast)] // `time_t` / `c_long` widths vary by target
+fn clock_ns(clock: libc::clockid_t) -> i64 {
+    // SAFETY: a zeroed `timespec` is valid (32-bit time64 ones have
+    // padding fields).
+    let mut ts: libc::timespec = unsafe { core::mem::zeroed() };
+    // SAFETY: valid out-pointer.
+    unsafe { libc::clock_gettime(clock, &mut ts) };
+    ts.tv_sec as i64 * 1_000_000_000 + ts.tv_nsec as i64
+}
+
+/// Monotonic nanoseconds, stopped during suspend (macOS
+/// `CLOCK_UPTIME_RAW`, whose `CLOCK_MONOTONIC` counts sleep).
+pub fn monotonic_ns() -> i64 {
+    #[cfg(target_vendor = "apple")]
+    let clock = libc::CLOCK_UPTIME_RAW;
+    #[cfg(not(target_vendor = "apple"))]
+    let clock = libc::CLOCK_MONOTONIC;
+    clock_ns(clock)
+}
+
+/// Wall clock, nanoseconds since the Unix epoch.
+pub fn realtime_ns() -> i64 {
+    clock_ns(libc::CLOCK_REALTIME)
+}
+
+/// Nanoseconds since boot, counting suspend: Linux `CLOCK_BOOTTIME`,
+/// macOS `CLOCK_MONOTONIC`.
+pub fn boot_ns() -> i64 {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let clock = libc::CLOCK_BOOTTIME;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let clock = libc::CLOCK_MONOTONIC;
+    clock_ns(clock)
+}
+
+/// CPU time of the calling thread, nanoseconds (WASI: monotonic time,
+/// its only thread never waits for another).
+pub fn thread_cpu_ns() -> i64 {
+    #[cfg(unix)]
+    let clock = libc::CLOCK_THREAD_CPUTIME_ID;
+    #[cfg(target_os = "wasi")]
+    let clock = libc::CLOCK_MONOTONIC;
+    clock_ns(clock)
+}
+
+/// Reserve `len` bytes of address space, inaccessible: null on failure.
+#[cfg(unix)]
+pub fn reserve(len: usize) -> *mut u8 {
+    // SAFETY: an anonymous PROT_NONE mapping touches nothing.
+    let p = unsafe {
+        libc::mmap(
+            core::ptr::null_mut(),
+            len,
+            libc::PROT_NONE,
+            libc::MAP_PRIVATE | libc::MAP_ANON,
+            -1,
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        core::ptr::null_mut()
+    } else {
+        p.cast()
+    }
+}
+
+/// Make the range `p..p + len` of a reservation readable and writable
+/// (zero-filled on first touch). The OS pages it touches are committed
+/// whole: a 32 KiB block is half a 64 KiB page.
+///
+/// # Safety
+/// The pages around the range must lie inside a [`reserve`]d region.
+#[cfg(unix)]
+pub unsafe fn commit(p: *mut u8, len: usize) -> bool {
+    let page = page_size();
+    let at = p as usize & !(page - 1);
+    let end = (p as usize + len).next_multiple_of(page);
+    // SAFETY: caller contract.
+    unsafe {
+        libc::mprotect(
+            at as *mut libc::c_void,
+            end - at,
+            libc::PROT_READ | libc::PROT_WRITE,
+        ) == 0
+    }
+}
+
+/// Give the committed range `p..p + len` back to the OS: it stays
+/// accessible and reads as zeros. Only the OS pages wholly inside it go
+/// back; the parts of a page it shares with a neighbour are zeroed.
+///
+/// # Safety
+/// The range must be committed and hold nothing anyone still uses.
+#[cfg(unix)]
+pub unsafe fn reset(p: *mut u8, len: usize) -> bool {
+    let page = page_size();
+    let (start, end) = (p as usize, p as usize + len);
+    let (at, to) = (start.next_multiple_of(page), end & !(page - 1));
+    if at >= to {
+        // SAFETY: caller contract.
+        unsafe { core::ptr::write_bytes(p, 0, len) };
+        return true;
+    }
+    // SAFETY: caller contract; the edges are ours to zero.
+    unsafe {
+        core::ptr::write_bytes(p, 0, at - start);
+        core::ptr::write_bytes(to as *mut u8, 0, end - to);
+    }
+    // SAFETY: caller contract; same protection, new zero pages.
+    let q = unsafe {
+        libc::mmap(
+            at as *mut libc::c_void,
+            to - at,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_FIXED,
+            -1,
+            0,
+        )
+    };
+    q != libc::MAP_FAILED
+}
+
+/// The OS page size: 4, 16 or 64 KiB on aarch64, whatever the kernel
+/// was built with.
+#[cfg(unix)]
+pub fn page_size() -> usize {
+    // SAFETY: plain sysconf query.
+    usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096)
+}
+
+/// Pages of their own for `len` bytes aligned to `align` (a power of
+/// two), zero-filled on first touch; given back with [`unmap`]. Null on
+/// failure.
+#[cfg(unix)]
+pub fn map(len: usize, align: usize) -> *mut u8 {
+    let page = page_size();
+    let len = len.next_multiple_of(page);
+    let Some(total) = len.checked_add(align.saturating_sub(page)) else {
+        return core::ptr::null_mut();
+    };
+    // SAFETY: a fresh anonymous mapping.
+    let p = unsafe {
+        libc::mmap(
+            core::ptr::null_mut(),
+            total,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANON,
+            -1,
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return core::ptr::null_mut();
+    }
+    let p = p as usize;
+    let at = p.next_multiple_of(align);
+    let tail = p + total - (at + len);
+    // SAFETY: the unaligned head and the tail of our own mapping.
+    unsafe {
+        if at > p {
+            libc::munmap(p as *mut libc::c_void, at - p);
+        }
+        if tail > 0 {
+            libc::munmap((at + len) as *mut libc::c_void, tail);
+        }
+    }
+    at as *mut u8
+}
+
+/// # Safety
+/// `p..p + len` must be a whole [`map`] result nobody uses any more.
+#[cfg(unix)]
+pub unsafe fn unmap(p: *mut u8, len: usize) {
+    // SAFETY: caller contract.
+    unsafe { libc::munmap(p.cast(), len.next_multiple_of(page_size())) };
+}
+
+/// No pages to map: a zeroed allocation.
+#[cfg(target_os = "wasi")]
+pub fn map(len: usize, align: usize) -> *mut u8 {
+    let p = alloc_aligned(len, align);
+    if !p.is_null() {
+        // SAFETY: a fresh block of `len` bytes.
+        unsafe { core::ptr::write_bytes(p, 0, len) };
+    }
+    p
+}
+
+/// # Safety
+/// `p` must be a [`map`] result nobody uses any more.
+#[cfg(target_os = "wasi")]
+pub unsafe fn unmap(p: *mut u8, _len: usize) {
+    // SAFETY: caller contract.
+    unsafe { free_aligned(p) };
+}
+
+/// `size` bytes aligned to `align` (a power of two), freed with
+/// [`free_aligned`]: null on failure.
+pub fn alloc_aligned(size: usize, align: usize) -> *mut u8 {
+    if align <= 16 {
+        // SAFETY: plain malloc; its alignment is 16 on supported targets.
+        return unsafe { libc::malloc(size) }.cast();
+    }
+    let mut p: *mut libc::c_void = core::ptr::null_mut();
+    // SAFETY: valid out-pointer; `align` is a power of two > 16.
+    if unsafe { libc::posix_memalign(&mut p, align, size) } != 0 {
+        return core::ptr::null_mut();
+    }
+    p.cast()
+}
+
+/// # Safety
+/// `p` must be null or from [`alloc_aligned`].
+pub unsafe fn free_aligned(p: *mut u8) {
+    // SAFETY: caller contract.
+    unsafe { libc::free(p.cast()) };
+}
+
+/// Start a detached OS thread running `f()` (default stack): false if
+/// it could not be created.
+#[cfg(any(unix, nabi_wasi_threads))]
+pub fn spawn_detached(f: extern "C" fn()) -> bool {
+    extern "C" fn start(arg: *mut libc::c_void) -> *mut libc::c_void {
+        // SAFETY: `arg` is the `extern "C" fn()` passed below.
+        let f: extern "C" fn() = unsafe { core::mem::transmute(arg) };
+        f();
+        core::ptr::null_mut()
+    }
+    // SAFETY: plain pthread calls.
+    unsafe {
+        let mut t: libc::pthread_t = core::mem::zeroed();
+        if libc::pthread_create(&mut t, core::ptr::null(), start, f as *mut libc::c_void) != 0 {
+            return false;
+        }
+        libc::pthread_detach(t);
+    }
+    true
+}
+
+/// Let another thread run.
+pub fn yield_now() {
+    // SAFETY: no preconditions.
+    unsafe { libc::sched_yield() };
+}
+
+/// Block the calling thread until the process exits.
+#[cfg(unix)]
+pub fn park_forever() -> ! {
+    loop {
+        // SAFETY: plain libc call.
+        unsafe { libc::pause() };
+    }
+}
+
+/// Block the calling thread until the process exits (no `pause`).
+#[cfg(nabi_wasi_threads)]
+pub fn park_forever() -> ! {
+    loop {
+        sleep_ns(1 << 40);
+    }
+}
+
+/// One thread: a lock is never contended.
+#[cfg(nabi_solo)]
+pub struct Lock;
+
+// Not `const`, like the pthread one.
+#[cfg(nabi_solo)]
+#[allow(clippy::missing_const_for_fn)]
+impl Lock {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    pub fn lock(&self) {}
+
+    pub fn try_lock(&self) -> bool {
+        true
+    }
+
+    pub fn unlock(&self) {}
+}
+
+/// One thread: nobody else can signal, so an untimed wait never ends.
+#[cfg(nabi_solo)]
+pub struct Cond;
+
+#[cfg(nabi_solo)]
+impl Cond {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    pub fn wait(&self, _lock: &Lock) {
+        crate::fatal(b"fatal error: deadlock: the only thread waits for another");
+    }
+
+    pub fn wait_timeout(&self, _lock: &Lock, ns: u64) {
+        sleep_ns(ns);
+    }
+
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn broadcast(&self) {}
+}
+
+/// Sleep `ns` nanoseconds (`poll_oneoff` on a clock).
+#[cfg(target_os = "wasi")]
+pub fn sleep_ns(ns: u64) {
+    let ns = ns.min(i64::MAX as u64);
+    let mut ts = libc::timespec {
+        tv_sec: (ns / 1_000_000_000) as _,
+        tv_nsec: (ns % 1_000_000_000) as _,
+    };
+    // SAFETY: `ts` is valid for read and write (remaining time).
+    while unsafe { libc::nanosleep(&ts, &mut ts) } != 0 && errno() == libc::EINTR {}
+}
+
+/// Pages cannot be returned to the engine: zero the range.
+///
+/// # Safety
+/// The range must be allocated and hold nothing anyone still uses.
+#[cfg(target_os = "wasi")]
+pub const unsafe fn reset(p: *mut u8, len: usize) -> bool {
+    // SAFETY: caller contract.
+    unsafe { core::ptr::write_bytes(p, 0, len) };
+    true
+}
+
+/// No threads.
+#[cfg(nabi_solo)]
+pub const fn spawn_detached(_f: extern "C" fn()) -> bool {
+    false
+}
+
+/// Only reached by a thread the runtime has halted: on WASI, the only
+/// one, which ends the program.
+#[cfg(nabi_solo)]
+pub fn park_forever() -> ! {
+    crate::fatal(b"fatal error: deadlock: the only thread waits for another")
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    // A GC block is 32 KiB, half a 64 KiB page: committing and resetting
+    // half a page of whatever this kernel uses must work.
+    #[test]
+    fn half_pages() {
+        let page = page_size();
+        let half = page / 2;
+        let p = reserve(4 * page);
+        assert!(!p.is_null());
+        // SAFETY: halves of pages of the reservation above.
+        unsafe {
+            assert!(commit(p.add(page + half), half));
+            assert!(commit(p.add(page), half));
+            core::ptr::write_bytes(p.add(page), 1, page);
+            assert!(reset(p.add(page + half), half));
+            assert_eq!(*p.add(page), 1);
+            assert_eq!(*p.add(page + half - 1), 1);
+            assert_eq!(*p.add(page + half), 0);
+            assert_eq!(*p.add(2 * page - 1), 0);
+            assert!(commit(p.add(2 * page + half), page));
+            core::ptr::write_bytes(p.add(page), 2, 3 * page);
+            assert!(reset(p.add(page + half), 2 * page));
+            assert_eq!(*p.add(page + half - 1), 2);
+            assert_eq!(*p.add(page + half), 0);
+            assert_eq!(*p.add(3 * page + half - 1), 0);
+            assert_eq!(*p.add(3 * page + half), 2);
+            libc::munmap(p.cast(), 4 * page);
+        }
+    }
+}

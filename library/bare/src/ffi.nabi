@@ -1,0 +1,310 @@
+//! bare::ffi - C's types (`types`, also in the prelude), errno
+//! (`errno`), Nabi values C holds (`handle`), NUL-terminated C strings
+//! (`wide`: `wchar_t` ones), loading shared libraries (`library`); `wit`
+//! is what the WIT bindings run on; `objc`, Objective-C objects, exists
+//! only on Apple targets.
+//!
+//! `CStr` and `CString` keep their bytes, NUL included, in one `str`
+//! object, so `as_ptr` holds as `str::as_ptr` does.
+//! `CStr::from_ptr` copies.
+
+pub mod errno;
+pub mod handle;
+pub mod library;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub mod objc;
+pub mod types;
+pub mod wide;
+pub mod wit;
+
+pub use errno::{errno, last_error, set_errno, set_last_error};
+pub use handle::Handle;
+pub use library::{Library, LoadError, SymbolError};
+pub use wide::{WideCStr, WideCString};
+
+use bare::mem::{GcBuf, buf_new};
+use bare::ptr::ConstPtr;
+
+extern "nabi" {
+    fn nabi_str_from_buf(buf: GcBuf<u8>, off: usize, len: usize) -> str;
+}
+
+/// An interior NUL, at `position` (`CString::new`, `WideCString::new`).
+// By hand: bare cannot use the derives, which expand to core paths.
+pub struct NulError {
+    position: usize;
+}
+
+impl NulError {
+    /// The error for a NUL at `position`.
+    pub(pkg) const fn at(position: usize) -> NulError { NulError { position } }
+    /// The byte offset of the NUL (from `WideCString::new`, its unit
+    /// index).
+    pub const fn position(self) -> usize { self.position }
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { f"nul byte found at position {self.position}" }
+}
+
+impl PartialEq for NulError {
+    const fn eq(self, rhs: NulError) -> bool { self.position == rhs.position }
+}
+
+impl Eq for NulError {}
+
+impl Clone for NulError {
+    fn clone(self) -> NulError { NulError { position: self.position } }
+}
+
+impl Display for NulError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for NulError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"NulError({self.position})") }
+}
+
+impl Error for NulError {}
+
+/// Bytes that are not one C string (`CStr::from_bytes_with_nul`).
+pub enum FromBytesWithNulError {
+    /// A NUL before the last byte, at `position`.
+    InteriorNul { position: usize; },
+    /// The last byte is not a NUL (or there is none).
+    NotNulTerminated,
+}
+
+impl FromBytesWithNulError {
+    /// What went wrong, for display.
+    pub const fn message(self) -> str {
+        match self {
+            FromBytesWithNulError::InteriorNul { position } => f"interior nul byte at {position}",
+            FromBytesWithNulError::NotNulTerminated => "data provided is not nul terminated",
+        }
+    }
+}
+
+impl PartialEq for FromBytesWithNulError {
+    const fn eq(self, rhs: FromBytesWithNulError) -> bool {
+        match (self, rhs) {
+            (FromBytesWithNulError::InteriorNul { position: a }, FromBytesWithNulError::InteriorNul { position: b }) => a == b,
+            (FromBytesWithNulError::NotNulTerminated, FromBytesWithNulError::NotNulTerminated) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for FromBytesWithNulError {}
+
+impl Clone for FromBytesWithNulError {
+    fn clone(self) -> FromBytesWithNulError {
+        match self {
+            FromBytesWithNulError::InteriorNul { position } => FromBytesWithNulError::InteriorNul { position },
+            FromBytesWithNulError::NotNulTerminated => FromBytesWithNulError::NotNulTerminated,
+        }
+    }
+}
+
+impl Display for FromBytesWithNulError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for FromBytesWithNulError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        match self {
+            FromBytesWithNulError::InteriorNul { position } => try f.write_str(f"InteriorNul {{ position: {position} }}"),
+            FromBytesWithNulError::NotNulTerminated => try f.write_str("NotNulTerminated"),
+        }
+    }
+}
+
+impl Error for FromBytesWithNulError {}
+
+/// Bytes with no NUL at all (`CStr::from_bytes_until_nul`).
+pub struct FromBytesUntilNulError {}
+
+impl FromBytesUntilNulError {
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { "data provided does not contain a nul" }
+}
+
+impl PartialEq for FromBytesUntilNulError {
+    const fn eq(self, _rhs: FromBytesUntilNulError) -> bool { true }
+}
+
+impl Eq for FromBytesUntilNulError {}
+
+impl Clone for FromBytesUntilNulError {
+    const fn clone(self) -> FromBytesUntilNulError { FromBytesUntilNulError {} }
+}
+
+impl Display for FromBytesUntilNulError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for FromBytesUntilNulError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("FromBytesUntilNulError") }
+}
+
+impl Error for FromBytesUntilNulError {}
+
+/// `bytes` and a final NUL as one `str` object.
+const fn with_nul(bytes: Slice<u8>) -> str {
+    let n = bytes.len();
+    unsafe {
+        let buf: GcBuf<u8> = buf_new(n + 1);
+        for i in 0..n {
+            buf[i] = bytes[i];
+        }
+        buf[n] = 0u8;
+        nabi_str_from_buf(buf, 0, n + 1)
+    }
+}
+
+/// The index of the first NUL in `bytes`.
+const fn nul_in(bytes: Slice<u8>) -> usize | none {
+    for i in 0..bytes.len() {
+        if bytes[i] == 0u8 {
+            return i;
+        }
+    }
+    none
+}
+
+/// A NUL-terminated string.
+pub struct CStr {
+    /// The bytes and the NUL.
+    s: str;
+}
+
+// By hand: `bare` cannot use `#[derive]` (its impls name `core`).
+impl Clone for CStr {
+    const fn clone(self) -> CStr { self }
+}
+
+impl PartialEq for CStr {
+    const fn eq(self, rhs: CStr) -> bool { self.s == rhs.s }
+}
+
+impl Eq for CStr {}
+
+impl Hash for CStr {
+    const fn hash<H: Hasher>(self, ref h: H) { self.s.hash(ref h); }
+}
+
+impl Debug for CStr {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("CStr(");
+        try Debug::fmt(str::from_utf8_lossy(self.as_bytes()), ref f);
+        try f.write_str(")");
+    }
+}
+
+impl CStr {
+    /// The C string at `p`, copied up to its NUL; `none` for a null
+    /// pointer.
+    ///
+    /// Safety: `p` must be null or point at a live NUL-terminated string.
+    pub unsafe fn from_ptr(p: ConstPtr<c_char>) -> CStr | none {
+        if p.addr() == 0 {
+            return none;
+        }
+        let at: ConstPtr<u8> = ConstPtr::<u8>::dangling().with_addr(p.addr());
+        let n = 0usize;
+        while unsafe { at.add(n).read() } != 0u8 {
+            n += 1;
+        }
+        let bytes: List<u8> = [];
+        for i in 0..n {
+            bytes.push(unsafe { at.add(i).read() });
+        }
+        CStr { s: with_nul(bytes[0:n]) }
+    }
+
+    /// `bytes` when the last one is the only NUL.
+    pub const fn from_bytes_with_nul<B: AsBytes>(bytes: B) throws (FromBytesWithNulError) -> CStr {
+        let b = bytes.byte_slice();
+        let n = b.len();
+        match nul_in(b) {
+            i: usize if i + 1 == n => CStr { s: with_nul(b[0:i]) },
+            i: usize => throw FromBytesWithNulError::InteriorNul { position: i },
+            none => throw FromBytesWithNulError::NotNulTerminated,
+        }
+    }
+
+    /// The bytes up to the first NUL, which must be there; the rest is
+    /// ignored (a fixed-size C buffer).
+    pub const fn from_bytes_until_nul<B: AsBytes>(bytes: B) throws (FromBytesUntilNulError) -> CStr {
+        let b = bytes.byte_slice();
+        match nul_in(b) {
+            i: usize => CStr { s: with_nul(b[0:i]) },
+            none => throw FromBytesUntilNulError {},
+        }
+    }
+
+    /// A pointer to the first byte, for C; valid while `self` is alive.
+    pub fn as_ptr(self) -> ConstPtr<c_char> {
+        ConstPtr::<c_char>::dangling().with_addr(self.s.as_ptr().addr())
+    }
+
+    /// The bytes without the NUL.
+    pub fn as_bytes(self) -> Slice<u8> { self.s.as_bytes()[0:self.len()] }
+
+    /// The bytes with the trailing NUL.
+    pub fn as_bytes_with_nul(self) -> Slice<u8> { self.s.as_bytes() }
+
+    /// The bytes before the NUL as a `str`; throws if they are not UTF-8.
+    pub fn to_str(self) throws (Utf8Error) -> str { try str::from_utf8(self.as_bytes()) }
+
+    /// Bytes before the NUL.
+    pub const fn len(self) -> usize { self.s.len() - 1 }
+}
+
+/// An owned NUL-terminated string.
+pub struct CString {
+    c: CStr;
+}
+
+impl Clone for CString {
+    const fn clone(self) -> CString { self }
+}
+
+impl PartialEq for CString {
+    const fn eq(self, rhs: CString) -> bool { self.c == rhs.c }
+}
+
+impl Eq for CString {}
+
+impl Hash for CString {
+    const fn hash<H: Hasher>(self, ref h: H) { self.c.hash(ref h); }
+}
+
+impl Debug for CString {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("CString(");
+        try Debug::fmt(str::from_utf8_lossy(self.c.as_bytes()), ref f);
+        try f.write_str(")");
+    }
+}
+
+impl CString {
+    /// `bytes` and a NUL; throws if `bytes` has a NUL of its own. A
+    /// `str` gives its UTF-8.
+    pub const fn new<B: AsBytes>(bytes: B) throws (NulError) -> CString {
+        let b = bytes.byte_slice();
+        if let i: usize = nul_in(b) {
+            throw NulError { position: i };
+        }
+        CString { c: CStr { s: with_nul(b) } }
+    }
+
+    /// The borrowed C string (with its NUL), valid while `self` is alive.
+    pub const fn as_c_str(self) -> CStr { self.c }
+    /// A pointer to the first byte, for C; valid while `self` is alive.
+    pub fn as_ptr(self) -> ConstPtr<c_char> { self.c.as_ptr() }
+
+    /// The bytes without the NUL.
+    pub fn into_bytes(self) -> List<u8> { self.c.as_bytes().to_list() }
+
+    /// The bytes with the trailing NUL.
+    pub fn into_bytes_with_nul(self) -> List<u8> { self.c.as_bytes_with_nul().to_list() }
+}

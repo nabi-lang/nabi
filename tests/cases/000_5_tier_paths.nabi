@@ -1,0 +1,29 @@
+// expect-exit: 0
+// expect-stdout:
+// 3 true
+// 16 8
+
+// The tiers are path roots: `std::..`, `core::..`, `bare::..`, in `use`s
+// and in paths, from any module.
+use std::path::Path;
+use core::collections::dict::Dict;
+
+mod inner {
+    use std::path;
+
+    pub fn size() -> usize {
+        bare::mem::size_of::<i64>() + bare::mem::size_of::<f64>()
+    }
+
+    pub fn empty() -> bool {
+        let xs: core::collections::list::List<i32> = [1];
+        path::Path::empty().is_relative() && xs.len() == 1
+    }
+}
+
+fn main() {
+    let d: Dict<str, i32> = Dict::new();
+    d["k"] = 3;
+    println(f"{d["k"]} {Path::empty().is_relative() && inner::empty()}");
+    println(f"{inner::size()} {bare::mem::size_of::<u64>()}");
+}

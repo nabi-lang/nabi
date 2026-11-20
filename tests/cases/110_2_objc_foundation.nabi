@@ -1,0 +1,89 @@
+// needs: objc
+// expect-exit: 0
+// expect-stdout:
+// 11 HELLO, OBJC hello, objc!
+// parts 2 objc
+// mutable 3 a,b,c
+// first a last c
+// dict 2 one missing
+// equal true false
+// protocol copy hello, objc
+// downcast hello none
+
+// Foundation through hand-written declarations: a category on
+// `bare::ffi::objc`'s `NSString`, classes with a superclass whose
+// methods they get, `Id<Self>` results, nullable results and a protocol.
+use bare::ffi::objc;
+use bare::ffi::objc::{Id, NSObject, NSString, ns};
+use bare::ptr::CPtr;
+
+#[link(name = "Foundation", kind = "framework")]
+#[objc::category(NSString)]
+extern "objc" {
+    pub fn length(self) -> usize;
+    pub fn uppercaseString(self) -> Id<NSString>;
+    pub fn stringByAppendingString(self, other: Id<NSString>) -> Id<NSString>;
+    pub fn componentsSeparatedByString(self, sep: Id<NSString>) -> Id<NSArray>;
+    #[selector("isEqualToString:")]
+    pub fn is_equal(self, other: Id<NSString>) -> bool;
+}
+
+#[objc::class(NSArray)]
+extern "objc" {
+    pub fn count(self) -> usize;
+    pub fn objectAtIndex(self, i: usize) -> Id<NSObject>;
+    pub fn firstObject(self) -> Id<NSObject> | none;
+    pub fn lastObject(self) -> Id<NSObject> | none;
+    pub fn componentsJoinedByString(self, sep: Id<NSString>) -> Id<NSString>;
+    pub fn array() -> Id<Self>;
+}
+
+#[objc::class(NSMutableArray, extends(NSArray))]
+extern "objc" {
+    pub fn addObject(self, o: Id<NSObject>);
+}
+
+#[objc::class(NSMutableDictionary)]
+extern "objc" {
+    pub fn dictionary() -> Id<Self>;
+    pub fn setObject_forKey(self, o: Id<NSObject>, key: Id<NSObject>);
+    pub fn objectForKey(self, key: Id<NSObject>) -> Id<NSObject> | none;
+    pub fn count(self) -> usize;
+}
+
+#[objc::protocol(NSCopying)]
+extern "objc" {
+    pub fn copyWithZone(self, zone: CPtr<u8>) -> Id<NSObject>;
+}
+
+fn main() {
+    let s = ns("hello, objc");
+    println(f"{s.length()} {s.uppercaseString()} {s.stringByAppendingString(ns("!"))}");
+    let parts = s.componentsSeparatedByString(ns(", "));
+    println(f"parts {parts.count()} {parts.objectAtIndex(1)}");
+    let m = NSMutableArray::array();
+    for x in ["a", "b", "c"] {
+        m.addObject(ns(x));
+    }
+    println(f"mutable {m.count()} {m.componentsJoinedByString(ns(","))}");
+    let first = m.firstObject() ?? panic("empty");
+    let last = m.lastObject() ?? panic("empty");
+    println(f"first {first} last {last}");
+    let d = NSMutableDictionary::dictionary();
+    d.setObject_forKey(ns("one"), ns("1"));
+    d.setObject_forKey(ns("two"), ns("2"));
+    let missing = match d.objectForKey(ns("3")) {
+        o: Id<NSObject> => o.description().to_str(),
+        none => "missing",
+    };
+    println(f"dict {d.count()} {d.objectForKey(ns("1")) ?? ns("?").as_object()} {missing}");
+    println(f"equal {s.is_equal(ns("hello, objc"))} {s.is_equal(ns("other"))}");
+    let c = unsafe { s.as_object().cast::<NSCopying>() };
+    println(f"protocol copy {unsafe { c.copyWithZone(CPtr::null()) }}");
+    let back = parts.objectAtIndex(0).downcast::<NSString>() ?? panic("not a string");
+    let not = match parts.as_object().downcast::<NSString>() {
+        x: Id<NSString> => x.to_str(),
+        none => "none",
+    };
+    println(f"downcast {back.to_str()} {not}");
+}

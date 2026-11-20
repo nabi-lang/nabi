@@ -1,0 +1,33 @@
+// File IO with small calls: 300k 16-byte writes, then 16-byte reads
+// and seeks back over the file. Bound by syscalls and the per-call cost
+// of the File handle.
+use std::{env, fs, process};
+use std::fs::{CreateFlags, File};
+use core::io::SeekFrom;
+use std::path::Path;
+
+fn main() -> i32 {
+    let path = env::temp_dir().join(Path::new(f"nabi_bench_file_rw_{process::id()}"));
+    let f = try! File::create(path, CreateFlags { read: true });
+    let line = "0123456789abcde\n";
+    for _ in 0..300000 {
+        try! f.write_all(line);
+    }
+    try! f.seek(SeekFrom::Start(0u64));
+    let buf = List::filled(16, 0u8);
+    let total = 0usize;
+    let sum = 0u64;
+    loop {
+        let n = try! f.read(buf);
+        if n == 0 { break; }
+        total += n;
+        sum += buf[0] as u64;
+    }
+    for i in 0..300000 {
+        try! f.seek(SeekFrom::Start((i % 1000) as u64 * 16u64));
+    }
+    try! f.close();
+    try! fs::remove_file(path);
+    println(f"{total} {sum}");
+    0
+}

@@ -1,0 +1,8 @@
+// expect-error: 6:5: unresolved import: `json::parse` does not exist
+// expect-error: = help: run `nabi add json
+// expect-error: 505_use_missing_dependency_script.nabi`
+// A script gets packages from its own `//! ```nabion` block, which `nabi
+// add json <file>` writes.
+use json::parse;
+
+println("unreached");

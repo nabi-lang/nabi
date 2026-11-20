@@ -1,0 +1,11 @@
+// nabic-arg: --extern helper=tests/cases/000_5_dep_named_std --extern std=tests/cases/000_5_dep_named_std
+// expect-exit: 0
+// expect-stdout:
+// 42 true
+
+// A dependency aliased `std` takes the name; `::std` stays the library.
+use ::std::path::Path;
+
+fn main() {
+    println(f"{std::answer()} {Path::empty().is_relative()}");
+}

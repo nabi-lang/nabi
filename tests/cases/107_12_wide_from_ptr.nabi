@@ -1,0 +1,35 @@
+// expect-exit: 0
+// expect-stdout:
+// WideCStr("hi") 2 3 hi
+// null: true
+// wcslen: 5 2
+// bad unit: true
+
+// `WideCStr::from_ptr` copies a C wide string up to its NUL (`none` for
+// null); here one built by hand in a pinned list. C's `wcslen` reads
+// what `WideCString::as_ptr` hands it.
+use bare::ffi::{WideCStr, WideCString};
+use bare::gc::pin;
+use bare::ptr::ConstPtr;
+
+extern "C" {
+    fn wcslen(s: ConstPtr<c_wchar>) -> usize;
+}
+
+fn main() {
+    let units: List<c_wchar> = [0x68 as c_wchar, 0x69 as c_wchar, 0 as c_wchar, 0x7A as c_wchar];
+    let held = pin(units);
+    let c = unsafe { WideCStr::from_ptr(held.as_data_ptr().as_const()) } ?? panic("null");
+    println(f"{c:?} {c.len()} {c.as_units_with_nul().len()} {try! c.to_str()}");
+    let null = ConstPtr::<c_wchar>::dangling().with_addr(0);
+    println(f"null: {unsafe { WideCStr::from_ptr(null) } is none}");
+    let w = try! WideCString::new("h\u{E9}llo");
+    let v = try! WideCString::new("ab");
+    println(f"wcslen: {unsafe { wcslen(w.as_ptr()) }} {unsafe { wcslen(v.as_ptr()) }}");
+    // A lone surrogate: not a char on any target.
+    let bad: List<c_wchar> = [0xDC00 as c_wchar, 0 as c_wchar];
+    let held = pin(bad);
+    let b = unsafe { WideCStr::from_ptr(held.as_data_ptr().as_const()) } ?? panic("null");
+    let failed = try { _ = b.to_str(); false } catch _: str::Utf16Error { true };
+    println(f"bad unit: {failed && b.to_str_lossy() == "\u{FFFD}"}");
+}

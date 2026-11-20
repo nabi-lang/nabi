@@ -1,0 +1,46 @@
+// `Array` whole-array walks: `for x in a`, `sum`, `to_list`, `map`,
+// `copy` and `==` over contiguous arrays, `for x in a.t()` over a
+// strided view.
+use core::array::Array;
+
+fn total(a: Array<u32, 1>) -> u32 {
+    let s: u32 = 0;
+    for x in a {
+        s = s.wrapping_add(x);
+    }
+    s
+}
+
+fn walk(m: Array<f64, 2>) -> f64 {
+    let s = 0.0;
+    for x in m.t() {
+        s = s * 0.5 + x;
+    }
+    s
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 18;
+    let a: Array<u32, 1> = Array::from_fn([n], |i: [usize; 1]| -> u32 { (i[0] as u32).wrapping_mul(2654435761u32) });
+    let f: Array<f64, 1> = Array::from_fn([n], |i: [usize; 1]| -> f64 { (i[0] % 101) as f64 });
+    let m: Array<f64, 2> = Array::from_fn([256, 256], |i: [usize; 2]| -> f64 { (i[0] * 3 + i[1]) as f64 });
+    let w: u32 = 0;
+    let s = 0.0;
+    let k: usize = 0;
+    for r in 0..100usize {
+        w = w.wrapping_add(total(a));
+        s += f.sum();
+        let xs = f.to_list();
+        k += xs.len() + r;
+        let g = f.map(|x: f64| -> f64 { x * 2.0 });
+        let c = g.copy();
+        if c == g {
+            k += 1;
+        }
+    }
+    for _ in 0..20 {
+        s += walk(m);
+    }
+    println(f"{w} {s} {k}");
+    return 0;
+}

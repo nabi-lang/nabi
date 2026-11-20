@@ -1,0 +1,4 @@
+// expect-error: expected `;` after top-level expression
+
+// No tail expression at top level.
+println(f"{1}")

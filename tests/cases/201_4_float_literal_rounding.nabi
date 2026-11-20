@@ -1,0 +1,20 @@
+// expect-exit: 0
+//
+// A float literal and a parsed string are rounded once from the decimal:
+// just above the tie 1 + 2^-24, the nearest `f32` is 1 + 2^-23, while
+// rounding through `f64` (which lands on the tie) would give 1.
+// expect-stdout:
+// 3f800001 3f800001 3f800001 3f800000
+// 3f800001 3f800001
+
+const C: f32 = 1.000000059604644775390625000001;
+
+fn main() {
+    let a: f32 = 1.000000059604644775390625000001;
+    let b = 1.000000059604644775390625000001f32;
+    let t: f32 = 1.000000059604644775390625;
+    println(f"{a.to_bits():x} {b.to_bits():x} {C.to_bits():x} {t.to_bits():x}");
+    let p: f32 = try! "1.000000059604644775390625000001".parse();
+    let q = (-1.000000059604644775390625000001f32).abs();
+    println(f"{p.to_bits():x} {q.to_bits():x}");
+}

@@ -1,0 +1,667 @@
+// std::time::format: strftime-style patterns (`%Y-%m-%d`) for
+// `format` and `parse_with`. Names are English (the C locale). A bad
+// pattern panics: patterns are program text.
+
+use std::time::civil::{DateTime, Time};
+use std::time::date::{Date, Weekday, fdiv};
+use std::time::iso::Scan;
+use std::time::offset::{Offset, offset_str};
+use std::time::zone::TimeZone;
+
+pub(pkg) const MONTH_NAMES: [str; 12] = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+];
+
+const WEEKDAY_NAMES: [str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+/// What a pattern may draw from. `secs` is the unix second (with an
+/// offset only).
+pub(pkg) struct Parts {
+    date: Date | none;
+    time: Time | none;
+    offset: Offset | none;
+    abbr: str | none;
+    secs: i64 | none;
+}
+
+impl Parts {
+    pub(pkg) const fn of(date: Date | none, time: Time | none, offset: Offset | none, abbr: str | none, secs: i64 | none) -> Parts {
+        Parts { date, time, offset, abbr, secs }
+    }
+}
+
+/// The pattern a composite directive stands for, or "".
+const fn composite(letter: u8) -> str {
+    match letter {
+        b'F' => "%Y-%m-%d",
+        b'T' => "%H:%M:%S",
+        b'D' => "%m/%d/%y",
+        b'R' => "%H:%M",
+        b'r' => "%I:%M:%S %p",
+        b'c' => "%a %b %e %H:%M:%S %Y",
+        b'x' => "%m/%d/%y",
+        b'X' => "%H:%M:%S",
+        _ => "",
+    }
+}
+
+/// One `%` directive: flag (`-` no padding, `_` spaces, `0` zeros, or
+/// 0), `:` seen, a width digit (`%3f`) or 0, the letter, and its length.
+#[derive(Clone, Copy)]
+struct Spec {
+    flag: u8;
+    colon: bool;
+    width: usize;
+    letter: u8;
+    len: usize;
+}
+
+/// The directive at `pat[i]` (a `%`); `whole` is the pattern for errors.
+#[track_caller]
+const fn spec_at(pat: str, i: usize, whole: str) -> Spec {
+    let j = i + 1;
+    let n = pat.len();
+    let flag = 0u8;
+    if j < n && (pat.byte(j) == b'-' || pat.byte(j) == b'_' || pat.byte(j) == b'0') {
+        flag = pat.byte(j);
+        j += 1;
+    }
+    let colon = false;
+    if j < n && pat.byte(j) == b':' {
+        colon = true;
+        j += 1;
+    }
+    let width = 0usize;
+    if j < n && pat.byte(j) >= b'1' && pat.byte(j) <= b'9' {
+        width = (pat.byte(j) - b'0') as usize;
+        j += 1;
+    }
+    if j >= n { bad_pattern(whole, "ends inside a `%` directive; write `%%` for a literal `%`"); }
+    let letter = pat.byte(j);
+    if colon && letter != b'z' { bad_pattern(whole, "`:` only goes with `%:z`"); }
+    if width != 0 && letter != b'f' { bad_pattern(whole, "a digit only goes with `%f` (`%3f`, `%6f`, `%9f`)"); }
+    Spec { flag, colon, width, letter, len: j + 1 - i }
+}
+
+#[track_caller]
+const fn bad_pattern(whole: str, msg: str) -> ! { panic(f"time pattern \"{whole}\": {msg}") }
+
+const fn letter_of(s: Spec) -> char { char::from_u32(s.letter as u32) ?? '?' }
+
+#[track_caller]
+const fn unknown(pat: str, s: Spec) -> ! {
+    panic(f"time pattern \"{pat}\": unknown directive `%{letter_of(s)}`; write `%%` for a literal `%`")
+}
+
+/// Push `v` padded to `w` characters: zeros by default (`def` `0`),
+/// spaces for `_`, none for `-`.
+const fn push_num(out: StrBuf, v: i64, w: usize, flag: u8, def: u8) {
+    let f = if flag == 0u8 { def } else { flag };
+    if f == b'0' && v >= 0 {
+        if w == 2 && v < 100 {
+            out.push(DIGITS[(v / 10) as usize]);
+            out.push(DIGITS[(v % 10) as usize]);
+            return;
+        }
+        if w == 4 && v < 10000 {
+            out.push_str(f"{v:04}");
+            return;
+        }
+    }
+    let s = f"{v}";
+    if f == b'-' || s.len() >= w {
+        out.push_str(s);
+        return;
+    }
+    if f == b'_' {
+        for _ in s.len()..w { out.push(' '); }
+        out.push_str(s);
+        return;
+    }
+    if v < 0 {
+        out.push('-');
+        for _ in s.len()..w { out.push('0'); }
+        out.push_str(s[1:s.len()]);
+        return;
+    }
+    for _ in s.len()..w { out.push('0'); }
+    out.push_str(s);
+}
+
+const DIGITS: [char; 10] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+
+#[track_caller]
+const fn need_date(p: Parts, pat: str, s: Spec) -> Date {
+    if let d = p.date { return d; }
+    panic(f"time pattern \"{pat}\": `%{letter_of(s)}` needs a date; format a Date, DateTime or Zoned")
+}
+
+#[track_caller]
+const fn need_time(p: Parts, pat: str, s: Spec) -> Time {
+    if let t = p.time { return t; }
+    panic(f"time pattern \"{pat}\": `%{letter_of(s)}` needs a time of day; format a Time, DateTime or Zoned")
+}
+
+#[track_caller]
+const fn need_offset(p: Parts, pat: str, s: Spec) -> Offset {
+    if let o = p.offset { return o; }
+    panic(f"time pattern \"{pat}\": `%{letter_of(s)}` needs an offset; format a Zoned")
+}
+
+const fn hour12(h: i32) -> i32 {
+    let r = h % 12;
+    if r == 0 { 12 } else { r }
+}
+
+/// `pattern` filled from `p`.
+#[track_caller]
+pub(pkg) const fn render(pattern: str, p: Parts) -> str {
+    let out = StrBuf::with_capacity(pattern.len() + 16);
+    emit(out, pattern, pattern, p);
+    out.to_str()
+}
+
+#[track_caller]
+const fn emit(out: StrBuf, pat: str, whole: str, p: Parts) {
+    let i = 0usize;
+    let n = pat.len();
+    while i < n {
+        if pat.byte(i) != b'%' {
+            let j = i + 1;
+            while j < n && pat.byte(j) != b'%' { j += 1; }
+            out.push_str(pat[i:j]);
+            i = j;
+            continue;
+        }
+        let s = spec_at(pat, i, whole);
+        i += s.len;
+        let sub = composite(s.letter);
+        if sub != "" { emit(out, sub, whole, p); } else { put(out, s, whole, p); }
+    }
+}
+
+// Directive letter -> 1 for a date number, 2 for a time field, else 0.
+const KIND: [u8; 128] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 1, 0, 0, 0, 1, 2, 2, 0, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 1, 1, 2, 1, 0, 0, 1, 2, 2, 1, 0, 0, 2, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0,
+];
+
+const fn kind(l: u8) -> u8 { if l < 128u8 { KIND[l as usize] } else { 0u8 } }
+
+#[track_caller]
+const fn put(out: StrBuf, s: Spec, pat: str, p: Parts) {
+    let k = kind(s.letter);
+    if k == 1u8 {
+        put_date(out, s, need_date(p, pat, s));
+        return;
+    }
+    if k == 2u8 {
+        put_time(out, s, need_time(p, pat, s));
+        return;
+    }
+    put_other(out, s, pat, p);
+}
+
+#[track_caller]
+const fn put_other(out: StrBuf, s: Spec, pat: str, p: Parts) {
+    match s.letter {
+        b'a' => out.push_str(need_date(p, pat, s).weekday().name()[0:3]),
+        b'A' => out.push_str(need_date(p, pat, s).weekday().name()),
+        b'b' | b'h' => out.push_str(MONTH_NAMES[(need_date(p, pat, s).month() - 1) as usize][0:3]),
+        b'B' => out.push_str(MONTH_NAMES[(need_date(p, pat, s).month() - 1) as usize]),
+        b'z' => out.push_str(offset_str(need_offset(p, pat, s).secs(), if s.colon { ":" } else { "" })),
+        b'Z' => {
+            if let a = p.abbr { out.push_str(a); } else { out.push_str(f"{need_offset(p, pat, s)}"); }
+        }
+        b's' => {
+            let v: i64 = p.secs else { panic(f"time pattern \"{pat}\": `%s` needs an instant; format a Zoned") };
+            out.push_str(f"{v}");
+        }
+        b'%' => out.push('%'),
+        b'n' => out.push('\n'),
+        b't' => out.push('\t'),
+        _ => unknown(pat, s),
+    }
+}
+
+const fn put_date(out: StrBuf, s: Spec, d: Date) {
+    let f = s.flag;
+    match s.letter {
+        b'Y' => push_year(out, d.year() as i64, f),
+        b'C' => push_num(out, fdiv(d.year() as i64, 100), 2, f, b'0'),
+        b'y' => push_num(out, (d.year() as i64) %% 100, 2, f, b'0'),
+        b'm' => push_num(out, d.month() as i64, 2, f, b'0'),
+        b'd' => push_num(out, d.day() as i64, 2, f, b'0'),
+        b'e' => push_num(out, d.day() as i64, 2, f, b'_'),
+        b'j' => push_num(out, d.ordinal() as i64, 3, f, b'0'),
+        b'G' => push_year(out, d.iso_week().0 as i64, f),
+        b'g' => push_num(out, (d.iso_week().0 as i64) %% 100, 2, f, b'0'),
+        b'V' => push_num(out, d.iso_week().1 as i64, 2, f, b'0'),
+        b'U' => push_num(out, ((d.ordinal() + 6 - d.weekday().number() % 7) / 7) as i64, 2, f, b'0'),
+        b'W' => push_num(out, ((d.ordinal() + 6 - (d.weekday().number() + 6) % 7) / 7) as i64, 2, f, b'0'),
+        b'u' => push_num(out, d.weekday().number() as i64, 1, f, b'0'),
+        _ => push_num(out, (d.weekday().number() % 7) as i64, 1, f, b'0'),
+    }
+}
+
+/// At least four digits, after a `-` for a negative year.
+const fn push_year(out: StrBuf, y: i64, f: u8) {
+    if y < 0 {
+        out.push('-');
+        push_num(out, -y, 4, f, b'0');
+    } else {
+        push_num(out, y, 4, f, b'0');
+    }
+}
+
+const fn put_time(out: StrBuf, s: Spec, t: Time) {
+    let f = s.flag;
+    match s.letter {
+        b'H' => push_num(out, t.hour() as i64, 2, f, b'0'),
+        b'k' => push_num(out, t.hour() as i64, 2, f, b'_'),
+        b'I' => push_num(out, hour12(t.hour()) as i64, 2, f, b'0'),
+        b'l' => push_num(out, hour12(t.hour()) as i64, 2, f, b'_'),
+        b'M' => push_num(out, t.minute() as i64, 2, f, b'0'),
+        b'S' => push_num(out, t.second() as i64, 2, f, b'0'),
+        b'f' => {
+            let w = if s.width == 0 { 9usize } else { s.width };
+            let v = t.nanosecond() as i64;
+            for _ in w..9 { v /= 10; }
+            push_num(out, v, w, 0u8, b'0');
+        }
+        b'p' => out.push_str(if t.hour() < 12 { "AM" } else { "PM" }),
+        _ => out.push_str(if t.hour() < 12 { "am" } else { "pm" }),
+    }
+}
+
+/// What `parse_with` read: one `i64` slot per field (`NONE` when the
+/// pattern had none). A handle, so the directive readers share it.
+pub(pkg) struct Fields {
+    v: List<i64>;
+    zone: List<TimeZone>;
+}
+
+const NONE: i64 = -9223372036854775807 - 1;
+const YEAR: usize = 0;
+const YY: usize = 1;
+const MONTH: usize = 2;
+const DAY: usize = 3;
+const YDAY: usize = 4;
+const WEEKDAY: usize = 5;
+const HOUR: usize = 6;
+const HOUR12: usize = 7;
+const PM: usize = 8;
+const MINUTE: usize = 9;
+const SECOND: usize = 10;
+const NANO: usize = 11;
+const OFF: usize = 12;
+const SECS: usize = 13;
+const AT_DATE: usize = 14;
+const AT_TIME: usize = 15;
+const SLOTS: usize = 16;
+
+const fn is_space(b: u8) -> bool { b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' }
+const fn lower(b: u8) -> u8 { if b >= b'A' && b <= b'Z' { b + 32u8 } else { b } }
+
+/// 1 to `max` digits, after spaces when `spaces`.
+const fn digits(ref c: Scan, max: usize, spaces: bool, what: str) throws (ParseError) -> i64 {
+    if spaces {
+        while !c.done() && c.peek() == b' ' { c.skip(1); }
+    }
+    let start = c.pos();
+    let v = 0;
+    while !c.done() && c.peek() >= b'0' && c.peek() <= b'9' && c.pos() - start < max {
+        v = v * 10 + (c.peek() - b'0') as i64;
+        c.skip(1);
+    }
+    if c.pos() == start { throw c.fail(what); }
+    v
+}
+
+/// The index in `names` whose full name or first three letters start the
+/// rest of the text, in any case.
+const fn name(ref c: Scan, names: Slice<str>, what: str) throws (ParseError) -> usize {
+    let rest = c.rest();
+    for k in 0..names.len() {
+        let full = names[k];
+        for len in [full.len(), 3usize] {
+            if rest.len() < len { continue; }
+            let ok = true;
+            for j in 0..len {
+                if lower(rest.byte(j)) != lower(full.byte(j)) {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                c.skip(len);
+                return k;
+            }
+        }
+    }
+    throw c.fail(what);
+}
+
+#[track_caller]
+const fn no_parse(pattern: str, s: Spec) -> ! {
+    panic(f"time pattern \"{pattern}\": `%{letter_of(s)}` cannot be parsed; use `%Y`, `%m`, `%d` or `%j`")
+}
+
+/// Read `text` by `pattern`. Whitespace in the pattern matches one or
+/// more whitespace characters; other text must match exactly.
+#[track_caller]
+pub(pkg) fn scan(text: str, pattern: str) throws (ParseError) -> Fields {
+    let f = Fields { v: List::filled(SLOTS, NONE), zone: List::new() };
+    let c = Scan::new(text);
+    try scan_into(ref c, f, pattern, pattern);
+    try c.end();
+    f
+}
+
+#[track_caller]
+fn scan_into(ref c: Scan, f: Fields, pat: str, whole: str) throws (ParseError) {
+    let i = 0usize;
+    let n = pat.len();
+    while i < n {
+        let b = pat.byte(i);
+        if is_space(b) {
+            while i < n && is_space(pat.byte(i)) { i += 1; }
+            if c.done() || !is_space(c.peek()) { throw c.fail("whitespace"); }
+            while !c.done() && is_space(c.peek()) { c.skip(1); }
+            continue;
+        }
+        if b != b'%' {
+            let ch = pat[i:pat.len()].chars().next() ?? ' ';
+            let len = ch.len_utf8();
+            if !c.rest().starts_with(pat[i:i + len]) { throw c.fail(f"`{ch}` (from the pattern)"); }
+            c.skip(len);
+            i += len;
+            continue;
+        }
+        let s = spec_at(pat, i, whole);
+        i += s.len;
+        let sub = composite(s.letter);
+        if sub != "" {
+            try scan_into(ref c, f, sub, whole);
+        } else {
+            try read(ref c, f, s, whole);
+        }
+    }
+}
+
+/// One directive's field.
+#[track_caller]
+fn read(ref c: Scan, f: Fields, s: Spec, whole: str) throws (ParseError) {
+    let l = s.letter;
+    if l == b'Y' || l == b'y' || l == b'm' || l == b'd' || l == b'e' || l == b'j' {
+        try read_date(ref c, f, s);
+    } else if kind(l) == 2u8 {
+        try read_time(ref c, f, s);
+    } else {
+        try read_other(ref c, f, s, whole);
+    }
+}
+
+/// `what` `v` is out of range `range`, at byte `at`.
+const fn range_err(c: Scan, at: usize, what: str, v: i64, range: str) -> ParseError {
+    c.bad_at(at, f"{what} {v} is out of range ({range})")
+}
+
+fn read_date(ref c: Scan, f: Fields, s: Spec) throws (ParseError) {
+    let sp = s.flag == b'_' || s.flag == b'-';
+    let here = c.pos();
+    match s.letter {
+        b'Y' => {
+            f.set(AT_DATE, here as i64);
+            let neg = c.eat(b'-');
+            let plus = !neg && c.eat(b'+');
+            let v = try digits(ref c, if neg || plus { 6 } else { 4 }, false, "a year for `%Y`");
+            f.set(YEAR, if neg { -v } else { v });
+        }
+        b'y' => {
+            f.set(AT_DATE, here as i64);
+            f.set(YY, try digits(ref c, 2, sp, "a two-digit year for `%y`"));
+        }
+        b'm' => f.set(MONTH, try digits(ref c, 2, sp, "a month for `%m`")),
+        b'j' => f.set(YDAY, try digits(ref c, 3, sp, "a day of the year for `%j`")),
+        _ => f.set(DAY, try digits(ref c, 2, true, "a day for `%d`")),
+    }
+}
+
+fn read_time(ref c: Scan, f: Fields, s: Spec) throws (ParseError) {
+    let sp = s.flag == b'_' || s.flag == b'-';
+    let here = c.pos();
+    match s.letter {
+        b'H' | b'k' => {
+            f.set(AT_TIME, here as i64);
+            let v = try digits(ref c, 2, true, "an hour for `%H`");
+            if v > 23 { throw range_err(c, here, "hour", v, "00..=23"); }
+            f.set(HOUR, v);
+        }
+        b'I' | b'l' => {
+            f.set(AT_TIME, here as i64);
+            let v = try digits(ref c, 2, true, "an hour for `%I`");
+            if v < 1 || v > 12 { throw range_err(c, here, "hour", v, "01..=12 for `%I`"); }
+            f.set(HOUR12, v);
+        }
+        b'M' => {
+            let v = try digits(ref c, 2, sp, "minutes for `%M`");
+            if v > 59 { throw range_err(c, here, "minute", v, "00..=59"); }
+            f.set(MINUTE, v);
+        }
+        b'S' => {
+            let v = try digits(ref c, 2, sp, "seconds for `%S`");
+            if v == 60 { throw c.bad_at(here, "leap second 60 is not supported (no leap seconds); use `59`"); }
+            if v > 59 { throw range_err(c, here, "second", v, "00..=59"); }
+            f.set(SECOND, v);
+        }
+        b'f' => f.set(NANO, (try c.fraction()) as i64),
+        _ => {
+            let r = c.rest();
+            if r.len() >= 2 && lower(r.byte(1)) == b'm' && (lower(r.byte(0)) == b'a' || lower(r.byte(0)) == b'p') {
+                f.set(PM, if lower(r.byte(0)) == b'p' { 1 } else { 0 });
+                c.skip(2);
+            } else {
+                throw c.fail("`AM` or `PM` for `%p`");
+            }
+        }
+    }
+}
+
+#[track_caller]
+fn read_other(ref c: Scan, f: Fields, s: Spec, whole: str) throws (ParseError) {
+    let here = c.pos();
+    match s.letter {
+        b'%' => try c.expect(b'%', "`%`"),
+        b'n' | b't' => {
+            while !c.done() && is_space(c.peek()) { c.skip(1); }
+        }
+        b'b' | b'h' | b'B' => f.set(MONTH, (try name(ref c, MONTH_NAMES[0:12], "a month name (`Jan` or `January`)")) as i64 + 1),
+        b'a' | b'A' => f.set(WEEKDAY, (try name(ref c, WEEKDAY_NAMES[0:7], "a weekday name (`Mon` or `Monday`)")) as i64 + 1),
+        b'u' => {
+            let v = try digits(ref c, 1, false, "a weekday 1..=7 for `%u`");
+            if v < 1 || v > 7 { throw range_err(c, here, "weekday", v, "1..=7 for `%u`"); }
+            f.set(WEEKDAY, v);
+        }
+        b'w' => {
+            let v = try digits(ref c, 1, false, "a weekday 0..=6 for `%w`");
+            if v > 6 { throw range_err(c, here, "weekday", v, "0..=6 for `%w`"); }
+            f.set(WEEKDAY, if v == 0 { 7 } else { v });
+        }
+        b'z' => f.set(OFF, (try c.offset(true)).secs() as i64),
+        b'Z' => try read_zone(ref c, f),
+        b's' => {
+            f.set(AT_DATE, here as i64);
+            let neg = c.eat(b'-');
+            let v = try digits(ref c, 18, false, "unix seconds for `%s`");
+            f.set(SECS, if neg { -v } else { v });
+        }
+        b'C' | b'g' | b'G' | b'V' | b'U' | b'W' => no_parse(whole, s),
+        _ => unknown(whole, s),
+    }
+}
+
+/// `%Z`: `UTC` / `GMT` / `UT` / `Z`, or a zone name with a `/`.
+fn read_zone(ref c: Scan, f: Fields) throws (ParseError) {
+    let start = c.pos();
+    while !c.done() {
+        let x = c.peek();
+        let ok = (x >= b'a' && x <= b'z') || (x >= b'A' && x <= b'Z') || x == b'/' || x == b'_';
+        if !ok { break; }
+        c.skip(1);
+    }
+    let z = c.text()[start:c.pos()];
+    if z == "" { throw c.fail("a zone for `%Z` (`UTC` or a name such as `Europe/Paris`)"); }
+    if z == "UTC" || z == "GMT" || z == "UT" || z == "Z" {
+        f.set(OFF, 0);
+    } else if z.contains("/") {
+        f.zone.push(try TimeZone::get(z) catch e: ValueError { throw c.bad_at(start, e.message()); });
+    } else {
+        throw c.bad_at(start, f"zone abbreviation `{z}` is ambiguous; parse a numeric offset with `%z`, or a zone name such as `Asia/Seoul`");
+    }
+}
+
+impl Fields {
+    const fn set(self, k: usize, v: i64) { self.v[k] = v; }
+    const fn has(self, k: usize) -> bool { self.v[k] != NONE }
+    const fn get(self, k: usize, def: i64) -> i64 { if self.v[k] == NONE { def } else { self.v[k] } }
+    const fn at(self, k: usize) -> usize { self.get(k, 0) as usize }
+
+    /// The date read; `ParseError` when the pattern gave none or it does
+    /// not exist.
+    pub(pkg) const fn date(self, text: str) throws (ParseError) -> Date {
+        if self.has(SECS) { return DateTime::from_unix(self.v[SECS], 0u32).date(); }
+        let y = 0;
+        if self.has(YEAR) {
+            y = self.v[YEAR] as i32;
+        } else if self.has(YY) {
+            let yy = self.v[YY] as i32;
+            y = if yy < 69 { 2000 + yy } else { 1900 + yy };
+        } else {
+            throw ParseError::new(text, 0, "the pattern has no year (`%Y` or `%y`)");
+        }
+        let d = Date::MIN;
+        if self.has(YDAY) {
+            d = try Date::from_ordinal(y, self.v[YDAY] as i32) catch e: ValueError { throw ParseError::new(text, self.at(AT_DATE), e.message()); };
+        } else {
+            if !self.has(MONTH) { throw ParseError::new(text, 0, "the pattern has no month (`%m` or `%b`)"); }
+            if !self.has(DAY) { throw ParseError::new(text, 0, "the pattern has no day (`%d` or `%j`)"); }
+            d = try Date::new(y, self.v[MONTH] as i32, self.v[DAY] as i32) catch e: ValueError { throw ParseError::new(text, self.at(AT_DATE), e.message()); };
+        }
+        if self.has(WEEKDAY) && (d.weekday().number() as i64) != self.v[WEEKDAY] {
+            let w = Weekday::from_number(self.v[WEEKDAY] as i32) ?? d.weekday();
+            throw ParseError::new(text, 0, f"{d} is a {d.weekday()}, not a {w}");
+        }
+        d
+    }
+
+    /// The time of day read; missing parts are 0.
+    pub(pkg) const fn time(self, text: str) throws (ParseError) -> Time {
+        let nano = self.get(NANO, 0);
+        if self.has(SECS) { return DateTime::from_unix(self.v[SECS], nano as u32).time(); }
+        let h = self.get(HOUR, 0) as i32;
+        if self.has(HOUR12) {
+            h = (self.v[HOUR12] as i32) % 12 + (if self.get(PM, 0) == 1 { 12 } else { 0 });
+        } else if self.has(PM) {
+            throw ParseError::new(text, 0, "`%p` needs a 12-hour clock hour (`%I`)");
+        }
+        let t = try Time::new(h, self.get(MINUTE, 0) as i32, self.get(SECOND, 0) as i32) catch e: ValueError { throw ParseError::new(text, self.at(AT_TIME), e.message()); };
+        try t.with_nanosecond(nano as i32) catch e: ValueError { throw ParseError::new(text, self.at(AT_TIME), e.message()); }
+    }
+
+    pub(pkg) const fn offset(self) -> Offset | none {
+        if !self.has(OFF) { return none; }
+        try Offset::from_secs(self.v[OFF] as i32) catch _ { Offset::UTC }
+    }
+    pub(pkg) const fn zone(self) -> TimeZone | none { if self.zone.len() > 0 { self.zone[0] } else { none } }
+    pub(pkg) const fn secs(self) -> i64 | none { if self.has(SECS) { self.v[SECS] } else { none } }
+    pub(pkg) const fn nano(self) -> i32 { self.get(NANO, 0) as i32 }
+}
+
+const fn skip_space(ref c: Scan) {
+    while !c.done() && is_space(c.peek()) { c.skip(1); }
+}
+
+// RFC 5322 obsolete zone names, with their offsets in hours.
+const ZONE_NAMES: [str; 11] = ["UT", "GMT", "EST", "EDT", "CST", "CDT", "MST", "MDT", "PST", "PDT", "Z"];
+const ZONE_HOURS: [i32; 11] = [0, 0, -5, -4, -6, -5, -7, -6, -8, -7, 0];
+
+/// An RFC 2822 / RFC 5322 date and its offset.
+pub(pkg) const fn rfc2822(text: str) throws (ParseError) -> (DateTime, Offset) {
+    let c = Scan::new(text);
+    skip_space(ref c);
+    let wd: Weekday | none = none;
+    let b = c.peek();
+    if (b >= b'a' && b <= b'z') || (b >= b'A' && b <= b'Z') {
+        wd = Weekday::from_number((try name(ref c, WEEKDAY_NAMES[0:7], "a weekday (`Mon`) or a day")) as i32 + 1);
+        skip_space(ref c);
+        try c.expect(b',', "`,` after the weekday");
+        skip_space(ref c);
+    }
+    let at_d = c.pos();
+    let day = try digits(ref c, 2, false, "a day of the month");
+    skip_space(ref c);
+    let month = (try name(ref c, MONTH_NAMES[0:12], "a month name (`Jan`)")) as i32 + 1;
+    skip_space(ref c);
+    let at_y = c.pos();
+    let y = try digits(ref c, 4, false, "a year");
+    let ylen = c.pos() - at_y;
+    if ylen == 2 { y += if y < 50 { 2000 } else { 1900 }; } else if ylen == 3 { y += 1900; }
+    skip_space(ref c);
+    let at_t = c.pos();
+    let h = try digits(ref c, 2, false, "an hour");
+    try c.expect(b':', "`:` after the hour");
+    let mi = try digits(ref c, 2, false, "minutes");
+    let s = 0;
+    if c.eat(b':') { s = try digits(ref c, 2, false, "seconds"); }
+    skip_space(ref c);
+    let off = 0;
+    if c.peek() == b'+' || c.peek() == b'-' {
+        let neg = c.peek() == b'-';
+        c.skip(1);
+        let at = c.pos();
+        let v = (try c.num(4, "a four-digit zone (`+0900`)"));
+        if v % 100 > 59 { throw c.bad_at(at, "zone minutes out of range"); }
+        off = (v / 100) * 3600 + (v % 100) * 60;
+        if neg { off = -off; }
+    } else {
+        let start = c.pos();
+        while !c.done() && ((c.peek() >= b'a' && c.peek() <= b'z') || (c.peek() >= b'A' && c.peek() <= b'Z')) { c.skip(1); }
+        let z = text[start:c.pos()].to_uppercase();
+        let found = false;
+        for k in 0..11 {
+            if z == ZONE_NAMES[k] {
+                off = ZONE_HOURS[k] * 3600;
+                found = true;
+            }
+        }
+        // Military letters other than Z mean an unknown zone: -0000.
+        if !found && !(z.len() == 1 && z != "J") { throw c.fail_at(start, "a zone (`+0900`, `GMT`)"); }
+    }
+    skip_space(ref c);
+    try c.end();
+    let d = try Date::new(y as i32, month, day as i32) catch e: ValueError { throw c.bad_at(at_d, e.message()); };
+    let t = try Time::new(h as i32, mi as i32, s as i32) catch e: ValueError { throw c.bad_at(at_t, e.message()); };
+    if let w = wd {
+        if d.weekday().number() != w.number() { throw ParseError::new(text, 0, f"{d} is a {d.weekday()}, not a {w}"); }
+    }
+    let o = try Offset::from_secs(off) catch e: ValueError { throw ParseError::new(text, 0, e.message()); };
+    (DateTime::of(d, t), o)
+}
+
+/// An HTTP date (RFC 9110): IMF-fixdate, else the obsolete RFC 850 and
+/// asctime forms, as the UTC civil time.
+pub(pkg) fn http_date(text: str) throws (ParseError) -> DateTime {
+    let first = ParseError::new(text, 0, "");
+    for pat in ["%a, %d %b %Y %H:%M:%S GMT", "%A, %d-%b-%y %H:%M:%S GMT", "%a %b %e %H:%M:%S %Y"] {
+        let f = try scan(text, pat) catch e: ParseError {
+            if first.message() == "" { first = e; }
+            continue;
+        };
+        return DateTime::of(try f.date(text), try f.time(text));
+    }
+    throw first;
+}

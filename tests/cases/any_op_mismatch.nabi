@@ -1,0 +1,13 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/any_op_mismatch.nabi:11:9:
+// expect-stderr: operator `<` is not defined for the runtime type of an `any` value
+// expect-stdout:
+// 1
+
+// A runtime type without the operator traps (`nabi_panic`).
+let v: any = 42i32;
+let f: any = 1.5;
+println(f"{1}");
+let b = v < f;
+println(f"{2}");
+

@@ -1,0 +1,29 @@
+// expect-exit: 0
+// expect-stdout:
+// plain
+// 3
+
+// The `#[cfg]` of a file module holds for the meta blocks in
+// its file too - `off.nabi` defines `plain_only` again, but is cfg'd off.
+#[impl_attribute(plain_only)]
+pub @attribute {
+    @accept(fn)
+    fn @item.name(@item.params) -> @item.return_type {
+        println("plain");
+        @item.body
+    }
+}
+
+#[cfg(nope)]
+mod off;
+
+#[plain_only]
+fn three() -> i32 {
+    3
+}
+
+fn main() -> i32 {
+    println(f"{three()}");
+    0
+}
+

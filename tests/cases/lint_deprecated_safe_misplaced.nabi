@@ -1,0 +1,11 @@
+// expect-error: `#[deprecated_safe]` cannot be attached to a struct; it goes on a function, a method, an extern function or a static
+// expect-error: malformed `#[deprecated]`: expected no argument, a message string, or `(since = "1.2.0", note = "..")`
+
+// `#[deprecated_safe]` goes on functions and statics; `since` is a release.
+#[deprecated_safe]
+struct S { v: i32; }
+
+#[deprecated(since = "soon", note = "use g")]
+fn f() {}
+
+fn g() {}

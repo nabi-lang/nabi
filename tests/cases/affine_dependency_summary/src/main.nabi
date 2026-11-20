@@ -1,0 +1,14 @@
+// nabic-arg: --extern txdep=tests/cases/affine_dependency_summary/txdep
+// needs: fs process
+// expect-exit: 0
+// expect-stdout: closed
+
+// The dependency's summary says `Log::new` keeps its argument, so the
+// async body compiled here does not leave the file open.
+async fn main() throws {
+    let path = f"{std::env::temp_dir()}/nabi-affine-dep-{std::process::id()}";
+    let log = try await txdep::open(path);
+    try log.close();
+    try std::fs::remove_file(path);
+    println("closed");
+}

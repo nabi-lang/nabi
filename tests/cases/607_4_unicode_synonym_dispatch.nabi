@@ -1,0 +1,25 @@
+// expect-exit: 0
+// expect-stdout: true false true 3 true
+
+// `≤ ≥ ≠ ÷ ≡` reach the methods of `<= >= != / ==`: implementing the
+// ASCII operator's trait makes both spellings work.
+#[derive(PartialEq, Debug)]
+struct Ver { n: i64; }
+
+impl PartialOrd for Ver {
+    fn lt(self, rhs: Ver) -> bool { self.n < rhs.n }
+    fn gt(self, rhs: Ver) -> bool { self.n > rhs.n }
+    fn le(self, rhs: Ver) -> bool { self.n <= rhs.n }
+    fn ge(self, rhs: Ver) -> bool { self.n >= rhs.n }
+}
+
+impl ops::Div<i64> for Ver {
+    type Output = Ver;
+    fn div(self, rhs: i64) -> Ver { Ver { n: self.n / rhs } }
+}
+
+fn main() {
+    let a = Ver { n: 1 };
+    let b = Ver { n: 7 };
+    println(f"{a ≤ b} {a ≥ b} {a ≠ b} {(b ÷ 2).n} {a ≡ Ver { n: 1 }}");
+}

@@ -1,0 +1,13 @@
+// expect-error: 12:13: type `L<2>` does not satisfy trait bound `Dim<3>` required by `three`
+
+// Another constant than the bound's is no impl of it.
+struct L<const N: usize> { v: f64; }
+trait Dim<const D: usize> { fn dim(self) -> usize; }
+impl<const N: usize> Dim<N> for L<N> {
+    fn dim(self) -> usize { N }
+}
+fn three<X: Dim<3>>(x: X) -> usize { x.dim() }
+fn main() {
+    let a: L<2> = L { v: 2.0 };
+    let n = three(a);
+}

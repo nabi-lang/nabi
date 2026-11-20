@@ -1,0 +1,81 @@
+// Min / max reductions and tests that store on both ways, over 1M
+// elements, 200 times: the least and greatest `i32` and `u8`, a ReLU in
+// place and a clip of `i16` into another list. Vector reductions and
+// merged stores.
+fn least(xs: List<i32>) -> i32 {
+    let m: i32 = 2147483647;
+    for x in xs {
+        m = m.min(x);
+    }
+    m
+}
+
+fn greatest(bs: List<u8>) -> u8 {
+    let m: u8 = 0;
+    for b in bs {
+        if b > m {
+            m = b;
+        }
+    }
+    m
+}
+
+fn relu(xs: List<i32>) {
+    for i in 0..xs.len() {
+        if xs[i] < 0 {
+            xs[i] = 0;
+        } else {
+            xs[i] = xs[i] - 1;
+        }
+    }
+}
+
+fn clip(xs: List<i16>, ys: List<i16>, lo: i16, hi: i16) {
+    let n = xs.len().min(ys.len());
+    for i in 0..n {
+        let x = xs[i];
+        if x < lo {
+            ys[i] = lo;
+        } else if x > hi {
+            ys[i] = hi;
+        } else {
+            ys[i] = x;
+        }
+    }
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 20;
+    let xs: List<i32> = List::filled(n, 0);
+    let bs: List<u8> = List::filled(n, 0u8);
+    let hs: List<i16> = List::filled(n, 0i16);
+    let gs: List<i16> = List::filled(n, 0i16);
+    let x: u64 = 3;
+    for i in 0..n {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        xs[i] = ((x >> 33) % 2000001u64) as i32 - 1000000;
+        bs[i] = ((x >> 41) % 251u64) as u8;
+        hs[i] = (x >> 48) as i16;
+    }
+    let t: i64 = 0;
+    for r in 0..200 {
+        xs[r] = -1000001 - r as i32;
+        bs[r] = 251u8 + (r % 5) as u8;
+        t += least(xs) as i64 + greatest(bs) as i64;
+        clip(hs, gs, -1000i16 - r as i16, 1000i16 + r as i16);
+        t += gs[r * 7] as i64;
+    }
+    let ys: List<i32> = List::filled(n, 0);
+    for i in 0..n {
+        ys[i] = xs[i];
+    }
+    for _ in 0..50 {
+        relu(ys);
+    }
+    let s: i64 = 0;
+    for y in ys {
+        s += y as i64;
+    }
+    println(f"{t} {s}");
+    return 0;
+}

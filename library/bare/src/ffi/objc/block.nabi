@@ -1,0 +1,257 @@
+//! bare::ffi::objc::block - Nabi closures as Objective-C blocks, laid
+//! out as the Apple block ABI says.
+//!
+//! A block holds one word: the address of a pinned GC cell holding the
+//! closure. Pinned objects stay where they are and are roots, and the
+//! pin count is the number of blocks that hold the cell, so the closure
+//! lives as long as any copy Objective-C keeps. `extern "objc"` methods
+//! with a closure parameter make the block, and the trampoline its
+//! `invoke` calls, themselves.
+//!
+//! `Block<F>` is a block Nabi owns, for C functions that take one
+//! (`dispatch_async`); the collector releases it. `BlockRef<F>` is a
+//! block Objective-C passed in, which `copy()` keeps.
+
+use bare::alloc::{alloc_one, dealloc_one};
+use bare::mem::{GcBuf, buf_get, buf_new, buf_set, transmute_unchecked};
+use bare::ptr::{CPtr, ConstPtr, Ptr};
+
+extern "nabi" {
+    fn nabi_gc_pin(obj: GcBuf<u8>) -> GcBuf<u8>;
+    fn nabi_gc_unpin(obj: GcBuf<u8>);
+    fn nabi_objc_track(cell: GcBuf<u8>, release: unsafe extern "C" fn(CPtr<u8>), p: usize, main: bool) -> usize;
+    fn pthread_main_np() -> i32;
+}
+
+extern "C" {
+    // The class of a block literal on the stack: data, named as a
+    // function only for its address.
+    fn _NSConcreteStackBlock();
+    fn _Block_copy(b: CPtr<u8>) -> CPtr<u8>;
+    fn _Block_release(b: CPtr<u8>);
+}
+
+/// `BLOCK_HAS_COPY_DISPOSE | BLOCK_HAS_SIGNATURE`.
+const FLAGS: i32 = (1 << 25) | (1 << 30);
+
+/// A block literal as the compiler of a C block lays it out, with one
+/// captured word.
+#[repr(C)]
+struct Literal {
+    isa: usize;
+    flags: i32;
+    reserved: i32;
+    invoke: usize;
+    descriptor: usize;
+    cell: usize;
+}
+
+/// The descriptor every block of one signature shares: in a `static`,
+/// so it outlives every copy of them.
+#[doc(hidden)]
+#[repr(C)]
+pub struct Descriptor {
+    reserved: usize;
+    size: usize;
+    copy: usize;
+    dispose: usize;
+    signature: usize;
+}
+
+impl Descriptor {
+    /// The descriptor of blocks with type encoding `signature`
+    /// (`"v@?@"`), a string literal.
+    pub fn new(signature: str) -> Descriptor {
+        let copy: extern "C" fn(CPtr<u8>, CPtr<u8>) = copy_helper;
+        let dispose: extern "C" fn(CPtr<u8>) = dispose_helper;
+        Descriptor {
+            reserved: 0,
+            size: 40,
+            copy: unsafe { transmute_unchecked(copy) },
+            dispose: unsafe { transmute_unchecked(dispose) },
+            signature: signature.as_ptr().addr(),
+        }
+    }
+}
+
+/// `_Block_copy` copying a block to the heap: one more holder.
+extern "C" fn copy_helper(dst: CPtr<u8>, src: CPtr<u8>) {
+    unsafe { nabi_gc_pin(cell_of(src)) };
+}
+
+/// The last release of a heap block: one holder fewer.
+extern "C" fn dispose_helper(b: CPtr<u8>) {
+    unsafe { nabi_gc_unpin(cell_of(b)) };
+}
+
+/// The closure cell block `b` holds.
+unsafe fn cell_of(b: CPtr<u8>) -> GcBuf<u8> {
+    let at = ConstPtr::<usize>::dangling().with_addr(b.addr() + 32);
+    unsafe { transmute_unchecked(at.read()) }
+}
+
+/// A heap block (owned once) calling `f` through `invoke`, its
+/// trampoline; `desc` is the address of the signature's `Descriptor`.
+#[doc(hidden)]
+pub fn new<F>(f: F, invoke: usize, desc: Ptr<Descriptor>) -> CPtr<u8> {
+    let cell: GcBuf<F> = unsafe { buf_new(1) };
+    unsafe { buf_set(cell, 0, f) };
+    let obj = unsafe { nabi_gc_pin(transmute_unchecked(cell)) };
+    let isa: unsafe extern "C" fn() = _NSConcreteStackBlock;
+    let lit = unsafe { alloc_one::<Literal>() }.as_ptr() ?? panic("out of memory");
+    unsafe {
+        lit.write(Literal {
+            isa: transmute_unchecked(isa),
+            flags: FLAGS,
+            reserved: 0,
+            invoke,
+            descriptor: desc.addr(),
+            cell: transmute_unchecked(obj),
+        })
+    };
+    let heap = unsafe { _Block_copy(CPtr::from_addr(lit.addr())) };
+    // The heap copy holds the cell now; the literal no longer does.
+    unsafe { nabi_gc_unpin(obj) };
+    unsafe { dealloc_one(lit) };
+    heap
+}
+
+/// The closure block `b` calls (its trampoline's first argument).
+///
+/// Safety: `b` is a block `new` made with an `F`.
+#[doc(hidden)]
+pub unsafe fn closure<F>(b: CPtr<u8>) -> F {
+    let cell: GcBuf<F> = unsafe { transmute_unchecked(cell_of(b)) };
+    unsafe { buf_get(cell, 0) }
+}
+
+/// Give back the block `new` returned.
+#[doc(hidden)]
+pub fn release(b: CPtr<u8>) { unsafe { _Block_release(b) } }
+
+/// The descriptor of one `fn()` block, freed with its last copy: a
+/// `static` would run its initializer in every program.
+fn unit_descriptor() -> Ptr<Descriptor> {
+    let d = unsafe { alloc_one::<Descriptor>() }.as_ptr() ?? panic("out of memory");
+    let copy: extern "C" fn(CPtr<u8>, CPtr<u8>) = copy_helper;
+    let dispose: extern "C" fn(CPtr<u8>) = dispose_owned;
+    unsafe {
+        d.write(Descriptor {
+            reserved: 0,
+            size: 40,
+            copy: transmute_unchecked(copy),
+            dispose: transmute_unchecked(dispose),
+            signature: "v8@?0".as_ptr().addr(),
+        })
+    };
+    d
+}
+
+/// `dispose_helper`, then the block's own descriptor goes too.
+extern "C" fn dispose_owned(b: CPtr<u8>) {
+    unsafe { nabi_gc_unpin(cell_of(b)) };
+    let at = ConstPtr::<usize>::dangling().with_addr(b.addr() + 24);
+    let d = unsafe { at.read() };
+    unsafe { dealloc_one(Ptr::<Descriptor>::dangling().with_addr(d)) };
+}
+
+/// `invoke` of a `fn()` block.
+extern "C" fn invoke_unit(b: CPtr<u8>) {
+    let f = unsafe { closure::<fn()>(b) };
+    f();
+}
+
+/// `invoke` of a `fn()` block that must run on the main thread.
+extern "C" fn invoke_unit_main(b: CPtr<u8>) {
+    if unsafe { pthread_main_np() } == 0 {
+        panic("a block made with `Block::new_main_thread` ran off the main thread; make it with `Block::new` (its closure `Send`) for other queues");
+    }
+    let f = unsafe { closure::<fn()>(b) };
+    f();
+}
+
+/// The block's `invoke` as a function of block `b` and no arguments.
+unsafe fn call_unit(b: CPtr<u8>) {
+    let at = ConstPtr::<usize>::dangling().with_addr(b.addr() + 16);
+    let invoke: unsafe extern "C" fn(CPtr<u8>) = unsafe { transmute_unchecked(at.read()) };
+    unsafe { invoke(b) };
+}
+
+/// A block Nabi owns (one `_Block_copy` retain, which the collector
+/// gives back), calling a closure of type `F`. Pass it to a C function
+/// with `as_raw()`.
+pub struct Block<F> {
+    /// The heap block, then the collector's cleanup.
+    cell: GcBuf<usize>;
+}
+
+impl<F> Clone for Block<F> {
+    const fn clone(self) -> Block<F> { self }
+}
+
+impl<F> Copy for Block<F> {}
+
+impl<F> Block<F> {
+    /// Own heap block `b` (a `+1` one, from `_Block_copy` or `new`).
+    ///
+    /// Safety: `b` is a heap block calling an `F`, owned once.
+    pub unsafe fn from_raw(b: CPtr<u8>) -> Block<F> {
+        let cell: GcBuf<usize> = unsafe { buf_new(2) };
+        unsafe { buf_set(cell, 0, b.addr()) };
+        let token = unsafe { nabi_objc_track(transmute_unchecked(cell), _Block_release, b.addr(), false) };
+        unsafe { buf_set(cell, 1, token) };
+        Block<F> { cell }
+    }
+
+    /// The block, for a C parameter of block type (`dispatch_block_t`).
+    /// A callee that keeps it copies it.
+    pub fn as_raw(self) -> CPtr<u8> { CPtr::from_addr(unsafe { buf_get(self.cell, 0) }) }
+}
+
+impl Block<fn()> {
+    /// A block calling `f`, on any thread or queue.
+    pub fn new(f: fn() + Send) -> Block<fn()> {
+        let i: extern "C" fn(CPtr<u8>) = invoke_unit;
+        unsafe { Block::<fn()>::from_raw(new(f, transmute_unchecked(i), unit_descriptor())) }
+    }
+
+    /// A block calling `f`, which need not be `Send`: it may run only on
+    /// the main thread (main-queue APIs), and panics anywhere else.
+    pub fn new_main_thread(f: fn()) -> Block<fn()> {
+        let i: extern "C" fn(CPtr<u8>) = invoke_unit_main;
+        unsafe { Block::<fn()>::from_raw(new(f, transmute_unchecked(i), unit_descriptor())) }
+    }
+
+    /// Call the closure, as Objective-C would.
+    pub fn call(self) { unsafe { call_unit(self.as_raw()) } }
+}
+
+/// A block Objective-C passed in (a completion handler): valid while the
+/// call that passed it runs; `copy()` keeps it longer.
+pub struct BlockRef<F> {
+    p: CPtr<u8>;
+}
+
+impl<F> Clone for BlockRef<F> {
+    const fn clone(self) -> BlockRef<F> { self }
+}
+
+impl<F> Copy for BlockRef<F> {}
+
+impl<F> BlockRef<F> {
+    /// The block at `p`.
+    ///
+    /// Safety: `p` is a block calling an `F`, alive while this is used.
+    pub unsafe fn from_raw(p: CPtr<u8>) -> BlockRef<F> { BlockRef<F> { p } }
+
+    /// The block, kept: `_Block_copy`, released by the collector.
+    pub fn copy(self) -> Block<F> { unsafe { Block::<F>::from_raw(_Block_copy(self.p)) } }
+
+    /// The block, to pass on to a C parameter during the call.
+    pub fn as_raw(self) -> CPtr<u8> { self.p }
+}
+
+impl BlockRef<fn()> {
+    /// Call the block.
+    pub fn call(self) { unsafe { call_unit(self.p) } }
+}

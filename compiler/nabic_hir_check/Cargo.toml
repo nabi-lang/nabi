@@ -1,0 +1,18 @@
+[package]
+name = "nabic_hir_check"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+nabic_ast = { workspace = true }
+nabic_core = { workspace = true }
+nabic_diagnostic = { workspace = true }
+nabic_hir = { workspace = true }
+nabic_ir_common = { workspace = true }
+nabic_lexer = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,31 @@
+preview2-shim (jco): an accepted TCP socket gets its own poll state.
+
+Not applied in the tests. socketTcpAccept gives the accepted socket the
+input stream's poll state, so a tcp-socket.subscribe() pollable alive
+when wasi-libc drops the socket's input stream (its close order: each
+pollable before its own parent, the socket's pollable last) traps:
+"Cannot drop input stream as it has a child poll resource". The 11
+corpus cases with `// skip-wasm-runner: jco` for this pass with it.
+Against jco main 7a9b8c0c, packages/preview2-shim (0.31.1's
+dist/io/worker-thread.bundle.js has the same lines).
+
+diff --git a/packages/preview2-shim/src/io/worker-socket-tcp.ts b/packages/preview2-shim/src/io/worker-socket-tcp.ts
+index 5b3d1f2..5ad39a5 100644
+--- a/packages/preview2-shim/src/io/worker-socket-tcp.ts
++++ b/packages/preview2-shim/src/io/worker-socket-tcp.ts
+@@ -299,7 +299,14 @@ export function socketTcpAccept(id: number) {
+         keepAlive: false,
+         keepAliveIdleTime: 0,
+         pendingAccepts: [],
+-        pollState: accept.pollState,
++        // The socket's own: accept.pollState is the input stream's, and
++        // a pollable of one must not hold up dropping the other.
++        pollState: {
++            ready: true,
++            listener: null,
++            polls: [],
++            parentStream: null,
++        },
+     });
+     return [tcpSocketCnt, inputStream, outputStream];
+ }

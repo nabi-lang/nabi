@@ -1,0 +1,24 @@
+// expect-exit: 0
+// forbid-warning: warning
+// expect-stdout:
+// Config { name: "a", limits: {"x": 1, "y": 2}, tags: ["t"] }
+// true
+
+// A `#[derive(Nabion)]` struct round-trips in user code and builds with
+// no warning: nothing the derive expands to is deprecated.
+use std::nabion;
+
+#[derive(Nabion, Debug, PartialEq)]
+struct Config {
+    name: str;
+    limits: Dict<str, i32>;
+    tags: List<str>;
+}
+
+fn main() {
+    let c = Config { name: "a", limits: {"x": 1, "y": 2}, tags: ["t"] };
+    let text = try! nabion::to_str(c);
+    let back: Config = try! nabion::from_str(text);
+    println(f"{back:?}");
+    println(f"{back == c}");
+}

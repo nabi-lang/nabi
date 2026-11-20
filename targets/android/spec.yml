@@ -1,0 +1,28 @@
+# Device Farm test spec of the corpus run (targets/devfarm/run.sh fills
+# in @ARGS@: the instrumentation's `-e` arguments). Results go to the
+# Customer Artifacts: instrument.log and junit.xml.
+version: 0.1
+android_test_host: amazon_linux_2
+phases:
+  install:
+    commands:
+  pre_test:
+    commands:
+  test:
+    commands:
+      - |
+        adb -s $DEVICEFARM_DEVICE_UDID shell "am instrument -r -w --no-window-animation @ARGS@ \
+        org.nabi_lang.corpus.tests/.Corpus 2>&1 || echo \": -1\"" |
+        tee $DEVICEFARM_LOG_DIR/instrument.log
+      - adb -s $DEVICEFARM_DEVICE_UDID pull /sdcard/Android/data/org.nabi_lang.corpus/files/junit.xml $DEVICEFARM_LOG_DIR/junit.xml || true
+      - adb -s $DEVICEFARM_DEVICE_UDID shell getprop > $DEVICEFARM_LOG_DIR/getprop.txt || true
+      - |
+        if ! grep -q "INSTRUMENTATION_STATUS_CODE: 1" $DEVICEFARM_LOG_DIR/instrument.log; then
+          echo "no case started"; false
+        elif grep -q "INSTRUMENTATION_STATUS_CODE: -2" $DEVICEFARM_LOG_DIR/instrument.log; then
+          echo "some cases failed"; false
+        fi
+  post_test:
+    commands:
+artifacts:
+  - $DEVICEFARM_LOG_DIR

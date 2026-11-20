@@ -1,0 +1,38 @@
+// expect-exit: 0
+// expect-stdout:
+// 12 16 17 34 8
+// 7
+// 16 [1, 2]
+
+// A `const` inside a function body is an item of
+// its block: inlined at each use, hidden by an inner block's `const` of
+// its name, able to size an array, and read by a closure.
+const fn sq(x: i64) -> i64 { x * x }
+
+fn area(r: f64) -> f64 {
+    const FACTOR: f64 = 3.0f64;
+    FACTOR * r * r
+}
+
+fn make<const N: usize>() -> usize {
+    const K: usize = 2;
+    let a = [0i32; K];
+    N * K + a.len()
+}
+
+fn main() -> i32 {
+    const A: i64 = sq(4);
+    const B: i64 = A + 1;
+    let f = || B * 2;
+    println(f"{area(2.0)} {A} {B} {f()} {make::<3>()}");
+    {
+        const A: i64 = 7;
+        println(f"{A}");
+    }
+    // A heap result is checked now and built at each use.
+    const L: List<i64> = [1, 2];
+    let l = L;
+    l.push(3);
+    println(f"{A} {L:?}");
+    return 0;
+}

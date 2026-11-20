@@ -1,0 +1,22 @@
+// expect-error: 12:13: `if` branches have different types `str | none` and `Resp | none` - Nabi does not infer a sum type; annotate the slot (`let v: Resp | str | none = if ...`)
+// expect-error: 13:13: `match` arms have different types `str | none` and `Resp | none` (arm 2) - Nabi does not infer a sum type; annotate the slot (`let v: Resp | str | none = match ...`)
+// expect-error: 14:38: `break` values have different types `str | none` and `Resp | none` - Nabi does not infer a sum type; annotate the slot (`let v: Resp | str | none = loop ...`)
+// expect-error: 17:1: the return paths of `g` have different types `str | none` and `Resp | none`
+// expect-error: help: write the return type: `-> Resp | str | none`
+
+// The annotation a branch-type error suggests names each member once,
+// even when the branches are sums that share one.
+struct Resp { n: i32; }
+
+fn pick(c: bool, s: str?, r: Resp?) {
+    let v = if c { s } else { r };
+    let w = match c { true => s, false => r };
+    let x = loop { if c { break s; } break r; };
+}
+
+fn g(c: bool, s: str?, r: Resp?) { if c { return s; } return r; }
+
+fn main() {
+    pick(true, none, none);
+    g(true, none, none);
+}

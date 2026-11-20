@@ -1,0 +1,10 @@
+// Two nested fns of one name in one block: both are pointed at.
+// expect-error: 8:5: nested function `post_later` is defined twice in this block
+// expect-error: first defined here
+// expect-error: help: rename one of them, e.g. `post_later2`; there is no overloading
+
+async fn main() -> i32 {
+    async fn post_later(a: i32) -> i32 { a }
+    async fn post_later(a: i32, b: i32) -> i32 { a + b }
+    return await post_later(1);
+}

@@ -1,0 +1,12 @@
+// expect-exit: 0
+// expect-stdout:
+// [-1.0, 2.0] [[-1.0, -3.0], [2.0, -4.0]] [-2] [-0.0]
+
+// Prefix `-` on an `Array`, a view included, negates each element.
+use core::array::{Matrix, Vector};
+
+let y: Vector<f64> = [1.0, -2.0];
+let m: Matrix<f64> = [[1.0, -2.0], [3.0, 4.0]];
+let i: Vector<i64> = [2];
+let z: Vector<f64> = [0.0];
+println(f"{-y:?} {-m.t():?} {-i:?} {-z:?}");

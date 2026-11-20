@@ -1,0 +1,12 @@
+// expect-exit: 12
+// expect-stdout:
+
+// A final closure argument may go outside the parentheses:
+// `apply(3) |x| { x * 4 }` == `apply(3, |x| { x * 4 })` == 12.
+fn apply(n: i32, f: fn(i32) -> i32) -> i32 {
+    return f(n);
+}
+
+fn main() -> i32 {
+    return apply(3) |x| { x * 4 };
+}

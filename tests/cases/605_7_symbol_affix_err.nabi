@@ -1,0 +1,31 @@
+// expect-error: invalid `#[literal]`: a number suffix is a name glued to the number (`95pct`, `2i`), and `+` is an operator: `95+` reads as the number then `+`; use a name, as in `#[literal(number "deg")]` and `95deg`
+// expect-error: invalid `#[literal]`: a number suffix is a name glued to the number (`95pct`, `2i`), and `°` (U+00B0 DEGREE SIGN) is a symbol, not a letter; write `#[literal(number "deg")]` and `95deg`
+// expect-error: invalid `#[literal]`: a number suffix is a name glued to the number (`95pct`, `2i`), and `$` is a symbol, not a letter; write `#[literal(number "usd")]` and `95usd`
+// expect-error: invalid `#[literal]`: a number suffix is a name glued to the number (`95pct`, `2i`), and `⊛` (U+229B CIRCLED ASTERISK OPERATOR) is a symbol, not a letter
+// expect-error: invalid `#[literal]`: the suffix `em` starts with `e`, which after digits reads as an exponent (`2e3`), so `2em` can't be written
+// expect-error: invalid `#[literal]`: a string prefix is a name glued to the string (`date"2024-01-15"`), and `€` (U+20AC EURO SIGN) is a symbol, not a letter; write `#[literal("eur" string)]` and `eur".."`
+// expect-error: invalid `#[literal]`: a string prefix is a name glued to the string (`date"2024-01-15"`), and `!` is a symbol, not a letter; use a name, as in `#[literal("date" string)]` and `date".."`
+// expect-error: invalid `#[literal]`: `r".."` is built into the language (a raw string); pick another prefix
+
+// A number suffix or string prefix is a name: symbols are operators or
+// nothing, so `5°` or `$"9.99"` can't be literals; names can (`5deg`, `x2`).
+#[literal(number "+")]
+pub const fn plus(n: f64) -> f64 { n }
+#[literal(number "°")]
+pub const fn deg(n: f64) -> f64 { n }
+#[literal(number "$")]
+pub const fn usd(n: f64) -> f64 { n }
+#[literal(number "⊛")]
+pub const fn star(n: f64) -> f64 { n }
+#[literal(number "em")]
+pub const fn em(n: f64) -> f64 { n }
+#[literal("€" string)]
+pub const fn euro(s: str) -> str { s }
+#[literal("!" string)]
+pub const fn bang(s: str) -> str { s }
+#[literal("r" string)]
+pub const fn raw(s: str) -> str { s }
+#[literal(number "x2")]
+pub const fn x2(n: f64) -> f64 { n * 2.0 }
+
+fn main() { println(3x2); }

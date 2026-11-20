@@ -1,0 +1,30 @@
+// expect-exit: 0
+// expect-stdout:
+// 6 6 0 7 15 3
+// 12 12 0 42 3
+// 10 1 1 0 100891344545564193334812497256
+// 20 1 0 2432902008176640000
+// 1 0.9999999999999999 1 0 0
+// inf NaN NaN inf
+// 1.0000000000000002 1
+// true false false true true
+// true false false true
+// true false
+
+// gcd / lcm of the fixed-width integers, comb / perm as int, fsum
+// (correctly rounded), is_close on f64 / f32.
+use core::num;
+
+println(f"{12i32.gcd(-18)} {(-12i32).gcd(18)} {0u8.gcd(0)} {0i64.gcd(-7)} {255u8.gcd(15)} {u64::MAX.gcd(3)}");
+println(f"{4i64.lcm(6)} {(-4i64).lcm(6)} {0u32.lcm(9)} {21usize.lcm(6)} {(-3isize).gcd(-9)}");
+println(f"{num::comb(5, 2)} {num::comb(5, 0)} {num::comb(5, 5)} {num::comb(3, 5)} {num::comb(100, 50)}");
+println(f"{num::perm(5, 2)} {num::perm(5, 0)} {num::perm(3, 4)} {num::perm(20, 20)}");
+let tenth = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1];
+let plain = 0.0;
+for x in tenth { plain += x; }
+println(f"{num::fsum(tenth)} {plain} {num::fsum([1e100, 1.0, -1e100])} {num::fsum([])} {num::fsum([-0.0])}");
+println(f"{num::fsum([f64::INFINITY, 1.0])} {num::fsum([f64::INFINITY, f64::NEG_INFINITY])} {num::fsum([f64::NAN, 1.0])} {num::fsum([1e308, 1e308])}");
+println(f"{num::fsum([1.0, 1e-16, 1e-16])} {num::fsum((0..1000).map(|_| 0.001))}");
+println(f"{(0.1 + 0.2).is_close(0.3)} {(0.1 + 0.2) == 0.3} {1e-12.is_close(0.0)} {1e-12.is_close(0.0, abs: 1e-9)} {100.0.is_close(101.0, rel: 0.01)}");
+println(f"{f64::INFINITY.is_close(f64::INFINITY)} {f64::INFINITY.is_close(1e308)} {f64::NAN.is_close(f64::NAN)} {f64::NAN.is_close(f64::NAN, equal_nan: true)}");
+println(f"{(0.1f32 + 0.2f32).is_close(0.3f32)} {1.0f32.is_close(1.001f32)}");

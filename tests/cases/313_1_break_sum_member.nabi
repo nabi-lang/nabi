@@ -1,0 +1,54 @@
+// expect-exit: 0
+// expect-stdout:
+// 1 none none 1
+// 2 1 x
+// none 1
+
+// A `break` value that already is a sum counts by its members: the
+// loop's value is that sum, whichever `break` comes first. No new sum
+// is made.
+struct Resp { n: i32; }
+
+fn get(c: bool) -> Resp? {
+    if c { return Resp { n: 1 }; }
+    return none;
+}
+
+fn show(r: Resp?) -> str {
+    match r {
+        none => "none",
+        p: Resp => f"{p.n}",
+    }
+}
+
+fn wide(v: i64 | str) -> str {
+    match v {
+        n: i64 => f"{n}",
+        s: str => s,
+    }
+}
+
+fn main() {
+    let r = get(true);
+    let p = Resp { n: 2 };
+    let a = loop { if false { break none; } break r; };
+    let b = loop { if true { break none; } break r; };
+    let c = loop { if false { break r; } break none; };
+    let d = loop { if true { break r; } break none; };
+    println(f"{show(a)} {show(b)} {show(c)} {show(d)}");
+    let e = loop { if true { break p; } break r; };
+    let w: i64 | str = 1;
+    let x = loop { if false { break "x"; } break w; };
+    let y = loop { if true { break "x"; } break w; };
+    println(f"{show(e)} {wide(x)} {wide(y)}");
+    // A labelled block's `break`s too.
+    let f = 'pick: {
+        if true { break 'pick none; }
+        r
+    };
+    let g = 'pick: {
+        if false { break 'pick none; }
+        break 'pick r;
+    };
+    println(f"{show(f)} {show(g)}");
+}

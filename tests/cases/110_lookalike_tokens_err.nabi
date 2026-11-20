@@ -1,0 +1,13 @@
+// expect-error: 9:15: `−` (U+2212 MINUS SIGN) looks like `-` but is another character
+// expect-error: 10:13: `“` (U+201C LEFT DOUBLE QUOTATION MARK) looks like `"` but is another character
+// expect-error: 11:12: `（` (U+FF08 FULLWIDTH LEFT PARENTHESIS) looks like `(` but is another character
+// expect-error: 12:15: `；` (U+FF1B FULLWIDTH SEMICOLON) looks like `;` but is another character
+
+// Characters pasted from documents that only look like ASCII tokens: each
+// error says which token to write, and the rest of the line still parses.
+fn main() {
+    let a = 3 − 1;
+    let s = “hi”;
+    println（a);
+    println(s)；
+}

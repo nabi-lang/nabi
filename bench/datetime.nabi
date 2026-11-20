@@ -1,0 +1,22 @@
+// datetime: calendar text both ways. RFC 3339 `Display` and `parse`, a
+// strftime pattern each way, and instants in a POSIX rule zone (no tz
+// database needed).
+use std::time::{DateTime, TimeZone, Zoned};
+
+fn main() throws {
+    let tz = try TimeZone::from_posix("CET-1CEST,M3.5.0,M10.5.0/3");
+    let n: i64 = 0;
+    let i = 0;
+    while i < 200000 {
+        let secs = 1700000000 + i * 7919;
+        let z = Zoned::from_unix(secs, ((i * 1000) % 1000000000) as u32, tz);
+        let s = f"{z}";
+        let back = try s.parse::<Zoned>();
+        let p = z.format("%Y-%m-%d %H:%M:%S");
+        let dt = try DateTime::parse_with(p, "%Y-%m-%d %H:%M:%S");
+        let local = dt.in_zone(tz);
+        n += (s.len() + p.len()) as i64 + back.unix_secs() % 7 + local.unix_secs() % 5;
+        i += 1;
+    }
+    println(f"{n}");
+}

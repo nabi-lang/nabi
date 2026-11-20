@@ -1,0 +1,190 @@
+//! Entry point rules: `main.nabi` provides either an explicit
+//! `fn main` or top-level statements (the implicit `main`), never both.
+//! Every other file is definitions-only.
+
+use nabic_ast::{
+    Block, Expr, ExprKind, FnDef, Generics, Item, Stmt, StmtKind, ThrowsKind, TryKind, TyKind,
+};
+use nabic_diagnostic::{Code, NabiDiagnostic, Span};
+use std::path::Path;
+
+pub fn stmts_outside_entry(file: &Path) -> NabiDiagnostic {
+    NabiDiagnostic::error(
+        Code::ENTRY_POINT,
+        Span::DUMMY,
+        format!(
+            "{}: top-level statements are only allowed in the entry file `main.nabi`; \
+             modules are definitions-only",
+            file.display()
+        ),
+    )
+}
+
+/// Turn the entry file's top-level statements into the implicit `main`
+/// and validate an explicit one. Whether `main` is the implicit one.
+pub fn resolve_entry(
+    stmts: Vec<Stmt>,
+    items: &mut Vec<(String, Item)>,
+    diags: &mut Vec<NabiDiagnostic>,
+) -> bool {
+    let explicit = items.iter().find_map(|(m, i)| match i {
+        Item::Fn(f) if m.is_empty() && f.name == "main" => Some(f),
+        _ => None,
+    });
+    match (explicit, stmts.is_empty()) {
+        (Some(f), false) => {
+            diags.push(
+                NabiDiagnostic::error(
+                    Code::ENTRY_POINT,
+                    Span::DUMMY,
+                    "`main.nabi` has both top-level statements and `fn main`; use exactly one \
+                 entry point",
+                )
+                .with_span(stmts[0].span, "a top-level statement")
+                .with_secondary(f.span, "`fn main` here"),
+            );
+            false
+        }
+        (Some(f), true) => {
+            check_main_signature(f, diags);
+            // `fn main()` throws like the top-level statements: an
+            // escaping error is printed and exits 1.
+            if let Some(Item::Fn(f)) = items.iter_mut().find_map(|(m, i)| {
+                (m.is_empty() && matches!(i, Item::Fn(f) if f.name == "main")).then_some(i)
+            }) {
+                if f.ret_ty.is_none()
+                    && matches!(f.throws, ThrowsKind::None)
+                    && f.body.as_ref().is_some_and(|b| may_throw(b))
+                {
+                    f.throws = ThrowsKind::Typed(vec![nabic_ast::untyped_throws_ty(f.span)]);
+                }
+            }
+            false
+        }
+        // Items only: form 2 with no statements, an empty implicit `main`.
+        (None, _) => {
+            items.push((String::new(), Item::Fn(implicit_main(stmts))));
+            true
+        }
+    }
+}
+
+/// `body` has a `throw` or a `try` outside any closure, coroutine block
+/// or nested item: an error may escape it.
+fn may_throw(body: &Block) -> bool {
+    struct V {
+        depth: u32,
+        found: bool,
+    }
+    impl nabic_hir::walk::AstVisitor for V {
+        fn stmt(&mut self, s: &Stmt) {
+            self.found |= self.depth == 0 && matches!(s.kind, StmtKind::Throw(_));
+        }
+        fn expr(&mut self, e: &Expr) {
+            self.found |= self.depth == 0
+                && matches!(
+                    e.kind,
+                    ExprKind::Try {
+                        kind: TryKind::Plain,
+                        ..
+                    }
+                );
+        }
+        fn enter_body(&mut self) {
+            self.depth += 1;
+        }
+        fn leave_body(&mut self) {
+            self.depth -= 1;
+        }
+    }
+    let mut v = V {
+        depth: 0,
+        found: false,
+    };
+    nabic_hir::walk::walk_block(&mut v, body);
+    v.found
+}
+
+fn implicit_main(stmts: Vec<Stmt>) -> FnDef {
+    let span = stmts.first().map_or(Span::DUMMY, |s| s.span);
+    let is_async = crate::coro::has_top_level_await(&stmts);
+    FnDef {
+        vis: nabic_core::Visibility::Private,
+        attrs: Vec::new(),
+        name: "main".to_owned(),
+        generics: Generics::default(),
+        params: Vec::new(),
+        ret_ty: None,
+        body: Some(
+            Block {
+                stmts,
+                trailing: None,
+                span,
+                label: None,
+            }
+            .into(),
+        ),
+        // `await` at top level makes it `async fn main`.
+        is_async,
+        is_generator: false,
+        is_unsafe: false,
+        // The implicit `main` is `fn main() throws` (untyped).
+        throws: ThrowsKind::Typed(vec![nabic_ast::untyped_throws_ty(span)]),
+        where_clause: Vec::new(),
+        span,
+    }
+}
+
+/// No parameters, generics or `unsafe`; `()` or `i32`, or
+/// `()` with `throws (E)` (an escaping error exits 1). `Result` isn't an
+/// entry form.
+fn check_main_signature(f: &FnDef, diags: &mut Vec<NabiDiagnostic>) {
+    let mut bad = |msg: &str| {
+        diags.push(NabiDiagnostic::error(
+            Code::ENTRY_POINT,
+            f.span,
+            format!("`fn main`: {msg}"),
+        ));
+    };
+    if !f.params.is_empty() {
+        bad("takes no parameters; read arguments through `std::env`");
+    }
+    if !f.generics.params.is_empty() {
+        bad("cannot be generic");
+    }
+    if f.is_generator {
+        bad("cannot be a generator");
+    }
+    if f.is_unsafe {
+        bad("cannot be `unsafe`; put the unsafe operations in an `unsafe { }` block");
+    }
+    let ret_ok = match &f.ret_ty {
+        None => true,
+        Some(t) => match &t.kind {
+            TyKind::Path(p) => p.segments.len() == 1 && p.segments[0].name == "i32",
+            TyKind::Tuple(elems) => elems.is_empty(),
+            _ => false,
+        },
+    };
+    let is_result = f.ret_ty.as_ref().is_some_and(|t| {
+        matches!(&t.kind, TyKind::Path(p) if p.segments.last().is_some_and(|s| s.name == "Result"))
+    });
+    if is_result {
+        bad(
+            "cannot return `Result`; declare `fn main() throws (E)` so an escaping error \
+             exits 1, and call `std::process::exit(code)` for any other exit code",
+        );
+    } else if !ret_ok {
+        bad("must return `()` or `i32`");
+    } else if f
+        .ret_ty
+        .as_ref()
+        .is_some_and(|t| matches!(&t.kind, TyKind::Path(_)))
+        && !matches!(&f.throws, ThrowsKind::None)
+    {
+        bad(
+            "cannot combine `throws` with `-> i32`; drop `-> i32` and call \
+             `std::process::exit(code)` in a `catch` for an exit code",
+        );
+    }
+}

@@ -1,0 +1,572 @@
+// std::net::addr: addresses, their parsing and resolution: `IpAddr`,
+// `SocketAddr`, `ToSocketAddrs`.
+
+use bare::mem::{GcBuf, buf_new};
+use core::io::{IoError, IoErrorKind};
+
+/// An IPv4 address.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Ipv4Addr {
+    octets: [u8; 4];
+}
+
+/// An IPv6 address.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Ipv6Addr {
+    segments: [u16; 8];
+}
+
+impl Ipv4Addr {
+    /// The loopback address.
+    pub const LOCALHOST: Ipv4Addr = Ipv4Addr { octets: [127u8, 0u8, 0u8, 1u8] };
+    /// The unspecified (any) address.
+    pub const UNSPECIFIED: Ipv4Addr = Ipv4Addr { octets: [0u8, 0u8, 0u8, 0u8] };
+
+    /// The address `a.b.c.d`.
+    pub const fn new(a: u8, b: u8, c: u8, d: u8) -> Ipv4Addr {
+        Ipv4Addr { octets: [a, b, c, d] }
+    }
+
+    /// The four bytes, most significant first.
+    pub const fn octets(self) -> [u8; 4] { self.octets }
+
+    /// The address as a big-endian number (`a.b.c.d` = `a << 24 | ..`).
+    #[must_use]
+    pub const fn to_bits(self) -> u32 {
+        ((self.octets[0] as u32) << 24) | ((self.octets[1] as u32) << 16)
+            | ((self.octets[2] as u32) << 8) | (self.octets[3] as u32)
+    }
+
+    /// `true` for `127.0.0.0/8`.
+    pub const fn is_loopback(self) -> bool { self.octets[0] == 127u8 }
+    /// `true` for `0.0.0.0`.
+    pub const fn is_unspecified(self) -> bool { self.to_bits() == 0u32 }
+    /// `true` for `224.0.0.0/4`.
+    pub const fn is_multicast(self) -> bool { self.octets[0] >= 224u8 && self.octets[0] <= 239u8 }
+}
+
+impl Ipv6Addr {
+    /// The loopback address.
+    pub const LOCALHOST: Ipv6Addr = Ipv6Addr { segments: [0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 1u16] };
+    /// The unspecified (any) address.
+    pub const UNSPECIFIED: Ipv6Addr = Ipv6Addr { segments: [0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16] };
+
+    /// The address `a:b:c:d:e:f:g:h`, one 16-bit segment each.
+    pub const fn new(a: u16, b: u16, c: u16, d: u16, e: u16, f: u16, g: u16, h: u16) -> Ipv6Addr {
+        Ipv6Addr { segments: [a, b, c, d, e, f, g, h] }
+    }
+
+    /// The eight 16-bit groups, most significant first.
+    pub const fn segments(self) -> [u16; 8] { self.segments }
+
+    /// `true` for `::1`.
+    pub const fn is_loopback(self) -> bool {
+        for i in 0..7 {
+            if self.segments[i] != 0u16 { return false; }
+        }
+        self.segments[7] == 1u16
+    }
+}
+
+/// The address a big-endian number spells.
+impl From<u32> for Ipv4Addr {
+    const fn from(bits: u32) -> Ipv4Addr {
+        Ipv4Addr::new((bits >> 24) as u8, (bits >> 16) as u8, (bits >> 8) as u8, bits as u8)
+    }
+}
+
+impl Display for Ipv4Addr {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"{self.octets[0]}.{self.octets[1]}.{self.octets[2]}.{self.octets[3]}")
+    }
+}
+
+impl Debug for Ipv4Addr {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+impl Display for Ipv6Addr {
+    /// RFC 5952: lowercase hex, the longest run (2+) of zero groups as `::`.
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let best = -1;
+        let best_len = 1;
+        let i = 0;
+        while i < 8 {
+            let j = i;
+            while j < 8 && self.segments[j] == 0u16 { j += 1; }
+            if j - i > best_len {
+                best = i;
+                best_len = j - i;
+            }
+            i = if j > i { j } else { i + 1 };
+        }
+        let out = "";
+        let k = 0;
+        while k < 8 {
+            if k == best {
+                out += "::";
+                k += best_len;
+                continue;
+            }
+            if out.len() > 0 && !out.ends_with(":") { out += ":"; }
+            out += hex(self.segments[k] as u64);
+            k += 1;
+        }
+        try f.write_str(out)
+    }
+}
+
+impl Debug for Ipv6Addr {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+/// Lowercase hex digits of `n`.
+const fn hex(n: u64) -> str {
+    if n == 0u64 { return "0"; }
+    let digits = "0123456789abcdef";
+    let out = "";
+    while n > 0u64 {
+        let d = (n % 16u64) as usize;
+        out = digits[d:d + 1] + out;
+        n /= 16u64;
+    }
+    out
+}
+
+/// An IPv4 or IPv6 address.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IpAddr {
+    V4(Ipv4Addr),
+    V6(Ipv6Addr),
+}
+
+impl IpAddr {
+    /// `true` for an IPv4 address.
+    pub const fn is_ipv4(self) -> bool {
+        match self {
+            IpAddr::V4(_) => true,
+            IpAddr::V6(_) => false,
+        }
+    }
+
+    /// `true` for an IPv6 address.
+    pub const fn is_ipv6(self) -> bool { !self.is_ipv4() }
+
+    /// `true` for a loopback address (`127.0.0.0/8`, `::1`).
+    pub const fn is_loopback(self) -> bool {
+        match self {
+            IpAddr::V4(a) => a.is_loopback(),
+            IpAddr::V6(a) => a.is_loopback(),
+        }
+    }
+}
+
+impl From<Ipv4Addr> for IpAddr {
+    const fn from(ip: Ipv4Addr) -> IpAddr { IpAddr::V4(ip) }
+}
+
+impl From<Ipv6Addr> for IpAddr {
+    const fn from(ip: Ipv6Addr) -> IpAddr { IpAddr::V6(ip) }
+}
+
+impl Display for IpAddr {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        match self {
+            IpAddr::V4(a) => try Display::fmt(a, ref f),
+            IpAddr::V6(a) => try Display::fmt(a, ref f),
+        }
+    }
+}
+
+impl Debug for IpAddr {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+/// `"127.0.0.1"` / `"::1"`.
+impl FromStr for IpAddr {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> IpAddr {
+        if let a: Ipv4Addr = parse_v4(s) { return IpAddr::V4(a); }
+        if let a: Ipv6Addr = parse_v6(s) { return IpAddr::V6(a); }
+        throw bad_addr(s);
+    }
+}
+
+/// An IPv4 address and a port.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SocketAddrV4 {
+    ip: Ipv4Addr;
+    port: u16;
+}
+
+impl SocketAddrV4 {
+    /// `ip:port`.
+    pub const fn new(ip: Ipv4Addr, port: u16) -> SocketAddrV4 { SocketAddrV4 { ip, port } }
+    /// The IP address.
+    pub const fn ip(self) -> Ipv4Addr { self.ip }
+    /// The port.
+    pub const fn port(self) -> u16 { self.port }
+    /// Replace the IP address.
+    pub const fn set_ip(ref self, ip: Ipv4Addr) { self.ip = ip; }
+    /// Replace the port.
+    pub const fn set_port(ref self, port: u16) { self.port = port; }
+}
+
+/// An IPv6 address, a port, the flow label and the scope (interface)
+/// id.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SocketAddrV6 {
+    ip: Ipv6Addr;
+    port: u16;
+    flow_info: u32;
+    scope_id: u32;
+}
+
+impl SocketAddrV6 {
+    /// `[ip]:port`, with an optional flow label and scope id.
+    pub const fn new(ip: Ipv6Addr, port: u16, flow_info: u32 = 0u32, scope_id: u32 = 0u32) -> SocketAddrV6 {
+        SocketAddrV6 { ip, port, flow_info, scope_id }
+    }
+    /// The IP address.
+    pub const fn ip(self) -> Ipv6Addr { self.ip }
+    /// The port.
+    pub const fn port(self) -> u16 { self.port }
+    /// The flow label (`sin6_flowinfo`).
+    pub const fn flow_info(self) -> u32 { self.flow_info }
+    /// The scope id (`sin6_scope_id`), an interface index.
+    pub const fn scope_id(self) -> u32 { self.scope_id }
+    /// Replace the IP address.
+    pub const fn set_ip(ref self, ip: Ipv6Addr) { self.ip = ip; }
+    /// Replace the port.
+    pub const fn set_port(ref self, port: u16) { self.port = port; }
+    /// Replace the flow label.
+    pub const fn set_flow_info(ref self, flow_info: u32) { self.flow_info = flow_info; }
+    /// Replace the scope id.
+    pub const fn set_scope_id(ref self, scope_id: u32) { self.scope_id = scope_id; }
+}
+
+impl Display for SocketAddrV4 {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"{self.ip}:{self.port}") }
+}
+
+impl Debug for SocketAddrV4 {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+impl Display for SocketAddrV6 {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"[{self.ip}]:{self.port}") }
+}
+
+impl Debug for SocketAddrV6 {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+/// An IPv4 or IPv6 socket address.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SocketAddr {
+    V4(SocketAddrV4),
+    V6(SocketAddrV6),
+}
+
+impl SocketAddr {
+    /// `ip` and `port`; an IPv6 one has flow info and scope id 0.
+    pub const fn new(ip: IpAddr, port: u16) -> SocketAddr {
+        match ip {
+            IpAddr::V4(a) => SocketAddr::V4(SocketAddrV4::new(a, port)),
+            IpAddr::V6(a) => SocketAddr::V6(SocketAddrV6::new(a, port)),
+        }
+    }
+
+    /// The IP address.
+    pub const fn ip(self) -> IpAddr {
+        match self {
+            SocketAddr::V4(a) => IpAddr::V4(a.ip),
+            SocketAddr::V6(a) => IpAddr::V6(a.ip),
+        }
+    }
+
+    /// The port.
+    pub const fn port(self) -> u16 {
+        match self {
+            SocketAddr::V4(a) => a.port,
+            SocketAddr::V6(a) => a.port,
+        }
+    }
+
+    /// An address of the other family replaces the whole address (flow
+    /// info and scope id 0).
+    pub const fn set_ip(ref self, ip: IpAddr) {
+        self = SocketAddr::new(ip, self.port());
+    }
+
+    /// Replace the port.
+    pub const fn set_port(ref self, port: u16) {
+        self = match self {
+            SocketAddr::V4(a) => SocketAddr::V4(SocketAddrV4::new(a.ip, port)),
+            SocketAddr::V6(a) => SocketAddr::V6(SocketAddrV6::new(a.ip, port, a.flow_info, a.scope_id)),
+        };
+    }
+
+    /// `true` for an IPv4 address.
+    pub const fn is_ipv4(self) -> bool {
+        match self {
+            SocketAddr::V4(_) => true,
+            SocketAddr::V6(_) => false,
+        }
+    }
+
+    /// `true` for an IPv6 address.
+    pub const fn is_ipv6(self) -> bool { !self.is_ipv4() }
+
+    pub(pkg) const fn family(self) -> i32 { if self.is_ipv4() { 4 } else { 6 } }
+}
+
+impl From<SocketAddrV4> for SocketAddr {
+    const fn from(a: SocketAddrV4) -> SocketAddr { SocketAddr::V4(a) }
+}
+
+impl From<SocketAddrV6> for SocketAddr {
+    const fn from(a: SocketAddrV6) -> SocketAddr { SocketAddr::V6(a) }
+}
+
+impl Display for SocketAddr {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        match self {
+            SocketAddr::V4(a) => try Display::fmt(a, ref f),
+            SocketAddr::V6(a) => try Display::fmt(a, ref f),
+        }
+    }
+}
+
+impl Debug for SocketAddr {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+const fn bad_addr(s: str) -> ParseError {
+    ParseError::new(s, 0, "invalid IP address syntax")
+}
+
+/// Digits of `s` in `radix` (at most `max_len` of them) as a number.
+pub(pkg) const fn number(s: str, radix: u64, max_len: usize) -> u64 | none {
+    if s.len() == 0 || s.len() > max_len { return none; }
+    let n = 0u64;
+    for c in s.chars() {
+        let d: u32 = c.to_digit(radix as u32) else { return none; };
+        n = n * radix + d as u64;
+    }
+    n
+}
+
+const fn parse_v4(s: str) -> Ipv4Addr | none {
+    let parts: List<u8> = List::new();
+    for p in s.split(".") {
+        let n = number(p, 10u64, 3)?;
+        if n > 255u64 { return none; }
+        parts.push(n as u8);
+    }
+    if parts.len() != 4 { return none; }
+    Ipv4Addr::new(parts[0], parts[1], parts[2], parts[3])
+}
+
+/// Hex groups of one side of `::` (empty side: no groups).
+const fn groups(s: str) -> List<u16> | none {
+    let out: List<u16> = List::new();
+    if s.len() == 0 { return out; }
+    for p in s.split(":") {
+        out.push(number(p, 16u64, 4)? as u16);
+    }
+    out
+}
+
+const fn parse_v6(s: str) -> Ipv6Addr | none {
+    let seg: List<u16> = List::new();
+    if let at: usize = s.find("::") {
+        let h = groups(s[:at])?;
+        let t = groups(s[at + 2:])?;
+        if h.len() + t.len() > 7 { return none; }
+        for g in h { seg.push(g); }
+        for _ in h.len() + t.len()..8 { seg.push(0u16); }
+        for g in t { seg.push(g); }
+    } else {
+        seg = groups(s)?;
+    }
+    if seg.len() != 8 { return none; }
+    Ipv6Addr::new(seg[0], seg[1], seg[2], seg[3], seg[4], seg[5], seg[6], seg[7])
+}
+
+impl FromStr for Ipv4Addr {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> Ipv4Addr {
+        if let a: Ipv4Addr = parse_v4(s) { return a; }
+        throw bad_addr(s);
+    }
+}
+
+impl FromStr for Ipv6Addr {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> Ipv6Addr {
+        if let a: Ipv6Addr = parse_v6(s) { return a; }
+        throw bad_addr(s);
+    }
+}
+
+/// A port number (`0..=65535`).
+const fn port_of(s: str) -> u16 | none {
+    let p = number(s, 10u64, 5)?;
+    if p > 65535u64 { return none; }
+    p as u16
+}
+
+const fn parse_socket_addr(s: str) -> SocketAddr | none {
+    if s.starts_with("[") {
+        let at = s.find("]:")?;
+        return SocketAddr::V6(SocketAddrV6::new(parse_v6(s[1:at])?, port_of(s[at + 2:])?));
+    }
+    let at = s.rfind(":")?;
+    SocketAddr::V4(SocketAddrV4::new(parse_v4(s[:at])?, port_of(s[at + 1:])?))
+}
+
+/// `"127.0.0.1:8080"` / `"[::1]:8080"`.
+impl FromStr for SocketAddr {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> SocketAddr {
+        if let a: SocketAddr = parse_socket_addr(s) { return a; }
+        throw ParseError::new(s, 0, "invalid socket address syntax");
+    }
+}
+
+// runtime marshalling: `[family, port, flow, scope, bytes..16]`
+
+pub(pkg) const ADDR_WORDS: usize = 20;
+
+pub(pkg) const fn words_of(a: SocketAddr) -> GcBuf<i64> {
+    unsafe {
+        let w: GcBuf<i64> = buf_new(ADDR_WORDS);
+        match a {
+            SocketAddr::V4(v) => {
+                w[0] = 4i64;
+                w[1] = v.port as i64;
+                for i in 0..4usize { w[4 + i] = v.ip.octets[i] as i64; }
+            }
+            SocketAddr::V6(v) => {
+                w[0] = 6i64;
+                w[1] = v.port as i64;
+                w[2] = v.flow_info as i64;
+                w[3] = v.scope_id as i64;
+                for i in 0..8usize {
+                    let g = v.ip.segments[i] as i64;
+                    w[4 + 2 * i] = g / 256i64;
+                    w[5 + 2 * i] = g % 256i64;
+                }
+            }
+        }
+        w
+    }
+}
+
+pub(pkg) const fn addr_at(w: GcBuf<i64>, at: usize) -> SocketAddr {
+    unsafe {
+        let b = |i: usize| -> i64 { w[at + 4 + i] };
+        let port = w[at + 1] as u16;
+        if w[at] == 6i64 {
+            let s: List<u16> = List::new();
+            for i in 0..8usize { s.push((b(2 * i) * 256i64 + b(2 * i + 1)) as u16); }
+            let ip = Ipv6Addr::new(s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+            return SocketAddr::V6(SocketAddrV6::new(ip, port, w[at + 2] as u32, w[at + 3] as u32));
+        }
+        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(b(0) as u8, b(1) as u8, b(2) as u8, b(3) as u8), port))
+    }
+}
+
+const MAX_ADDRS: usize = 32;
+
+fn resolve_raw(host: str, port: u16) throws (IoError) -> List<SocketAddr> {
+    unsafe {
+        let out: GcBuf<i64> = buf_new(ADDR_WORDS * MAX_ADDRS);
+        let n = nabi_net_resolve(host, port, out, MAX_ADDRS);
+        if n < 0 { throw IoError::resolver(0 - n, host); }
+        if n == 0 { throw IoError::new(IoErrorKind::NotFound, host + ": no addresses"); }
+        let addrs: List<SocketAddr> = List::new();
+        for i in 0..n as usize { addrs.push(addr_at(out, i * ADDR_WORDS)); }
+        addrs
+    }
+}
+
+/// Addresses of `host`: `"name:port"`, `"[v6]:port"`, a socket address,
+/// or a bare name / IP (port 0). The addresses come in the system
+/// resolver's order (its preferred address first), at most 32; a name
+/// with none throws `NotFound`.
+pub fn resolve(host: str) throws (IoError) -> List<SocketAddr> {
+    if let a: SocketAddr = parse_socket_addr(host) { return [a]; }
+    let name = host;
+    let port = 0u16;
+    if let at: usize = host.rfind(":") {
+        let rest = host[:at];
+        if !rest.contains(":") {
+            if let p: u16 = port_of(host[at + 1:]) {
+                name = rest;
+                port = p;
+            }
+        }
+    }
+    if name.starts_with("[") && name.ends_with("]") {
+        name = name[1:name.len() - 1];
+    }
+    try resolve_raw(name, port)
+}
+
+/// What names the socket addresses to try, in order: a `SocketAddr`,
+/// `"host:port"` text (resolved, `net::resolve`), an `(IpAddr, u16)`
+/// pair or a list of addresses.
+pub trait ToSocketAddrs {
+    /// The addresses, in the order to try them.
+    fn to_socket_addrs(self) throws (IoError) -> List<SocketAddr>;
+}
+
+impl ToSocketAddrs for SocketAddr {
+    fn to_socket_addrs(self) throws (IoError) -> List<SocketAddr> { [self] }
+}
+
+impl ToSocketAddrs for SocketAddrV4 {
+    fn to_socket_addrs(self) throws (IoError) -> List<SocketAddr> { [SocketAddr::V4(self)] }
+}
+
+impl ToSocketAddrs for SocketAddrV6 {
+    fn to_socket_addrs(self) throws (IoError) -> List<SocketAddr> { [SocketAddr::V6(self)] }
+}
+
+impl ToSocketAddrs for str {
+    fn to_socket_addrs(self) throws (IoError) -> List<SocketAddr> { try resolve(self) }
+}
+
+impl ToSocketAddrs for (IpAddr, u16) {
+    fn to_socket_addrs(self) throws (IoError) -> List<SocketAddr> {
+        let (ip, port) = self;
+        [SocketAddr::new(ip, port)]
+    }
+}
+
+impl ToSocketAddrs for List<SocketAddr> {
+    fn to_socket_addrs(self) throws (IoError) -> List<SocketAddr> { self.clone() }
+}
+
+/// `f` on each address of `addr` until one succeeds: its result, or
+/// the last error.
+pub(pkg) fn each_addr<A: ToSocketAddrs, T>(addr: A, f: fn(SocketAddr) throws (IoError) -> T) throws (IoError) -> T {
+    let last = IoError::new(IoErrorKind::InvalidInput, "no address to use");
+    for a in try addr.to_socket_addrs() {
+        let r = try f(a) catch e {
+            last = e;
+            continue;
+        };
+        return r;
+    }
+    throw last;
+}
+
+/// The first address of `addr`.
+pub(pkg) fn first_addr<A: ToSocketAddrs>(addr: A) throws (IoError) -> SocketAddr {
+    let all = try addr.to_socket_addrs();
+    if all.len() == 0 { throw IoError::new(IoErrorKind::InvalidInput, "no address to use"); }
+    all[0]
+}

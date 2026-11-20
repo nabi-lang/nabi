@@ -1,0 +1,27 @@
+// only-os: windows
+// expect-exit: 0
+// expect-stdout:
+// true 2 true
+// not found
+
+// On Windows `#[errno]` also saves `GetLastError`, and
+// `IoError::last_os_error` reads it first.
+use bare::ffi::{last_error, set_last_error};
+
+#[errno]
+extern "system" {
+    fn GetFileAttributesW(path: bare::ptr::ConstPtr<u16>) -> u32;
+}
+
+fn main() {
+    let path: List<u16> = [];
+    for c in "C:\\nabi-no-such-file".chars() {
+        path.push(c as u32 as u16);
+    }
+    path.push(0);
+    let p = bare::gc::pin(path);
+    let r = unsafe { GetFileAttributesW(bare::ptr::ConstPtr::<u16>::dangling().with_addr(p.as_data_ptr().addr())) };
+    println(f"{r == 4294967295u32} {last_error()} {io::IoError::last_os_error().message().len() > 0}");
+    set_last_error(0);
+    println(f"{io::IoError::from_os_code(2).kind()}");
+}

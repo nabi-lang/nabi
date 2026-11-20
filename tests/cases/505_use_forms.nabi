@@ -1,0 +1,7 @@
+// expect-error: expected an import path, found keyword `self`
+// expect-error: help: a `use` path has no `self`
+
+// `use` has no `self::`.
+use self::x;
+
+fn main() {}

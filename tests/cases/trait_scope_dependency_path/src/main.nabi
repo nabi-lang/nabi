@@ -1,0 +1,10 @@
+// nabic-arg: --extern vecdep=tests/cases/trait_scope_dependency_path/vecdep
+// expect-error: 9:13: method `as_vec` comes from trait `vecdep::AsVec`, which is not in scope
+// expect-error: help: add `use vecdep::AsVec;`
+
+// A dependency's trait takes a `use`; the help names its public path,
+// not the private module that declares it.
+fn main() {
+    let r = 0..3;
+    let v = r.as_vec();
+}

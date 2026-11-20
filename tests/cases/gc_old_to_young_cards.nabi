@@ -1,0 +1,58 @@
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// s-0 s-63 s-1999
+// 2000 2000
+// minor ok: true
+
+// Young strings reachable only through an old large list's dirty cards.
+extern "C" {
+    fn nabi_gc_collect();
+    fn nabi_gc_collect_young();
+    fn nabi_gc_stats_collections() -> u64;
+}
+
+struct Pair { a: i64; s: str; }
+
+fn churn() {
+    let j = 0;
+    while j < 3000 {
+        let _s = f"garbage-{j}";
+        j = j + 1;
+    }
+}
+
+fn main() -> i32 {
+    let n: i64 = 2000;
+    let xs: List<Pair> = [];
+    let i: i64 = 0;
+    while i < n {
+        xs.push(Pair { a: i, s: "init" });
+        i = i + 1;
+    }
+    let before = unsafe { nabi_gc_stats_collections() };
+    unsafe { nabi_gc_collect() };
+    let round: i64 = 0;
+    while round < 4 {
+        i = round;
+        while i < n {
+            xs[i as usize] = Pair { a: i, s: f"s-{i}" };
+            i = i + 4;
+        }
+        unsafe { nabi_gc_collect_young() };
+        churn();
+        unsafe { nabi_gc_collect_young() };
+        round = round + 1;
+    }
+    println(f"{xs[0].s} {xs[63].s} {xs[1999].s}");
+    let ok = 0;
+    let total = 0;
+    for p in xs {
+        if p.s == f"s-{p.a}" { ok = ok + 1; }
+        total = total + 1;
+    }
+    println(f"{ok} {total}");
+    let after = unsafe { nabi_gc_stats_collections() };
+    println(f"minor ok: {after - before >= 9}");
+    return 0;
+}

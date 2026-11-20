@@ -1,0 +1,13 @@
+// expect-error: `Into` takes no generic arguments but 1 was given
+// expect-error: `Tr` takes 1 generic argument but 2 were given
+
+// `Into` has no type parameter, so there is no bound
+// `T: Into<U>` (write `U: From<T>`); a bound gives a trait at most as
+// many type arguments as it declares.
+trait Tr<A> { fn f(self, a: A); }
+fn widen2<T: Into<U>, U>(x: T) -> U { x.into() }
+fn two<T: Tr<i32, i64>>(x: T) {}
+fn main() {}
+// expect-error-extra: allow
+// (`x.into()` in `widen2` also reports the unmet `From<T>` bound of
+// `Into::into`, as the rejected `Into<U>` bound gives `U: From<T>`)

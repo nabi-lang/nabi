@@ -1,0 +1,22 @@
+// needs: threads
+// A thread-local's value, lent to `with`'s closure, can't be handed
+// over, and a value the lock protects can't be returned out of its
+// `using` block.
+use std::thread;
+
+static TL: thread::ThreadLocal<List<i32>> = thread::local(|| { let l: List<i32> = []; l });
+static M: Mutex<List<i32>> = Mutex::new([]);
+
+fn grab() -> List<i32> {
+    using g = M.lock() { return g.get(); }
+}
+
+fn main() {
+    let (tx, rx) = channel::<List<i32>>();
+    TL.with(|l| { try! tx.send(l); });
+    grab().push(1);
+    let _ = rx.recv();
+}
+
+// expect-error: handoff_shared_errors.nabi:11:26: this returns a value out of the `Mutex`, and `g`'s `using` block releases the lock before the caller uses it
+// expect-error: handoff_shared_errors.nabi:16:32: `l` can't be sent through a channel: it is the value `with` lends to its closure (a `ThreadLocal`'s, a locked `Mutex`'s)

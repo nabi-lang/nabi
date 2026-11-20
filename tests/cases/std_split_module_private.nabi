@@ -1,0 +1,18 @@
+// expect-error: `core::io::buffer::BufReader` is not visible from `<root>`: module `core::io::buffer` is private to `core::io` (write `core::io::BufReader`)
+// expect-error: `core::task::timer::sleep` is not visible from `<root>`: module `core::task::timer` is private to `core::task` (write `core::task::sleep`)
+// expect-error: `std::net::tcp::TcpStream` is not visible from `<root>`: module `std::net::tcp` is private to `std::net` (write `std::net::TcpStream`)
+// expect-error: no associated function `nope` on `std::net::WriteHalf`
+// expect-error: no associated function `frob` on `core::io::Cursor`
+
+// A file a module is split into is private: errors name the item by
+// its public path, never through the private module.
+use core::io::buffer::BufReader;
+use std::net::WriteHalf;
+
+fn serve(s: std::net::tcp::TcpStream) {}
+
+fn main() {
+    let t = core::task::timer::sleep;
+    WriteHalf::nope();
+    core::io::Cursor::frob();
+}

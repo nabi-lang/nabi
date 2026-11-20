@@ -1,0 +1,14 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/std_224_simd_load_panics.nabi:12:13:
+// expect-stderr: Simd::load: 4 lanes from index 6 need 10 elements, but there are 8
+// expect-stdout: 8
+
+// A load past the end of the list panics at the call, naming the lanes,
+// the index and the length.
+use core::simd::f32x4;
+fn main() {
+    let xs: List<f32> = List::filled(8, 1.0);
+    println(xs.len());
+    let v = f32x4::load(xs, 6);
+    println(f"{v:?}");
+}

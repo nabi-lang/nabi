@@ -1,0 +1,79 @@
+name: Release / Prepare the branch
+
+# Make or refresh branch release/<version>: one `release: <version>` commit
+# on main with the version bump and a CHANGELOG section built from the
+# changelog: blocks of the PRs merged since the last tag
+# (scripts/release/prep.sh), pushed by the nabi-lang-release App. Then fill
+# its Summary and Highlights on the branch; check-changelog.yml checks every
+# push there.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The version to prepare, X.Y.Z or a candidate X.Y.Z-rc.N"
+        required: true
+
+permissions:
+  contents: read
+
+# Shared with release.yml: nothing is prepared while a release runs.
+concurrency:
+  group: nabi-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prep:
+    name: Prepare the release branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Only the App creates release/* branches (ruleset); its key is here.
+    environment: release-prep
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Check the run is on main
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::run release-prepare.yml from main, not $GITHUB_REF"
+            exit 1
+          fi
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Mint App token
+        id: token
+        uses: nabi-lang/.github/actions/mint-app-token@v1.0.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_KEY }}
+          repositories: nabi
+          permissions: contents:write
+      # cargo update --offline needs the locked crates.
+      - name: Install Rust from rust-toolchain.toml and fetch crates
+        run: rustup toolchain install && cargo fetch --locked
+      - name: Prepare the release branch with prep.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          APP_TOKEN: ${{ steps.token.outputs.token }}
+          VERSION: ${{ inputs.version }}
+          BOT_ID: ${{ vars.NABI_RELEASE_BOT_ID }}
+        run: |
+          # The bot user's id: gh api '/users/nabi-lang-release%5Bbot%5D' --jq .id
+          [ -n "$BOT_ID" ] || {
+            echo "::error::set the repository variable NABI_RELEASE_BOT_ID to the nabi-lang-release[bot] user id (docs/releasing.md)"
+            exit 1
+          }
+          git config user.name "nabi-lang-release[bot]"
+          git config user.email "$BOT_ID+nabi-lang-release[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:$APP_TOKEN@github.com/$GH_REPO"
+          scripts/release/prep.sh --push "$VERSION" | tee -a "$GITHUB_STEP_SUMMARY"

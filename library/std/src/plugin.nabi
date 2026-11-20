@@ -1,0 +1,291 @@
+//! std::plugin - load a plugin into this program and call its functions.
+//!
+//! A plugin is a package built with `lib: { kind: "plugin" }`. It shares
+//! this program's runtime: what it returns are ordinary values here
+//! (`str`, `List`, closures, `any`, sums), and a type of a package both
+//! use is the same type on both sides.
+//!
+//! ```nabi
+//! let p = try plugin::load(plugin::beside("enemies"));
+//! let spawn = try p.get::<fn(i32) -> List<str>>("enemies::spawn");
+//! println(spawn(3).len());
+//! ```
+
+use bare::ptr::ConstPtr;
+use core::reflect::TypeInfo;
+use std::env;
+use std::path::Path;
+
+/// A loaded plugin. Copies name the same plugin.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Plugin {
+    h: usize;
+}
+
+/// What `Plugin::unload` did.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Unload {
+    /// Unloaded: nothing of it was alive.
+    Done,
+    /// No longer found by `get`; it goes once nothing of it is alive. The
+    /// text says what still holds it.
+    Pending(str),
+    /// Stays loaded: the text says why.
+    Kept(str),
+}
+
+/// Why a plugin did not load, or an item was not found. Each message
+/// says what to do.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PluginError {
+    /// No file at `path`.
+    NotFound { path: str; },
+    /// The file is not a Nabi plugin (a C library, a program).
+    NotAPlugin { path: str; },
+    /// Built by another toolchain than this program.
+    Toolchain { plugin: str; program: str; },
+    /// Built for another target than this program.
+    Target { plugin: str; program: str; },
+    /// Packages the plugin takes from the program, which has none of them.
+    MissingPackages { names: List<str>; },
+    /// Items the plugin takes from the program, which has none of them.
+    MissingSymbols { names: List<str>; },
+    /// A type the program and the plugin both have is laid out
+    /// differently (built with other features).
+    Layout { type_path: str; },
+    /// The plugin has no `pub fn` (or static) at `path`.
+    NoSuchItem { path: str; near: List<str>; },
+    /// `path` has another type than the one asked for: `have` (empty
+    /// when unknown).
+    WrongType { path: str; want: str; have: str; },
+    /// The plugin was unloaded.
+    NotLoaded { name: str; },
+    /// The system loader failed.
+    Os { message: str; },
+}
+
+impl PluginError {
+    /// What went wrong and what to do, for display.
+    pub fn message(self) -> str {
+        match self {
+            PluginError::NotFound { path } => {
+                f"no plugin at {path}; build its package with `nabi build` and give the file it writes under target/<profile>/ (`plugin::file(name)` gives the file name)"
+            }
+            PluginError::NotAPlugin { path } => {
+                f"{path} is not a Nabi plugin; build its package with `lib: {{ kind: \"plugin\" }}`, or load a C library with `bare::ffi`"
+            }
+            PluginError::Toolchain { plugin, program } => {
+                f"the plugin was built by {plugin}, this program by {program}; rebuild the plugin with this program's toolchain"
+            }
+            PluginError::Target { plugin, program } => {
+                f"the plugin is built for {plugin}, this program for {program}; build the plugin with `--target {program}`"
+            }
+            PluginError::MissingPackages { names } => {
+                let list = join(names);
+                f"the plugin uses packages this program does not have: {list}; add them to the program's dependencies at the plugin's versions, or give them `bundle: true` in the plugin's dependencies"
+            }
+            PluginError::MissingSymbols { names } => {
+                let list = join(names);
+                f"the plugin needs items this program does not have: {list}; build the plugin against this program's packages"
+            }
+            PluginError::Layout { type_path } => {
+                f"{type_path} is laid out differently in the program and the plugin; build both with the same features of its package"
+            }
+            PluginError::NoSuchItem { path, near } => {
+                let hint = if near.len() == 0 { "" } else { f"; did you mean {join(near)}?" };
+                f"the plugin has no `pub fn` or static at {path}{hint} (a generic function is not exported: export a concrete `pub fn` that calls it)"
+            }
+            PluginError::WrongType { path, want, have } => {
+                if have == "" {
+                    f"{path} is not a `{want}`; give `get` the exact type {path} is declared with in its package"
+                } else {
+                    f"{path} is not a `{want}`; give `get` the exact type {path} is declared with in its package: `{have}`"
+                }
+            }
+            PluginError::NotLoaded { name } => f"plugin {name} is unloaded; load it again with `plugin::load`",
+            PluginError::Os { message } => f"the system could not load the plugin: {message}",
+        }
+    }
+}
+
+impl Display for PluginError {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+/// The file name a plugin package `name` builds to on this target:
+/// `libname.dylib`, `libname.so` or `name.dll`.
+pub fn file(name: str) -> str {
+    if cfg!(target_os = "windows") {
+        return f"{name}.dll";
+    }
+    if cfg!(any(target_os = "macos", target_os = "ios")) {
+        return f"lib{name}.dylib";
+    }
+    f"lib{name}.so"
+}
+
+/// The path of plugin `name`'s file beside this program's executable:
+/// where `nabi build` puts a `plugin: true` dependency.
+pub fn beside(name: str) -> str {
+    let exe = try env::current_exe() catch _ { return file(name); };
+    match exe.parent() {
+        dir: Path => dir.join(file(name)).as_str(),
+        none => file(name),
+    }
+}
+
+/// Load the plugin at `path` (a bare file name is in the current
+/// directory). Loading one that is loaded gives the same plugin.
+pub fn load(path: str) throws (PluginError) -> Plugin {
+    // A bare file name is a file here, not one the system's search path
+    // finds.
+    let at = if path.contains("/") || path.contains("\\") { path } else { f"./{path}" };
+    let h = unsafe { nabi_plugin_load(at) };
+    if h == 0usize {
+        throw last_error();
+    }
+    Plugin { h: h }
+}
+
+/// The plugins loaded and not unloaded, in load order.
+pub fn loaded() -> List<Plugin> {
+    let out: List<Plugin> = List::new();
+    let n = unsafe { nabi_plugin_count() };
+    for i in 0usize..n {
+        out.push(Plugin { h: unsafe { nabi_plugin_at(i) } });
+    }
+    out
+}
+
+/// Wait until `p` is unloaded for good (`Unload::Pending`), at most
+/// `ms` milliseconds, collecting garbage meanwhile; whether it is.
+pub fn wait_unloaded(p: Plugin, ms: u64) -> bool {
+    unsafe { nabi_plugin_wait(p.h, ms) } != 0
+}
+
+impl Plugin {
+    /// Its package name.
+    pub fn name(self) -> str { unsafe { nabi_plugin_info(self.h, 0usize) } }
+
+    /// Its package version.
+    pub fn version(self) -> str { unsafe { nabi_plugin_info(self.h, 1usize) } }
+
+    /// The file it was loaded from.
+    pub fn path(self) -> str { unsafe { nabi_plugin_info(self.h, 2usize) } }
+
+    /// The function `path` (`"enemies::spawn"`), of type `F`: a `pub fn`
+    /// of the plugin's package declared with exactly that type.
+    pub fn get<F>(self, path: str) throws (PluginError) -> F {
+        let code = unsafe { nabi_plugin_find(self.h, path, plugin_sig::<F>(), 3usize) };
+        if code == 0usize {
+            throw wrong(last_error(), F::type_name());
+        }
+        plugin_get::<F>(code)
+    }
+
+    /// The value of static `path` (`"enemies::LEVEL"`) of type `T`.
+    pub fn get_static<T>(self, path: str) throws (PluginError) -> T {
+        let at = unsafe { nabi_plugin_find(self.h, path, 0u64, 1usize) };
+        if at == 0usize {
+            throw wrong(last_error(), T::type_name());
+        }
+        unsafe { ConstPtr::<T>::dangling().with_addr(at).read() }
+    }
+
+    /// The types it describes: those its code asks `core::reflect`
+    /// about and the types they are made of. Do not use one after the
+    /// plugin is unloaded.
+    pub fn types(self) -> List<TypeInfo> {
+        let out: List<TypeInfo> = List::new();
+        let i = 0usize;
+        loop {
+            let d = unsafe { nabi_plugin_types(self.h, i) };
+            if d == 0usize {
+                return out;
+            }
+            out.push(unsafe { TypeInfo::from_desc(d) });
+            i += 1usize;
+        }
+    }
+
+    /// Stop finding it, and unload it once nothing of it is alive: no
+    /// value of its types, no function of it held or running, no plugin
+    /// using it.
+    pub fn unload(self) -> Unload {
+        let r = unsafe { nabi_plugin_unload(self.h) };
+        if r == 0i32 {
+            return Unload::Done;
+        }
+        let why = unsafe { nabi_plugin_error_text(0usize) };
+        if r == 1i32 { Unload::Pending(why) } else { Unload::Kept(why) }
+    }
+}
+
+/// `e`, a type mismatch naming the type asked for.
+fn wrong(e: PluginError, want: str) -> PluginError {
+    match e {
+        PluginError::WrongType { path, have, .. } => PluginError::WrongType { path: path, want: want, have: have },
+        other => other,
+    }
+}
+
+fn join(names: List<str>) -> str {
+    let out = "";
+    for n in names {
+        out = if out == "" { n } else { f"{out}, {n}" };
+    }
+    out
+}
+
+fn lines(text: str) -> List<str> {
+    let out: List<str> = List::new();
+    for l in text.split("\n") {
+        if l != "" {
+            out.push(l);
+        }
+    }
+    out
+}
+
+/// This thread's last error from the runtime.
+fn last_error() -> PluginError {
+    let kind = unsafe { nabi_plugin_error() };
+    let a = unsafe { nabi_plugin_error_text(0usize) };
+    let b = unsafe { nabi_plugin_error_text(1usize) };
+    let list = lines(unsafe { nabi_plugin_error_text(2usize) });
+    match kind {
+        1u32 => PluginError::NotFound { path: a },
+        2u32 => PluginError::NotAPlugin { path: a },
+        3u32 => PluginError::Toolchain { plugin: a, program: b },
+        4u32 => PluginError::Target { plugin: a, program: b },
+        5u32 => PluginError::MissingPackages { names: list },
+        6u32 => PluginError::MissingSymbols { names: list },
+        7u32 => PluginError::Layout { type_path: a },
+        8u32 => PluginError::NoSuchItem { path: a, near: list },
+        9u32 => PluginError::WrongType { path: a, want: "", have: b },
+        11u32 => PluginError::NotLoaded { name: a },
+        _ => PluginError::Os { message: a },
+    }
+}
+
+/// A code address as a function value of type `F`.
+#[intrinsic("nabi.plugin_get")]
+fn plugin_get<F>(code: usize) -> F;
+
+/// The hash of `F`'s signature, as a plugin's export carries it.
+#[intrinsic("nabi.plugin_sig")]
+fn plugin_sig<F>() -> u64;
+
+extern "nabi" {
+    fn nabi_plugin_load(path: str) -> usize;
+    fn nabi_plugin_find(h: usize, path: str, sig: u64, kind: usize) -> usize;
+    fn nabi_plugin_unload(h: usize) -> i32;
+    fn nabi_plugin_wait(h: usize, ms: u64) -> i32;
+    fn nabi_plugin_info(h: usize, what: usize) -> str;
+    fn nabi_plugin_count() -> usize;
+    fn nabi_plugin_at(i: usize) -> usize;
+    fn nabi_plugin_types(h: usize, i: usize) -> usize;
+    fn nabi_plugin_error() -> u32;
+    fn nabi_plugin_error_text(part: usize) -> str;
+}

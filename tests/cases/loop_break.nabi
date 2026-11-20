@@ -1,0 +1,20 @@
+// expect-exit: 128
+// expect-stdout:
+// 128 12
+
+fn first_double_over(start: i32, limit: i32) -> i32 {
+    let v: i32 = start;
+    let r: i32 = loop {
+        if v > limit {
+            break v;
+        }
+        v = v * 2i32;
+    };
+    return r;
+}
+
+fn main() -> i32 {
+    println(f"{first_double_over(1i32, 100i32)} {first_double_over(3i32, 10i32)}");
+    return first_double_over(1i32, 100i32);
+}
+

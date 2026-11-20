@@ -1,0 +1,108 @@
+// core::task::timer: timers and yielding: `sleep`, `yield_now`,
+// `timeout`.
+
+use core::future::{Context, Future, Poll};
+use core::task::handle::{cancel_by, task_result};
+use core::task::{BY_TIMEOUT, Task, add_timer, is_done, join_later, now_ns};
+use core::time::{Duration, Instant};
+
+/// Completes once `dur` has passed since its first poll.
+pub async fn sleep(dur: Duration) {
+    await Sleep { deadline: now_ns() + dur.as_ns() };
+}
+
+/// Completes at `when`.
+pub async fn sleep_until(when: Instant) {
+    await Sleep { deadline: when.ns };
+}
+
+struct Sleep {
+    deadline: i64;
+}
+
+impl Future for Sleep {
+    type Output = ();
+    fn poll(ref self, ref ctx: Context) -> Poll<()> {
+        if now_ns() >= self.deadline {
+            return Poll::Ready(());
+        }
+        add_timer(self.deadline, ctx.waker);
+        Poll::Pending
+    }
+}
+
+/// Let the other ready tasks run once.
+pub async fn yield_now() {
+    await YieldNow { yielded: false };
+}
+
+struct YieldNow {
+    yielded: bool;
+}
+
+impl Future for YieldNow {
+    type Output = ();
+    fn poll(ref self, ref ctx: Context) -> Poll<()> {
+        if self.yielded {
+            return Poll::Ready(());
+        }
+        self.yielded = true;
+        ctx.waker.wake();
+        Poll::Pending
+    }
+}
+
+/// `task`'s result, or `TimeoutError` once `dur` has passed since the
+/// first poll: `try await task::timeout(d, t)`. On expiry the
+/// task is cancelled (it may still run its cleanups when `timeout`
+/// throws), and so it is when the awaiting task is.
+pub async fn timeout<T>(dur: Duration, task: Task<T>) throws (TimeoutError) -> T {
+    try {
+        try await Timeout { task: task, deadline: now_ns() + dur.as_ns() }
+    } finally {
+        if !is_done(task.task) {
+            cancel_by(task.task, BY_TIMEOUT);
+        }
+    }
+}
+
+struct Timeout<T> {
+    task: Task<T>;
+    deadline: i64;
+}
+
+impl<T> Timeout<T> {
+    /// One step of `timeout`: `Ready` with the result once the task finished,
+    /// `Pending` before the deadline. Throws `TimeoutError` once it passed.
+    pub fn poll(ref self, ref ctx: Context) throws (TimeoutError) -> Poll<T> {
+        unsafe {
+            if join_later(self.task.task, ctx.waker) {
+                return Poll::Ready(task_result(self.task));
+            }
+            if now_ns() >= self.deadline {
+                throw TimeoutError;
+            }
+            add_timer(self.deadline, ctx.waker);
+            Poll::Pending
+        }
+    }
+}
+
+/// `task::timeout` ran out.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TimeoutError;
+
+impl TimeoutError {
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { "timed out" }
+}
+
+impl Display for TimeoutError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for TimeoutError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("TimeoutError") }
+}
+
+impl Error for TimeoutError {}

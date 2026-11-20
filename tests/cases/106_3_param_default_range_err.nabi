@@ -1,0 +1,13 @@
+// expect-error: integer literal `300` out of range for `u8`, the default of `Buf`'s `T`
+// expect-error: write the type: `Buf::<u16>::new(300)`, or `300i64`
+
+// A literal that takes a declared default must fit it; it never falls
+// back to `i64` by its value.
+
+struct Buf<T = u8> { v: T; }
+
+impl<T> Buf<T> { fn new(v: T) -> Buf<T> { Buf { v: v } } }
+
+fn main() {
+    let b = Buf::new(300);
+}

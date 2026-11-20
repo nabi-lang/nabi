@@ -1,0 +1,9 @@
+// expect-error: 6:5: error `ValueError` is not handled: catch it, or declare `throws (ValueError)` on the enclosing function
+
+// No error may leave a function without `throws`.
+fn bad(x: i32) -> i32 {
+    if x > 0 { return x; }
+    throw "nope";
+}
+
+println(f"{bad(1)}");

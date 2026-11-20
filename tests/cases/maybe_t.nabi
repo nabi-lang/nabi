@@ -1,0 +1,20 @@
+// expect-exit: 24
+// expect-stdout:
+// 8 16 8
+
+struct Slot<T> {
+    value: T | none;
+}
+
+impl Slot<i32> {
+    fn or(self, def: i32) -> i32 {
+        return self.value ?? def;
+    }
+}
+
+fn main() -> i32 {
+    let a: Slot<i32> = Slot { value: 8 };
+    let b: Slot<i32> = Slot { value: none };
+    println(f"{a.or(0)} {b.or(16)} {a.value ?? 99}");
+    return a.or(0) + b.or(16);
+}

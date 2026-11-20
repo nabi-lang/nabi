@@ -1,0 +1,1021 @@
+//! core::sync - concurrency primitives.
+//!
+//! Every type is a handle over GC buffers: copying it (into a closure,
+//! another thread) shares the one primitive. Blocking goes through the
+//! runtime's address-keyed wait queue (`nabi_sync_wait` / `nabi_sync_wake`,
+//! futex semantics; `Atomic<i32>::wait` / `wake` expose it); a blocked
+//! thread counts as stopped for the GC.
+
+use core::marker::{hand_over, hand_over_into};
+use core::rt::{atomic_add, atomic_and, atomic_cas, atomic_load, atomic_or, atomic_store, atomic_sub, atomic_xchg, atomic_xor, key};
+
+/// Whether guards note their locks (`nabi_lock_note`): this is a REPL
+/// session host. Asked before a lock is taken, so nothing runs between
+/// taking it and the note but the note.
+fn lock_notes() -> bool {
+    let n = LOCK_NOTES.load();
+    if n < 0 {
+        n = unsafe { nabi_lock_notes() };
+        LOCK_NOTES.store(n);
+    }
+    n != 0
+}
+
+/// `lock_notes`, once asked (-1: not yet; the runtime call is not in a
+/// static initializer: those are in every program).
+static LOCK_NOTES: Atomic<i32> = Atomic::new(-1);
+
+fn wait(word: GcBuf<i32>, expected: i32) {
+    unsafe { nabi_sync_wait(word, 0, expected, -1) };
+}
+
+fn wake(word: GcBuf<i32>) {
+    unsafe { nabi_sync_wake(word, 0) };
+}
+
+const fn word(v: i32) -> GcBuf<i32> {
+    unsafe {
+        let w: GcBuf<i32> = buf_new(1);
+        w[0] = v;
+        w
+    }
+}
+
+// The async waits of `RwLock` / `Condvar` (which have no "waiters" state
+// like `Mutex`'s 2): `w[1]` is set by a task that parked on `w`'s key,
+// and whoever may have made `w` ready unparks only when it is set (an
+// unpark takes the process-wide parking lock).
+
+/// Park the task on `w`'s key and flag it; re-check after this.
+fn park_on(w: GcBuf<i32>, ctx: core::future::Context) {
+    core::task::park(key(w), ctx.waker());
+    atomic_xchg(w, 1, 1, SeqCst);
+}
+
+fn unpark_parked(w: GcBuf<i32>) {
+    if atomic_xchg(w, 1, 0, SeqCst) != 0 {
+        core::task::unpark(key(w));
+    }
+}
+
+const fn two_words() -> GcBuf<i32> {
+    unsafe {
+        buf_new(2)
+    }
+}
+
+/// Memory ordering of an atomic load, and of the load a failed
+/// compare-exchange does. A load cannot release.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum LoadOrdering {
+    Relaxed,
+    Acquire,
+    SeqCst,
+}
+
+/// Memory ordering of an atomic store. A store cannot acquire.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum StoreOrdering {
+    Relaxed,
+    Release,
+    SeqCst,
+}
+
+/// Memory ordering of a read-modify-write: `swap`, the
+/// `fetch_*` ops and a compare-exchange that succeeds.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum UpdateOrdering {
+    Relaxed,
+    Acquire,
+    Release,
+    AcqRel,
+    SeqCst,
+}
+
+/// The element types `Atomic<T>` supports.
+#[sealed]
+pub trait AtomicPrimitive {}
+// Every integer and bool is an atomic primitive.
+#[impl_macro(atomic_prims)] @macro {
+    (@rep[sep = ","] { @t: ty }) => { @for @t { impl AtomicPrimitive for @t {} } }
+}
+atomic_prims!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize, bool);
+/// One address word: load / store / swap / compare_exchange.
+impl<T> AtomicPrimitive for bare::ptr::Ptr<T> {}
+
+/// A lock-free cell. Send + Sync.
+pub struct Atomic<T> {
+    cell: GcBuf<T>;
+}
+
+impl<T> Debug for Atomic<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Atomic") }
+}
+
+// The cell holds an address, not what it points at: an `Atomic<Ptr<T>>`
+// is shared as any other.
+unsafe impl<T> Send for Atomic<bare::ptr::Ptr<T>> {}
+unsafe impl<T> Sync for Atomic<bare::ptr::Ptr<T>> {}
+
+// Each method maps its ordering argument onto the intrinsic's literal
+// ordering; with a constant argument the `match` folds away once the
+// method is inlined (`-O1` and up). The ordering types leave out what an
+// operation cannot take, so nothing is checked at run time.
+impl<T: AtomicPrimitive + PartialEq> Atomic<T> {
+    /// An atomic cell holding `value`.
+    pub const fn new(value: T) -> Atomic<T> {
+        unsafe {
+            let cell: GcBuf<T> = buf_new(1);
+            cell[0] = value;
+            Atomic { cell }
+        }
+    }
+
+    /// The current value.
+    pub fn load(self, ordering: LoadOrdering = LoadOrdering::SeqCst) -> T {
+        let c = self.cell;
+        match ordering {
+            LoadOrdering::Relaxed => atomic_load(c, 0, Relaxed),
+            LoadOrdering::Acquire => atomic_load(c, 0, Acquire),
+            LoadOrdering::SeqCst => atomic_load(c, 0, SeqCst),
+        }
+    }
+
+    /// Write `value`.
+    pub fn store(self, value: T, ordering: StoreOrdering = StoreOrdering::SeqCst) {
+        let c = self.cell;
+        match ordering {
+            StoreOrdering::Relaxed => atomic_store(c, 0, value, Relaxed),
+            StoreOrdering::Release => atomic_store(c, 0, value, Release),
+            StoreOrdering::SeqCst => atomic_store(c, 0, value, SeqCst),
+        };
+    }
+
+    /// Write `value` and return the previous one.
+    #[discardable]
+    pub fn swap(self, value: T, ordering: UpdateOrdering = UpdateOrdering::SeqCst) -> T {
+        let c = self.cell;
+        match ordering {
+            UpdateOrdering::Relaxed => atomic_xchg(c, 0, value, Relaxed),
+            UpdateOrdering::Acquire => atomic_xchg(c, 0, value, Acquire),
+            UpdateOrdering::Release => atomic_xchg(c, 0, value, Release),
+            UpdateOrdering::AcqRel => atomic_xchg(c, 0, value, AcqRel),
+            UpdateOrdering::SeqCst => atomic_xchg(c, 0, value, SeqCst),
+        }
+    }
+
+    /// `Ok(previous)` if it held `current` (now `new`), else
+    /// `Err(actual)`. `failure` orders the load of a failed exchange.
+    pub fn compare_exchange(
+        self, current: T, new: T, success: UpdateOrdering, failure: LoadOrdering,
+    ) -> Result<T, T> {
+        let old = match failure {
+            LoadOrdering::Relaxed => cas_relaxed_fail(self.cell, current, new, success),
+            LoadOrdering::Acquire => cas_acquire_fail(self.cell, current, new, success),
+            LoadOrdering::SeqCst => cas_seqcst_fail(self.cell, current, new, success),
+        };
+        if old == current {
+            return Result::Ok(old);
+        }
+        Result::Err(old)
+    }
+
+    /// Never fails spuriously here (same as `compare_exchange`).
+    pub fn compare_exchange_weak(
+        self, current: T, new: T, success: UpdateOrdering, failure: LoadOrdering,
+    ) -> Result<T, T> {
+        self.compare_exchange(current, new, success, failure)
+    }
+
+    /// Add `value` (wrapping) and return the previous value. Integers
+    /// only: the intrinsic rejects `bool` for add and sub.
+    #[discardable]
+    pub fn fetch_add(self, value: T, ordering: UpdateOrdering = UpdateOrdering::SeqCst) -> T {
+        let c = self.cell;
+        match ordering {
+            UpdateOrdering::Relaxed => atomic_add(c, 0, value, Relaxed),
+            UpdateOrdering::Acquire => atomic_add(c, 0, value, Acquire),
+            UpdateOrdering::Release => atomic_add(c, 0, value, Release),
+            UpdateOrdering::AcqRel => atomic_add(c, 0, value, AcqRel),
+            UpdateOrdering::SeqCst => atomic_add(c, 0, value, SeqCst),
+        }
+    }
+    /// Subtract `value` (wrapping) and return the previous value. Integers
+    /// only.
+    #[discardable]
+    pub fn fetch_sub(self, value: T, ordering: UpdateOrdering = UpdateOrdering::SeqCst) -> T {
+        let c = self.cell;
+        match ordering {
+            UpdateOrdering::Relaxed => atomic_sub(c, 0, value, Relaxed),
+            UpdateOrdering::Acquire => atomic_sub(c, 0, value, Acquire),
+            UpdateOrdering::Release => atomic_sub(c, 0, value, Release),
+            UpdateOrdering::AcqRel => atomic_sub(c, 0, value, AcqRel),
+            UpdateOrdering::SeqCst => atomic_sub(c, 0, value, SeqCst),
+        }
+    }
+    /// Bitwise-and `value` in and return the previous value.
+    #[discardable]
+    pub fn fetch_and(self, value: T, ordering: UpdateOrdering = UpdateOrdering::SeqCst) -> T {
+        let c = self.cell;
+        match ordering {
+            UpdateOrdering::Relaxed => atomic_and(c, 0, value, Relaxed),
+            UpdateOrdering::Acquire => atomic_and(c, 0, value, Acquire),
+            UpdateOrdering::Release => atomic_and(c, 0, value, Release),
+            UpdateOrdering::AcqRel => atomic_and(c, 0, value, AcqRel),
+            UpdateOrdering::SeqCst => atomic_and(c, 0, value, SeqCst),
+        }
+    }
+    /// Bitwise-or `value` in and return the previous value.
+    #[discardable]
+    pub fn fetch_or(self, value: T, ordering: UpdateOrdering = UpdateOrdering::SeqCst) -> T {
+        let c = self.cell;
+        match ordering {
+            UpdateOrdering::Relaxed => atomic_or(c, 0, value, Relaxed),
+            UpdateOrdering::Acquire => atomic_or(c, 0, value, Acquire),
+            UpdateOrdering::Release => atomic_or(c, 0, value, Release),
+            UpdateOrdering::AcqRel => atomic_or(c, 0, value, AcqRel),
+            UpdateOrdering::SeqCst => atomic_or(c, 0, value, SeqCst),
+        }
+    }
+    /// Bitwise-xor `value` in and return the previous value.
+    #[discardable]
+    pub fn fetch_xor(self, value: T, ordering: UpdateOrdering = UpdateOrdering::SeqCst) -> T {
+        let c = self.cell;
+        match ordering {
+            UpdateOrdering::Relaxed => atomic_xor(c, 0, value, Relaxed),
+            UpdateOrdering::Acquire => atomic_xor(c, 0, value, Acquire),
+            UpdateOrdering::Release => atomic_xor(c, 0, value, Release),
+            UpdateOrdering::AcqRel => atomic_xor(c, 0, value, AcqRel),
+            UpdateOrdering::SeqCst => atomic_xor(c, 0, value, SeqCst),
+        }
+    }
+}
+
+impl Atomic<i32> {
+    /// Block while the value is `expected`, or until `wake`; may return
+    /// spuriously, so re-check.
+    pub fn wait(self, expected: i32) {
+        unsafe { nabi_sync_wait(self.cell, 0, expected, -1) };
+    }
+
+    /// `wait` for at most `timeout` (none left: returns at once).
+    pub fn wait_timeout(self, expected: i32, timeout: core::time::Duration) {
+        let ns = timeout.as_ns();
+        if ns < 0 {
+            ns = 0;
+        }
+        unsafe { nabi_sync_wait(self.cell, 0, expected, ns) };
+    }
+
+    /// Wake every thread in `wait` on this cell.
+    pub fn wake(self) {
+        wake(self.cell);
+    }
+}
+
+// `compare_exchange` per failure ordering, each choosing the success one.
+fn cas_relaxed_fail<T>(c: GcBuf<T>, cur: T, new: T, success: UpdateOrdering) -> T {
+    match success {
+        UpdateOrdering::Relaxed => atomic_cas(c, 0, cur, new, Relaxed, Relaxed),
+        UpdateOrdering::Acquire => atomic_cas(c, 0, cur, new, Acquire, Relaxed),
+        UpdateOrdering::Release => atomic_cas(c, 0, cur, new, Release, Relaxed),
+        UpdateOrdering::AcqRel => atomic_cas(c, 0, cur, new, AcqRel, Relaxed),
+        UpdateOrdering::SeqCst => atomic_cas(c, 0, cur, new, SeqCst, Relaxed),
+    }
+}
+fn cas_acquire_fail<T>(c: GcBuf<T>, cur: T, new: T, success: UpdateOrdering) -> T {
+    match success {
+        UpdateOrdering::Relaxed => atomic_cas(c, 0, cur, new, Relaxed, Acquire),
+        UpdateOrdering::Acquire => atomic_cas(c, 0, cur, new, Acquire, Acquire),
+        UpdateOrdering::Release => atomic_cas(c, 0, cur, new, Release, Acquire),
+        UpdateOrdering::AcqRel => atomic_cas(c, 0, cur, new, AcqRel, Acquire),
+        UpdateOrdering::SeqCst => atomic_cas(c, 0, cur, new, SeqCst, Acquire),
+    }
+}
+fn cas_seqcst_fail<T>(c: GcBuf<T>, cur: T, new: T, success: UpdateOrdering) -> T {
+    match success {
+        UpdateOrdering::Relaxed => atomic_cas(c, 0, cur, new, Relaxed, SeqCst),
+        UpdateOrdering::Acquire => atomic_cas(c, 0, cur, new, Acquire, SeqCst),
+        UpdateOrdering::Release => atomic_cas(c, 0, cur, new, Release, SeqCst),
+        UpdateOrdering::AcqRel => atomic_cas(c, 0, cur, new, AcqRel, SeqCst),
+        UpdateOrdering::SeqCst => atomic_cas(c, 0, cur, new, SeqCst, SeqCst),
+    }
+}
+
+/// Exclusive lock around a `T`. No poisoning: a panic
+/// ends the process, and an error leaving `using` drops the guard.
+// `state[0]`: 0 unlocked, 1 locked, 2 locked with (possible) waiters;
+// `state[1]`: entries in `OWED` (a cancelled `Condvar::wait_async`).
+pub struct Mutex<T> {
+    state: GcBuf<i32>;
+    value: GcBuf<T>;
+}
+
+impl<T> Debug for Mutex<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Mutex") }
+}
+
+unsafe impl<T: Send> Sync for Mutex<T> {}
+
+impl<T> Mutex<T> {
+    /// An unlocked mutex owning `value` (handed over: the mutex gets its own
+    /// copy of the collections `value` reaches).
+    pub const fn new(value: T) -> Mutex<T> {
+        unsafe {
+            let v: GcBuf<T> = buf_new(1);
+            v[0] = hand_over::<T>(value);
+            Mutex { state: two_words(), value: v }
+        }
+    }
+
+    /// `new` without the hand-off copy: the caller guarantees
+    /// that nothing else reaches `value`'s collections (a value just made).
+    pub const unsafe fn new_unshared(value: T) -> Mutex<T> {
+        unsafe {
+            let v: GcBuf<T> = buf_new(1);
+            v[0] = value;
+            Mutex { state: two_words(), value: v }
+        }
+    }
+
+    /// Block until the lock is ours. Bind the guard with `using`.
+    pub fn lock(self) -> MutexGuard<T> {
+        let notes = lock_notes();
+        if atomic_cas(self.state, 0, 0, 1, SeqCst, SeqCst) != 0 {
+            while atomic_xchg(self.state, 0, 2, SeqCst) != 0 {
+                wait(self.state, 2);
+            }
+        }
+        MutexGuard { mutex: self, noted: notes && unsafe { nabi_lock_note(self.state, 0) } != 0 }
+    }
+
+    /// `f` of the protected value, with the lock held for the call
+    /// (`lock` and `using` in one). The value is the guard's scoped view:
+    /// it may not leave `f` (returned, stored, sent), so `f` is not
+    /// `async`. Hold the guard itself to keep the lock across statements
+    /// or an `await` (`lock_async`).
+    pub fn with<R>(self, f: fn(T) -> R) -> R {
+        using g = self.lock() {
+            f(g.get())
+        }
+    }
+
+    /// The guard if the lock is free now, else `none`; never blocks.
+    pub fn try_lock(self) -> MutexGuard<T> | none {
+        let notes = lock_notes();
+        if atomic_cas(self.state, 0, 0, 1, SeqCst, SeqCst) == 0 {
+            return MutexGuard { mutex: self, noted: notes && unsafe { nabi_lock_note(self.state, 0) } != 0 };
+        }
+        none
+    }
+
+    /// `noted`: the guard's lock note goes too, right before the lock
+    /// (no safepoint between: a thread that holds a lock unnoted, or a
+    /// note of a lock it no longer holds, never stops there).
+    fn unlock(self, noted: bool) {
+        if noted {
+            unsafe { nabi_lock_drop(self.state) };
+        }
+        if atomic_load(self.state, 1, SeqCst) != 0 && self.forgive() {
+            return;
+        }
+        if atomic_xchg(self.state, 0, 0, SeqCst) == 2 {
+            wake(self.state);
+            core::task::unpark(key(self.state));
+        }
+    }
+
+    /// Owe the next `unlock` by the running task: it holds a guard of a
+    /// lock it does not have (a `Condvar::wait_async` between its unlock
+    /// and taking the lock back), and that guard's drop must not unlock
+    /// another holder's lock.
+    fn owe(self, task: u64) {
+        using g = OWED.lock() {
+            g.get().push((key(self.state), task));
+            atomic_add(self.state, 1, 1, SeqCst);
+        }
+    }
+
+    /// Whether an `unlock` by the running task was owed: then it is
+    /// settled (and that `unlock` does nothing).
+    fn forgive(self) -> bool {
+        let me = match core::task::current_id() {
+            id: core::task::TaskId => id.as_u64(),
+            none => return false,
+        };
+        let k = key(self.state);
+        let found = false;
+        using g = OWED.lock() {
+            let l = g.get();
+            for i in 0..l.len() {
+                if l[i] == (k, me) {
+                    l.remove(i);
+                    atomic_sub(self.state, 1, 1, SeqCst);
+                    found = true;
+                    break;
+                }
+            }
+        }
+        found
+    }
+
+    /// `await m.lock_async()` inside async code: suspends the task (not
+    /// the thread) until the lock is ours.
+    pub const fn lock_async(self) -> LockFuture<T> {
+        LockFuture { mutex: self }
+    }
+}
+
+/// `Mutex::lock_async`.
+#[must_use("future is never awaited, so its body never runs: write `await {}`")]
+pub struct LockFuture<T> {
+    mutex: Mutex<T>;
+}
+
+impl<T> Debug for LockFuture<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("LockFuture") }
+}
+
+impl<T> core::future::Future for LockFuture<T> {
+    type Output = MutexGuard<T>;
+    fn poll(ref self, ref ctx: core::future::Context) -> core::future::Poll<MutexGuard<T>> {
+        let m = self.mutex;
+        // A cancelled task leaves at this `await`: taking the lock now
+        // would hand it a guard nobody drops.
+        if core::task::cancel_requested(ctx) {
+            return core::future::Poll::Pending;
+        }
+        // A task's locks are not noted: it outlives the thread it runs on.
+        if atomic_cas(m.state, 0, 0, 1, SeqCst, SeqCst) == 0 {
+            return core::future::Poll::Ready(MutexGuard { mutex: m, noted: false });
+        }
+        // Park first, then mark "waiters" (2): an unlock after this sees
+        // the 2 and unparks us.
+        core::task::park(key(m.state), ctx.waker());
+        if atomic_xchg(m.state, 0, 2, SeqCst) == 0 {
+            return core::future::Poll::Ready(MutexGuard { mutex: m, noted: false });
+        }
+        core::future::Poll::Pending
+    }
+}
+
+/// `(mutex key, task id)`: unlocks owed (`Mutex::owe`).
+// One global list: it only holds cancelled `wait_async`s whose guard
+// has not dropped yet.
+static OWED: Mutex<List<(usize, u64)>> = unsafe { Mutex::new_unshared(List::new()) };
+
+/// Holds a `Mutex` locked until dropped (`using`).
+pub struct MutexGuard<T> {
+    mutex: Mutex<T>;
+    /// Taken outside a task while a REPL session host keeps lock notes
+    /// (`nabi_lock_note`): released if its thread is gone after a failed
+    /// cell.
+    noted: bool;
+}
+
+impl<T> Debug for MutexGuard<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("MutexGuard") }
+}
+
+// A copy of a guard outlives its `using` block unprotected: the hand-off
+// check follows guards like the collections they hand out.
+impl<T> !Sync for MutexGuard<T> {}
+
+impl<T> MutexGuard<T> {
+    /// A scoped view of the protected value (the handle itself for GC
+    /// types). Like the guard it is neither `Send` nor `Sync` and stays
+    /// inside the `using` block: returning, throwing or sending it, or
+    /// passing it to a callee that keeps it, is an error (E0106).
+    pub const fn get(self) -> T {
+        unsafe {
+            self.mutex.value[0]
+        }
+    }
+    /// A deep copy of the protected value, free to outlive the lock.
+    pub const fn get_clone(self) -> T where T: Clone {
+        self.get().clone()
+    }
+    /// Replace the protected value (no `deref_mut`: Nabi has
+    /// no `ref` returns).
+    pub const fn set(self, value: T) {
+        unsafe {
+            self.mutex.value[0] = hand_over::<T>(value);
+        }
+    }
+    /// `set` without the hand-off copy: `value` was just made.
+    pub(pkg) const fn set_unshared(self, value: T) {
+        unsafe {
+            self.mutex.value[0] = value;
+        }
+    }
+    /// Replace the protected value with `f(value)`.
+    pub const fn update(self, f: fn(T) -> T) {
+        unsafe {
+            let old = self.mutex.value[0];
+            self.mutex.value[0] = hand_over_into::<T>(old, f(old));
+        }
+    }
+}
+
+impl<T> Drop for MutexGuard<T> {
+    fn drop(ref self) {
+        self.mutex.unlock(self.noted);
+    }
+}
+
+/// Many readers or one writer.
+// `state[0]`: 0 free, -1 writer, n > 0 readers; `state[1]`: a task is
+// parked on it (`read_async` / `write_async`).
+pub struct RwLock<T> {
+    state: GcBuf<i32>;
+    value: GcBuf<T>;
+}
+
+impl<T> Debug for RwLock<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("RwLock") }
+}
+
+// Readers share the value: it must be `Sync` too.
+unsafe impl<T: Send + Sync> Sync for RwLock<T> {}
+
+impl<T> RwLock<T> {
+    /// An unlocked lock owning `value` (handed over, as `Mutex::new`).
+    pub const fn new(value: T) -> RwLock<T> {
+        unsafe {
+            let v: GcBuf<T> = buf_new(1);
+            v[0] = hand_over::<T>(value);
+            RwLock { state: two_words(), value: v }
+        }
+    }
+
+    /// Block until no writer holds the lock, then share it for reading. Bind
+    /// the guard with `using`.
+    pub fn read(self) -> RwLockReadGuard<T> {
+        let notes = lock_notes();
+        loop {
+            let s = atomic_load(self.state, 0, SeqCst);
+            if s >= 0 {
+                if atomic_cas(self.state, 0, s, s + 1, SeqCst, SeqCst) == s {
+                    return RwLockReadGuard { lock: self, noted: notes && unsafe { nabi_lock_note(self.state, 1) } != 0 };
+                }
+            } else {
+                wait(self.state, s);
+            }
+        }
+    }
+
+    /// Block until no reader or writer holds the lock, then take it. Bind the
+    /// guard with `using`.
+    pub fn write(self) -> RwLockWriteGuard<T> {
+        let notes = lock_notes();
+        loop {
+            let s = atomic_cas(self.state, 0, 0, -1, SeqCst, SeqCst);
+            if s == 0 {
+                return RwLockWriteGuard { lock: self, noted: notes && unsafe { nabi_lock_note(self.state, 2) } != 0 };
+            }
+            wait(self.state, s);
+        }
+    }
+
+    /// `f` of the value, with a read lock held for the call. The value
+    /// is a scoped view, as in `Mutex::with`.
+    pub fn read_with<R>(self, f: fn(T) -> R) -> R {
+        using g = self.read() {
+            f(g.get())
+        }
+    }
+
+    /// `f` of the value, with the write lock held for the call. The
+    /// value is a scoped view, as in `Mutex::with`.
+    pub fn write_with<R>(self, f: fn(T) -> R) -> R {
+        using g = self.write() {
+            f(g.get())
+        }
+    }
+
+    /// A read guard if no writer holds the lock now, else `none`; never
+    /// blocks.
+    pub fn try_read(self) -> RwLockReadGuard<T> | none {
+        let notes = lock_notes();
+        // Retry a CAS lost to another reader: only a writer makes it fail.
+        let s = atomic_load(self.state, 0, SeqCst);
+        while s >= 0 {
+            let seen = atomic_cas(self.state, 0, s, s + 1, SeqCst, SeqCst);
+            if seen == s {
+                return RwLockReadGuard { lock: self, noted: notes && unsafe { nabi_lock_note(self.state, 1) } != 0 };
+            }
+            s = seen;
+        }
+        none
+    }
+
+    /// A write guard if the lock is free now, else `none`; never blocks.
+    pub fn try_write(self) -> RwLockWriteGuard<T> | none {
+        let notes = lock_notes();
+        if atomic_cas(self.state, 0, 0, -1, SeqCst, SeqCst) == 0 {
+            return RwLockWriteGuard { lock: self, noted: notes && unsafe { nabi_lock_note(self.state, 2) } != 0 };
+        }
+        none
+    }
+
+    /// `await l.read_async()`: suspends the task (not the thread) while
+    /// a writer holds the lock.
+    pub const fn read_async(self) -> ReadFuture<T> {
+        ReadFuture { lock: self }
+    }
+
+    /// `await l.write_async()`: suspends the task until no reader or
+    /// writer holds the lock.
+    pub const fn write_async(self) -> WriteFuture<T> {
+        WriteFuture { lock: self }
+    }
+}
+
+/// `RwLock::read_async`.
+#[must_use("future is never awaited, so its body never runs: write `await {}`")]
+pub struct ReadFuture<T> {
+    lock: RwLock<T>;
+}
+
+impl<T> Debug for ReadFuture<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("ReadFuture") }
+}
+
+impl<T> core::future::Future for ReadFuture<T> {
+    type Output = RwLockReadGuard<T>;
+    fn poll(ref self, ref ctx: core::future::Context) -> core::future::Poll<RwLockReadGuard<T>> {
+        if core::task::cancel_requested(ctx) {
+            return core::future::Poll::Pending;
+        }
+        if let g: RwLockReadGuard<T> = self.lock.try_read() {
+            return core::future::Poll::Ready(g);
+        }
+        park_on(self.lock.state, ctx);
+        if let g: RwLockReadGuard<T> = self.lock.try_read() {
+            return core::future::Poll::Ready(g);
+        }
+        core::future::Poll::Pending
+    }
+}
+
+/// `RwLock::write_async`.
+#[must_use("future is never awaited, so its body never runs: write `await {}`")]
+pub struct WriteFuture<T> {
+    lock: RwLock<T>;
+}
+
+impl<T> Debug for WriteFuture<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("WriteFuture") }
+}
+
+impl<T> core::future::Future for WriteFuture<T> {
+    type Output = RwLockWriteGuard<T>;
+    fn poll(ref self, ref ctx: core::future::Context) -> core::future::Poll<RwLockWriteGuard<T>> {
+        if core::task::cancel_requested(ctx) {
+            return core::future::Poll::Pending;
+        }
+        if let g: RwLockWriteGuard<T> = self.lock.try_write() {
+            return core::future::Poll::Ready(g);
+        }
+        park_on(self.lock.state, ctx);
+        if let g: RwLockWriteGuard<T> = self.lock.try_write() {
+            return core::future::Poll::Ready(g);
+        }
+        core::future::Poll::Pending
+    }
+}
+
+/// Holds an `RwLock` shared for reading until dropped (`using`).
+pub struct RwLockReadGuard<T> {
+    lock: RwLock<T>;
+    /// As `MutexGuard::noted`.
+    noted: bool;
+}
+
+impl<T> Debug for RwLockReadGuard<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("RwLockReadGuard") }
+}
+
+impl<T> !Sync for RwLockReadGuard<T> {}
+
+impl<T> RwLockReadGuard<T> {
+    /// A scoped view of the protected value, as `MutexGuard::get`.
+    pub const fn get(self) -> T {
+        unsafe {
+            self.lock.value[0]
+        }
+    }
+    /// A deep copy of the protected value, free to outlive the lock.
+    pub const fn get_clone(self) -> T where T: Clone {
+        self.get().clone()
+    }
+}
+
+impl<T> Drop for RwLockReadGuard<T> {
+    fn drop(ref self) {
+        if self.noted {
+            unsafe { nabi_lock_drop(self.lock.state) };
+        }
+        if atomic_sub(self.lock.state, 0, 1, SeqCst) == 1 {
+            wake(self.lock.state);
+            unpark_parked(self.lock.state);
+        }
+    }
+}
+
+/// Holds an `RwLock` exclusively until dropped (`using`).
+pub struct RwLockWriteGuard<T> {
+    lock: RwLock<T>;
+    /// As `MutexGuard::noted`.
+    noted: bool;
+}
+
+impl<T> Debug for RwLockWriteGuard<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("RwLockWriteGuard") }
+}
+
+impl<T> !Sync for RwLockWriteGuard<T> {}
+
+impl<T> RwLockWriteGuard<T> {
+    /// A scoped view of the protected value, as `MutexGuard::get`.
+    pub const fn get(self) -> T {
+        unsafe {
+            self.lock.value[0]
+        }
+    }
+    /// A deep copy of the protected value, free to outlive the lock.
+    pub const fn get_clone(self) -> T where T: Clone {
+        self.get().clone()
+    }
+    /// Replace the value under the write lock (handed over, as
+    /// `Mutex::new`).
+    pub const fn set(self, value: T) {
+        unsafe {
+            self.lock.value[0] = hand_over::<T>(value);
+        }
+    }
+    /// Replace the protected value with `f(value)`.
+    pub fn update(self, f: fn(T) -> T) {
+        unsafe {
+            let old = self.lock.value[0];
+            self.lock.value[0] = hand_over_into::<T>(old, f(old));
+        }
+    }
+}
+
+impl<T> Drop for RwLockWriteGuard<T> {
+    fn drop(ref self) {
+        if self.noted {
+            unsafe { nabi_lock_drop(self.lock.state) };
+        }
+        atomic_xchg(self.lock.state, 0, 0, SeqCst);
+        wake(self.lock.state);
+        unpark_parked(self.lock.state);
+    }
+}
+
+/// A value made once and only read after: any thread may read it
+/// without a lock. `new` keeps a copy of the value's collections that
+/// nothing else reaches, and `get` gives each reader its own copy, so no
+/// one can change what the others read. `Sync` parts (a `Mutex`, a cache
+/// that locks itself) stay shared.
+pub struct Frozen<T> {
+    value: GcBuf<T>;
+}
+
+impl<T> Debug for Frozen<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Frozen") }
+}
+
+unsafe impl<T: Send> Sync for Frozen<T> {}
+
+impl<T> Frozen<T> {
+    /// Freeze `value`: keep a copy of its collections nothing else reaches.
+    #[track_caller]
+    pub const fn new(value: T) -> Frozen<T> {
+        unsafe {
+            let v: GcBuf<T> = buf_new(1);
+            v[0] = hand_over::<T>(value);
+            Frozen { value: v }
+        }
+    }
+
+    /// A copy of the value: the reader's own to change.
+    #[track_caller]
+    pub fn get(self) -> T {
+        unsafe { hand_over::<T>(self.value[0]) }
+    }
+}
+
+/// Run an initializer exactly once across threads.
+// `state`: 0 new, 1 running, 2 done.
+pub struct Once {
+    state: GcBuf<i32>;
+}
+
+impl Debug for Once {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Once") }
+}
+
+impl Once {
+    /// A `Once` that has not run.
+    pub const fn new() -> Once {
+        Once { state: word(0) }
+    }
+
+    /// Run `f` if no call has; every caller returns after it finished.
+    pub fn call_once(self, f: fn()) {
+        let notes = lock_notes();
+        loop {
+            let s = atomic_cas(self.state, 0, 0, 1, SeqCst, SeqCst);
+            if s == 0 {
+                // A thread gone mid-`f` leaves it to the next caller.
+                let noted = notes && unsafe { nabi_lock_note(self.state, 3) } != 0;
+                f();
+                if noted {
+                    unsafe { nabi_lock_drop(self.state) };
+                }
+                atomic_xchg(self.state, 0, 2, SeqCst);
+                wake(self.state);
+                return;
+            }
+            if s == 2 {
+                return;
+            }
+            wait(self.state, 1);
+        }
+    }
+
+    /// Whether a `call_once` has finished.
+    pub fn is_completed(self) -> bool {
+        atomic_load(self.state, 0, SeqCst) == 2
+    }
+}
+
+/// Wait for a condition under a `Mutex`.
+// `seq[0]` counts notifications; a waiter sleeps until it changes.
+// `seq[1]`: a task is parked on it (`wait_async`).
+pub struct Condvar {
+    seq: GcBuf<i32>;
+}
+
+impl Debug for Condvar {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Condvar") }
+}
+
+impl Condvar {
+    /// A condition variable with no waiter.
+    pub const fn new() -> Condvar {
+        Condvar { seq: two_words() }
+    }
+
+    /// `g = await cv.wait_async(g)`: `wait` that suspends the task (not
+    /// the thread), both for the notification and to lock again.
+    /// Spurious wakeups as for `wait`. A task cancelled while it waits
+    /// takes the lock back if it is free (its `using` guard unlocks it);
+    /// if another task holds it, the guard's unlock is owed instead and
+    /// does nothing (the worker never blocks).
+    pub const fn wait_async<T>(self, guard: MutexGuard<T>) -> CondvarWait<T> {
+        unsafe {
+            let st: GcBuf<i32> = buf_new(2);
+            CondvarWait { cv: self, mutex: guard.mutex, noted: guard.noted, st: st }
+        }
+    }
+
+    /// Unlock `guard`'s mutex, block until notified (or spuriously),
+    /// lock it again. Re-check the condition in a loop.
+    pub fn wait<T>(self, guard: MutexGuard<T>) -> MutexGuard<T> {
+        let s = atomic_load(self.seq, 0, SeqCst);
+        guard.mutex.unlock(guard.noted);
+        wait(self.seq, s);
+        guard.mutex.lock()
+    }
+
+    /// Wakes the longest-waiting blocked thread. Tasks in `wait_async`
+    /// are all woken (a spurious wakeup for all but one): a parked task's
+    /// entry may be stale, and waking only it could lose the notify.
+    pub fn notify_one(self) {
+        atomic_add(self.seq, 0, 1, SeqCst);
+        unsafe { nabi_sync_wake_one(self.seq, 0) };
+        unpark_parked(self.seq);
+    }
+
+    /// Wake every thread and task waiting on this condvar.
+    pub fn notify_all(self) {
+        atomic_add(self.seq, 0, 1, SeqCst);
+        wake(self.seq);
+        unpark_parked(self.seq);
+    }
+}
+
+/// `Condvar::wait_async`.
+#[must_use("future is never awaited, so its body never runs: write `await {}`")]
+pub struct CondvarWait<T> {
+    cv: Condvar;
+    mutex: Mutex<T>;
+    /// The guard's (`MutexGuard::noted`).
+    noted: bool;
+    /// `[phase, seen]`: phase 0 not started, 1 waiting for a notify after
+    /// `seen`, 2 locking again.
+    st: GcBuf<i32>;
+}
+
+impl<T> Debug for CondvarWait<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("CondvarWait") }
+}
+
+impl<T> core::future::Future for CondvarWait<T> {
+    type Output = MutexGuard<T>;
+    fn poll(ref self, ref ctx: core::future::Context) -> core::future::Poll<MutexGuard<T>> {
+        unsafe {
+            let st = self.st;
+            let m = self.mutex;
+            // From the unlock until the lock is ours again the task's guard
+            // holds nothing: its drop is owed. The `await` may leave on a
+            // cancel after any `Pending` without polling again.
+            if st[0] == 0 {
+                st[1] = atomic_load(self.cv.seq, 0, SeqCst);
+                st[0] = 1;
+                m.unlock(self.noted);
+                m.owe(core::task::id().as_u64());
+            }
+            if core::task::cancel_requested(ctx) {
+                // The task leaves this `await` and its `using` guard drops:
+                // take the lock back if it is free (the drop unlocks it),
+                // else the drop stays owed. Never blocks.
+                if m.try_lock() is MutexGuard<T> {
+                    m.forgive();
+                }
+                return core::future::Poll::Ready(MutexGuard { mutex: m, noted: false });
+            }
+            if st[0] == 1 {
+                park_on(self.cv.seq, ctx);
+                if atomic_load(self.cv.seq, 0, SeqCst) == st[1] {
+                    return core::future::Poll::Pending;
+                }
+                st[0] = 2;
+            }
+            let lf = m.lock_async();
+            match lf.poll(ref ctx) {
+                core::future::Poll::Ready(g) => {
+                    m.forgive();
+                    core::future::Poll::Ready(g)
+                }
+                core::future::Poll::Pending => core::future::Poll::Pending,
+            }
+        }
+    }
+}
+
+/// Single-task interior mutability: neither Send nor Sync.
+pub struct Cell<T> {
+    value: GcBuf<T>;
+}
+
+impl<T> Debug for Cell<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Cell") }
+}
+
+impl<T> !Send for Cell<T> {}
+impl<T> !Sync for Cell<T> {}
+
+impl<T> Cell<T> {
+    /// A cell holding `value`.
+    pub const fn new(value: T) -> Cell<T> {
+        unsafe {
+            let v: GcBuf<T> = buf_new(1);
+            v[0] = value;
+            Cell { value: v }
+        }
+    }
+    /// A copy of the value.
+    pub const fn get(self) -> T where T: Copy {
+        unsafe {
+            self.value[0]
+        }
+    }
+    // Copies share the one buffer, so a copy sees the update too.
+    /// Store `value`; copies of the cell share it, so they see it too.
+    pub const fn set(ref self, value: T) {
+        unsafe {
+            self.value[0] = value;
+        }
+    }
+    /// Store `value` and return the old one.
+    #[discardable]
+    pub const fn replace(ref self, value: T) -> T {
+        unsafe {
+            let old = self.value[0];
+            self.value[0] = value;
+            old
+        }
+    }
+}
+
+impl<T: Default> Cell<T> {
+    /// The value, leaving `T::default()` in its place.
+    #[discardable]
+    pub const fn take(ref self) -> T {
+        self.replace(T::default())
+    }
+}

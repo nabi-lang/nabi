@@ -1,0 +1,21 @@
+// needs: objc
+// expect-exit: 0
+// expect-stdout:
+// old true
+// future false
+// other true
+
+// `objc::available` asks the running OS: macOS's version on macOS,
+// iOS's on iOS and its simulator; an OS not named is any version.
+use bare::ffi::objc;
+
+fn main() {
+    println(f"old {objc::available(macos: "11.0", ios: "15.0")}");
+    println(f"future {objc::available(macos: "999.0", ios: "999.0")}");
+    let other = if cfg!(target_os = "ios") {
+        objc::available(macos: "999.0")
+    } else {
+        objc::available(ios: "999.0")
+    };
+    println(f"other {other}");
+}

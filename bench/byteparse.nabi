@@ -1,0 +1,129 @@
+// A number parser in one large function, its digit loops written in
+// place: `Slice<u8>` indexing inlined however big the caller is.
+// Output matches bench/c/byteparse.c.
+const POW10: [f64; 23] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22];
+
+struct Num {
+    ok: bool;
+    ival: i64;
+    fval: f64;
+    is_float: bool;
+    end: usize;
+}
+
+fn fail(at: usize) -> Num { Num { ok: false, ival: 0, fval: 0.0, is_float: false, end: at } }
+
+/// The number at `at` of `b`.
+fn number(b: Slice<u8>, at: usize) -> Num {
+    let n = b.len();
+    if at >= n { return fail(at); }
+    let neg = b[at] == 0x2Du8;
+    let int_start = if neg { at + 1 } else { at };
+    let j = int_start;
+    let m: u64 = 0;
+    while j < n {
+        let c = b[j];
+        if c < 0x30u8 || c > 0x39u8 { break; }
+        m = m.wrapping_mul(10u64).wrapping_add((c - 0x30u8) as u64);
+        j += 1;
+    }
+    if j == int_start { return fail(at); }
+    if b[int_start] == 0x30u8 && j - int_start > 1 { return fail(at); }
+    let nd = j - int_start;
+    let is_float = false;
+    let frac: i64 = 0;
+    if j < n && b[j] == 0x2Eu8 {
+        is_float = true;
+        let k = j + 1;
+        while k < n {
+            let c = b[k];
+            if c < 0x30u8 || c > 0x39u8 { break; }
+            m = m.wrapping_mul(10u64).wrapping_add((c - 0x30u8) as u64);
+            k += 1;
+        }
+        if k == j + 1 { return fail(at); }
+        frac = (k - j - 1) as i64;
+        nd += k - j - 1;
+        j = k;
+    }
+    let exp: i64 = 0;
+    if j < n && (b[j] == 0x65u8 || b[j] == 0x45u8) {
+        is_float = true;
+        j += 1;
+        let eneg = false;
+        if j < n && (b[j] == 0x2Bu8 || b[j] == 0x2Du8) {
+            eneg = b[j] == 0x2Du8;
+            j += 1;
+        }
+        let k = j;
+        let e: u64 = 0;
+        while k < n {
+            let c = b[k];
+            if c < 0x30u8 || c > 0x39u8 { break; }
+            e = e.wrapping_mul(10u64).wrapping_add((c - 0x30u8) as u64);
+            k += 1;
+        }
+        if k == j { return fail(at); }
+        exp = if k - j > 18 { 100000i64 } else { e.min(100000u64) as i64 };
+        if eneg { exp = -exp; }
+        j = k;
+    }
+    if !is_float {
+        if j - int_start > 18 { return fail(at); }
+        let v = m as i64;
+        return Num { ok: true, ival: if neg { -v } else { v }, fval: 0.0, is_float: false, end: j };
+    }
+    if nd > 19 { return fail(at); }
+    let e10 = exp - frac;
+    if m == 0u64 {
+        return Num { ok: true, ival: 0, fval: if neg { -0.0 } else { 0.0 }, is_float: true, end: j };
+    }
+    if m <= 9007199254740992u64 && e10 >= -22i64 && e10 <= 22i64 {
+        let x = m as f64;
+        x = if e10 >= 0i64 { x * POW10[e10 as usize] } else { x / POW10[(-e10) as usize] };
+        return Num { ok: true, ival: 0, fval: if neg { -x } else { x }, is_float: true, end: j };
+    }
+    fail(at)
+}
+
+fn make(n: usize) -> str {
+    let b = StrBuf::new();
+    let x: u64 = 11;
+    for _ in 0..n {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        let r = x >> 20u64;
+        let k = r % 4u64;
+        if k == 0u64 {
+            b.push_str(f"{r % 1000000000000u64}");
+        } else if k == 1u64 {
+            b.push_str(f"-{r % 100000u64}.{r % 1000u64}");
+        } else if k == 2u64 {
+            b.push_str(f"{r % 1000u64}.{r % 10000000u64}e-{r % 12u64}");
+        } else {
+            b.push_str(f"{r % 100u64}.{r % 100u64}E+{r % 9u64}");
+        }
+        b.push_str(",");
+    }
+    b.to_str()
+}
+
+fn main() -> i32 {
+    let s = make(400000);
+    let b = s.as_bytes();
+    let n = b.len();
+    let ints: i64 = 0;
+    let floats: f64 = 0.0;
+    let count: i64 = 0;
+    for _ in 0..10 {
+        let i: usize = 0;
+        while i < n {
+            let v = number(b, i);
+            if !v.ok { return 1; }
+            if v.is_float { floats += v.fval; } else { ints = ints.wrapping_add(v.ival); }
+            count += 1;
+            i = v.end + 1;
+        }
+    }
+    println(f"{count} {ints} {floats.to_bits()}");
+    return 0;
+}

@@ -1,0 +1,25 @@
+// needs: objc
+// expect-exit: 0
+// expect-stdout:
+// init 1 true
+// subclass new 1
+
+// `alloc` then `init` on a class whose `init` returns its receiver: the
+// object ends with the one retain the result holds.
+use bare::ffi::objc;
+use bare::ffi::objc::{Id, NSObject};
+
+#[objc::category(NSObject)]
+extern "objc" {
+    fn alloc() -> Id<Self>;
+    fn init(self) -> Id<Self>;
+}
+
+fn main() {
+    let a = NSObject::alloc();
+    let o = a.init();
+    println(f"init {o.retainCount()} {a.is_released()}");
+    o.release_now();
+    let n = objc::new::<NSObject>();
+    println(f"subclass new {n.retainCount()}");
+}

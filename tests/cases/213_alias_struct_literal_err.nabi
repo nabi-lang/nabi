@@ -1,0 +1,16 @@
+// expect-error: 12:13: `D { .. }` can't infer `D`'s arguments: its aliased type's arguments are not its distinct parameters - write `D<..> { .. }`
+// expect-error: 13:5: struct pattern `Q` can't match a value of type `R`
+
+// A literal through a generic alias whose aliased arguments are not its
+// own parameters needs the arguments written.
+struct P<T> { x: T; }
+struct R { a: i64; }
+type Q = P<f64>;
+type D<T> = P<List<T>>;
+
+fn main() {
+    let d = D { x: [1, 2] };
+    match (R { a: 1 }) {
+        Q { x } => println(f"{x}"),
+    }
+}

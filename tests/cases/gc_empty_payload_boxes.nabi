@@ -1,0 +1,42 @@
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// 3000 3000 3000
+// Empty () i64
+
+// `any` boxes of empty payloads (`()`, an empty struct) are full-size
+// objects whichever allocation path they take, and survive collections
+// and evacuation next to their neighbours.
+extern "C" {
+    fn nabi_gc_collect();
+    fn nabi_gc_collect_young();
+}
+
+struct Empty {}
+
+fn main() {
+    let xs: List<any> = [];
+    let i: i64 = 0;
+    while i < 1000 {
+        xs.push(Empty {});
+        xs.push(());
+        xs.push(i);
+        if i % 100 == 0 { unsafe { nabi_gc_collect_young() }; }
+        i = i + 1;
+    }
+    unsafe { nabi_gc_collect() };
+    let e = 0;
+    let u = 0;
+    let n = 0;
+    let k: i64 = 0;
+    for x in xs {
+        if x is Empty { e = e + 1; }
+        if x is () { u = u + 1; }
+        match x {
+            v: i64 => { if v == k { n = n + 1; } k = k + 1; },
+            _ => {},
+        }
+    }
+    println(f"{e * 3} {u * 3} {n * 3}");
+    println(f"{xs[0].type_name_of_val()} {xs[1].type_name_of_val()} {xs[2].type_name_of_val()}");
+}

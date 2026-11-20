@@ -1,0 +1,9 @@
+// expect-exit: 0
+// expect-stdout:
+// x = 1
+
+fn main() -> i32 {
+    let x = 1;
+    println(f"x = {x}");
+    return 0;
+}

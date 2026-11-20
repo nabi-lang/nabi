@@ -1,0 +1,347 @@
+// std::time::zone: `TimeZone` (UTC, a fixed offset, a POSIX `TZ`
+// rule or a tz database zone) and `Disambiguation`.
+
+use std::env;
+use std::fs;
+use std::time::SystemTime;
+use std::time::date::{civil_from_days, fdiv};
+use std::time::iso::parse_offset;
+use std::time::offset::{Offset, offset_str};
+use std::time::posix::{Change, parse_rule};
+use std::time::tzif::{Table, parse_tzif};
+
+/// What to do with a local time the clocks skip (a gap, when they move
+/// forward) or show twice (an overlap, when they move back).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Disambiguation {
+    /// `Earlier` in an overlap, `Later` in a gap: a skipped time moves
+    /// forward by the gap (02:30 in a 02:00 to 03:00 gap is 03:30).
+    Compatible,
+    /// The earlier instant: the first 01:30 of an overlap; in a gap, the
+    /// time read with the offset after it (02:30 becomes 01:30).
+    Earlier,
+    /// The later instant: the second 01:30 of an overlap; in a gap, the
+    /// time read with the offset before it (02:30 becomes 03:30).
+    Later,
+    /// Throw a `ValueError` naming the gap or the overlap.
+    Reject,
+}
+
+/// Where a local time falls: one offset, an overlap (`a` the earlier
+/// instant's offset, `b` the later one's) or a gap (`a` before, `b`
+/// after it).
+#[derive(Clone, Copy)]
+pub(pkg) struct Local {
+    kind: i32;
+    a: i32;
+    b: i32;
+}
+
+pub(pkg) const LOCAL_ONE: i32 = 0;
+pub(pkg) const LOCAL_OVERLAP: i32 = 1;
+pub(pkg) const LOCAL_GAP: i32 = 2;
+
+impl Local {
+    pub(pkg) const fn kind(self) -> i32 { self.kind }
+    pub(pkg) const fn a(self) -> i32 { self.a }
+    pub(pkg) const fn b(self) -> i32 { self.b }
+}
+
+// Default tz database locations; `TZDIR` replaces them.
+const ZONE_DIRS: [str; 4] = ["/usr/share/zoneinfo", "/usr/lib/zoneinfo", "/usr/share/lib/zoneinfo", "/etc/zoneinfo"];
+
+// Names that mean UTC even with no database.
+const UTC_NAMES: [str; 10] = ["UTC", "Etc/UTC", "GMT", "Etc/GMT", "UCT", "Etc/UCT", "Universal", "Etc/Universal", "Zulu", "Etc/Zulu"];
+
+// Instants within this many seconds of a local time can share its
+// wall-clock reading: offsets stay below 26 hours.
+const NEAR: i64 = 93600;
+
+/// A time zone: the offset from UTC at each instant, with its
+/// abbreviation (`KST`, `EDT`). One of UTC, a fixed offset, a POSIX `TZ`
+/// rule, or a zone of the system tz database (`TimeZone::get`). Copies
+/// share the loaded table. `Display` is the name.
+#[derive(Clone)]
+pub struct TimeZone {
+    name: str;
+    fixed: i32;
+    abbr: str;
+    table: Table | none;
+}
+
+impl TimeZone {
+    /// UTC.
+    pub const fn utc() -> TimeZone { TimeZone { name: "UTC", fixed: 0, abbr: "UTC", table: none } }
+
+    /// The zone that is `offset` from UTC at every instant, named like
+    /// the offset (`+09:00`).
+    pub const fn fixed(offset: Offset) -> TimeZone {
+        if offset.secs() == 0 { return TimeZone::utc(); }
+        TimeZone { name: "", fixed: offset.secs(), abbr: "", table: none }
+    }
+
+    /// The zone `name` from the tz database (`Asia/Seoul`,
+    /// `America/New_York`), read from `$TZDIR` or `/usr/share/zoneinfo`.
+    /// `UTC` and fixed offsets (`+09:00`) work without a database
+    /// (Windows and the browser have none); any other name then throws.
+    pub fn get(name: str) throws (ValueError) -> TimeZone {
+        if name == "UTC" || name == "Z" { return TimeZone::utc(); }
+        if name.starts_with("+") || name.starts_with("-") {
+            let off = try parse_offset(name, false) catch _ {
+                throw ValueError::new(f"bad offset zone `{name}`; write it as `+09:00` or `-05:30`");
+            };
+            return TimeZone::fixed(off);
+        }
+        if !valid_name(name) {
+            throw ValueError::new(f"bad time zone name `{name}`; use a tz database name such as `Europe/Paris`");
+        }
+        let dirs = zone_dirs();
+        let found_db = false;
+        for dir in dirs {
+            if !fs::exists(dir) { continue; }
+            found_db = true;
+            let path = f"{dir}/{name}";
+            if !fs::exists(path) { continue; }
+            let data = try fs::read(path) catch e {
+                throw ValueError::new(f"cannot read time zone `{name}` from {path}: {e}");
+            };
+            return try TimeZone::from_tzif(name, data) catch e: ValueError {
+                throw ValueError::new(f"{path}: {e.message()}");
+            };
+        }
+        for u in UTC_NAMES {
+            if name == u { return TimeZone { name, fixed: 0, abbr: "UTC", table: none }; }
+        }
+        if !found_db {
+            throw ValueError::new(f"unknown time zone `{name}`: this system has no tz database in {dirs_text(dirs)}; without one only `UTC` and offsets such as `+09:00` work (set TZDIR to a tz database)");
+        }
+        throw ValueError::new(f"unknown time zone `{name}`: no such zone in {dirs_text(dirs)}");
+    }
+
+    /// The zone `data` (a TZif file, as in the tz database) describes,
+    /// named `name`.
+    pub fn from_tzif<B: AsBytes>(name: str, data: B) throws (ValueError) -> TimeZone {
+        let t = try parse_tzif(data.byte_slice());
+        TimeZone { name, fixed: t.offs[0], abbr: t.abbrs[0], table: t }
+    }
+
+    /// The zone of a POSIX `TZ` rule: `JST-9`, `EST5EDT,M3.2.0,M11.1.0`.
+    /// Its offsets are west positive, as POSIX writes them.
+    pub fn from_posix(rule: str) throws (ValueError) -> TimeZone {
+        let r = try parse_rule(rule);
+        let (off, abbr) = r.at(0);
+        let t = Table { times: List::new(), types: List::new(), offs: [off], dsts: [false], abbrs: [abbr], rule: [r] };
+        TimeZone { name: rule, fixed: r.std_off(), abbr: "", table: t }
+    }
+
+    /// The system's local zone: `$TZ` (a database name, a path or a POSIX
+    /// rule), else `/etc/localtime`, else UTC. On Windows, which has no
+    /// tz database, only a POSIX rule in `$TZ` works; otherwise UTC.
+    /// Reads files: keep the result rather than calling it per use.
+    pub fn local() -> TimeZone {
+        let v = try env::var("TZ") catch _ { "" };
+        if v != "" {
+            let s = v.strip_prefix(":") ?? v;
+            if s.starts_with("/") {
+                if let z = load_file(zone_name_of(s), s) { return z; }
+                return TimeZone::utc();
+            }
+            let z = try TimeZone::get(s) catch _ { try TimeZone::from_posix(s) catch _ { TimeZone::utc() } };
+            return z;
+        }
+        if let z = load_file(localtime_name(), "/etc/localtime") { return z; }
+        TimeZone::utc()
+    }
+
+    /// The name: `Asia/Seoul`, `UTC`, `+09:00`, or the `TZ` rule.
+    pub const fn name(self) -> str {
+        if self.name == "" { return offset_str(self.fixed, ":"); }
+        self.name
+    }
+
+    /// `true` when the offset never changes.
+    pub const fn is_fixed(self) -> bool { self.table is none }
+
+    /// The offset from UTC at `t`.
+    pub fn offset_at(self, t: SystemTime) -> Offset { offset_of(self.off_at(t.unix_secs())) }
+
+    /// The abbreviation at `t` (`EST`, `EDT`; the offset for a fixed zone).
+    pub fn abbreviation_at(self, t: SystemTime) -> str { self.at(t.unix_secs()).1 }
+
+    /// `true` when `t` falls in daylight saving time.
+    pub fn is_dst_at(self, t: SystemTime) -> bool { self.dst_at(t.unix_secs()) }
+
+    /// `true` when unix second `s` falls in daylight saving time.
+    pub(pkg) const fn dst_at(self, s: i64) -> bool {
+        let tb: Table = self.table else { return false; };
+        let n = tb.times.len();
+        if (n == 0 || s >= tb.times[n - 1]) && tb.rule.len() > 0 { return tb.rule[0].in_dst(s); }
+        if n == 0 || s < tb.times[0] { return tb.dsts[0]; }
+        tb.dsts[tb.types[first_at_or_after(tb.times, s + 1) - 1] as usize]
+    }
+
+    /// Offset and abbreviation at unix second `t`.
+    pub(pkg) const fn at(self, t: i64) -> (i32, str) {
+        if let tb = self.table {
+            let n = tb.times.len();
+            if n == 0 {
+                if tb.rule.len() > 0 { return tb.rule[0].at(t); }
+                return (tb.offs[0], tb.abbrs[0]);
+            }
+            if t < tb.times[0] { return (tb.offs[0], tb.abbrs[0]); }
+            if t >= tb.times[n - 1] {
+                if tb.rule.len() > 0 { return tb.rule[0].at(t); }
+            }
+            let k = tb.types[first_at_or_after(tb.times, t + 1) - 1] as usize;
+            return (tb.offs[k], tb.abbrs[k]);
+        }
+        (self.fixed, if self.abbr == "" { offset_str(self.fixed, ":") } else { self.abbr })
+    }
+
+    /// The offset at unix second `t`.
+    pub(pkg) const fn off_at(self, t: i64) -> i32 {
+        if self.table is none { return self.fixed; }
+        self.at(t).0
+    }
+
+    /// The offset changes with instants in `lo..=hi`, in order.
+    const fn changes(self, lo: i64, hi: i64) -> List<Change> {
+        let out: List<Change> = List::new();
+        let tb: Table = self.table else { return out; };
+        let n = tb.times.len();
+        let i = first_at_or_after(tb.times, lo);
+        while i < n && tb.times[i] <= hi {
+            let before = if i == 0 { tb.offs[0] } else { tb.offs[tb.types[i - 1] as usize] };
+            let now = tb.offs[tb.types[i] as usize];
+            if before != now { out.push(Change::new(tb.times[i], before, now)); }
+            i += 1;
+        }
+        if tb.rule.len() == 0 { return out; }
+        let after = if n > 0 { tb.times[n - 1] } else { -9223372036854775807 - 1 };
+        if hi <= after { return out; }
+        let y0 = civil_from_days(fdiv(lo, 86400)).year() - 1;
+        let y1 = civil_from_days(fdiv(hi, 86400)).year() + 1;
+        for c in tb.rule[0].changes(y0, y1) {
+            if c.at() > after && c.at() >= lo && c.at() <= hi { out.push(c); }
+        }
+        out
+    }
+
+    /// Where local wall-clock second `local` (seconds since
+    /// 1970-01-01T00:00:00 on the zone's clock) falls.
+    pub(pkg) const fn locate(self, local: i64) -> Local {
+        if self.is_fixed() { return Local { kind: LOCAL_ONE, a: self.fixed, b: self.fixed }; }
+        let window = self.changes(local - NEAR - 1, local + NEAR + 1);
+        let offs: List<i32> = [self.off_at(local - NEAR - 1)];
+        for c in window {
+            if !offs.contains(c.after()) { offs.push(c.after()); }
+        }
+        let hits: List<i32> = List::new();
+        for o in offs {
+            if self.off_at(local - (o as i64)) == o && !hits.contains(o) { hits.push(o); }
+        }
+        if hits.len() == 1 { return Local { kind: LOCAL_ONE, a: hits[0], b: hits[0] }; }
+        if hits.len() > 1 {
+            // A larger offset reads the same wall time at an earlier instant.
+            let hi = hits[0];
+            let lo = hits[0];
+            for o in hits {
+                if o > hi { hi = o; }
+                if o < lo { lo = o; }
+            }
+            return Local { kind: LOCAL_OVERLAP, a: hi, b: lo };
+        }
+        for c in window {
+            let b = c.before() as i64;
+            let a = c.after() as i64;
+            if a > b && c.at() + b <= local && local < c.at() + a {
+                return Local { kind: LOCAL_GAP, a: c.before(), b: c.after() };
+            }
+        }
+        let o = self.off_at(local);
+        Local { kind: LOCAL_ONE, a: o, b: o }
+    }
+}
+
+/// The first index of sorted `times` whose value is `t` or later.
+const fn first_at_or_after(times: List<i64>, t: i64) -> usize {
+    let lo = 0usize;
+    let hi = times.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if times[mid] < t { lo = mid + 1; } else { hi = mid; }
+    }
+    lo
+}
+
+/// An offset already checked to be in range.
+pub(pkg) const fn offset_of(secs: i32) -> Offset { try Offset::from_secs(secs) catch _ { Offset::UTC } }
+
+impl PartialEq for TimeZone {
+    const fn eq(self, rhs: TimeZone) -> bool { self.name == rhs.name && self.fixed == rhs.fixed }
+}
+impl Eq for TimeZone {}
+
+impl Display for TimeZone {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.name()) }
+}
+
+impl Debug for TimeZone {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"TimeZone({self.name()})") }
+}
+
+/// Letters, digits and `/_+-.`, in `/`-separated parts, none `.` or `..`.
+const fn valid_name(name: str) -> bool {
+    if name == "" || name.starts_with("/") || name.len() > 255 { return false; }
+    for part in name.split("/") {
+        if part == "" || part == "." || part == ".." { return false; }
+    }
+    for i in 0..name.len() {
+        let b = name.byte(i);
+        let ok = (b >= b'a' && b <= b'z') || (b >= b'A' && b <= b'Z') || (b >= b'0' && b <= b'9')
+            || b == b'/' || b == b'_' || b == b'+' || b == b'-' || b == b'.';
+        if !ok { return false; }
+    }
+    true
+}
+
+fn zone_dirs() -> List<str> {
+    let d = try env::var("TZDIR") catch _ { "" };
+    if d != "" { return [d]; }
+    let out: List<str> = List::new();
+    for x in ZONE_DIRS { out.push(x); }
+    out
+}
+
+const fn dirs_text(dirs: List<str>) -> str {
+    let s = "";
+    for d in dirs {
+        if s != "" { s += ", "; }
+        s += d;
+    }
+    s
+}
+
+/// The zone in the TZif file at `path`; `none` when it cannot be read.
+fn load_file(name: str, path: str) -> TimeZone | none {
+    if !fs::exists(path) { return none; }
+    let data = try fs::read(path) catch _ { return none; };
+    try TimeZone::from_tzif(name, data) catch _ { none }
+}
+
+/// `America/New_York` for `/usr/share/zoneinfo/America/New_York`.
+const fn zone_name_of(path: str) -> str {
+    if let i = path.rfind("zoneinfo/") { return path[i + 9:path.len()]; }
+    path
+}
+
+/// The local zone's name: `/etc/timezone` (Debian) when it names a zone,
+/// else `localtime`.
+fn localtime_name() -> str {
+    if fs::exists("/etc/timezone") {
+        let s = try fs::read_to_str("/etc/timezone") catch _ { "" };
+        let s = s.trim();
+        if valid_name(s) { return s; }
+    }
+    "localtime"
+}

@@ -1,0 +1,17 @@
+// expect-error: 9:29: expected `{`, found integer literal `2`
+// expect-error: 12:26: expected expression, found keyword `let`
+
+// Only a block or another `if` follows `else`.
+// `if let .. && let ..` chains are not part of the language.
+fn main() -> i32 {
+    let a = true;
+    let x: i32 | none = 1;
+    let v = if a { 1 } else 2;
+    let w = if a { 1 } else if !a { 2 } else { 3 };
+    let y: i32 | none = 2;
+    if let p: i32 = x && let q: i32 = y { return p + q; }
+    return v + w;
+}
+// expect-error-extra: allow
+// (parser recovery after the `let` chain also reports
+// "expected `;`, found keyword `return`")

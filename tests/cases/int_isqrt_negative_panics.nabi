@@ -1,0 +1,10 @@
+// `isqrt` of a negative `int` panics at the call.
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/int_isqrt_negative_panics.nabi:9:16:
+// expect-stderr: Int::isqrt: the number is negative; use `checked_isqrt` to get `none` instead
+// expect-stdout:
+
+fn main() {
+    let x: int = -4;
+    println(f"{x.isqrt()}");
+}

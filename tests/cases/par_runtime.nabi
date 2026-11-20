@@ -1,0 +1,77 @@
+// needs: threads
+// expect-exit: 0
+// expect-stdout:
+// 2016
+// parallel true
+// 110
+// ok
+
+// `par::for_each` spreads the items over the executor's threads (one of
+// them sees another thread working); `par::scope` waits for every task
+// spawned on it, nested spawns included. The work allocates and
+// collects: the executor threads are GC mutators.
+extern "C" {
+    fn nabi_cpu_count() -> usize;
+    fn nabi_thread_id() -> u64;
+    fn nabi_thread_sleep_ns(ns: i64);
+    fn nabi_gc_collect();
+}
+
+static SUM: Atomic<i64> = Atomic::new(0);
+static MAIN: Atomic<u64> = Atomic::new(0);
+static OTHER: Atomic<i64> = Atomic::new(0);
+
+fn step(i: i64) {
+    if unsafe { nabi_thread_id() } != MAIN.load() {
+        OTHER.store(1);
+    }
+    // The first item waits (bounded) for another thread to show up.
+    if i == 0 {
+        let tries = 0;
+        while OTHER.load() == 0 && tries < 2000 {
+            unsafe { nabi_thread_sleep_ns(1000000) };
+            tries += 1;
+        }
+    }
+    let s = f"item-{i}";
+    if i % 16 == 0 {
+        unsafe { nabi_gc_collect() };
+    }
+    if s == f"item-{i}" {
+        SUM.fetch_add(i);
+    }
+}
+
+fn main() -> i32 {
+    MAIN.store(unsafe { nabi_thread_id() });
+    let items: List<i64> = [];
+    for i in 0..64 { items.push(i as i64); }
+    par::for_each(items, |i: i64| step(i));
+    println(f"{SUM.load()}");
+    let parallel = OTHER.load() == 1 || unsafe { nabi_cpu_count() } == 1usize;
+    println(f"parallel {parallel}");
+    SUM.store(0);
+    par::scope(|s: par::Scope| {
+        let k: i64 = 1;
+        while k <= 4 {
+            let n = k;
+            s.spawn(|| {
+                let words: List<str> = [];
+                let j: i64 = 0;
+                while j < n * 5 { words.push(f"w{j}"); j += 1; }
+                unsafe { nabi_gc_collect() };
+                SUM.fetch_add(words.len() as i64);
+                if n == 4 {
+                    // A nested spawn on the same scope.
+                    s.spawn(|| { SUM.fetch_add(60); });
+                }
+            });
+            k += 1;
+        }
+    });
+    // 5 + 10 + 15 + 20 words + 60 from the nested spawn.
+    println(f"{SUM.load()}");
+    println("ok");
+    return 0;
+}
+

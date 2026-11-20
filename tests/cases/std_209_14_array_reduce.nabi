@@ -1,0 +1,53 @@
+// expect-exit: 0
+// expect-stdout:
+// 21 720 3.5 2.9166666666666665 1.8708286933869707
+// [5.0, 7.0, 9.0] [6.0, 15.0] [4.0, 10.0, 18.0]
+// [2.5, 3.5, 4.5] [0.6666666666666666, 0.6666666666666666] [2.1213203435596424, 2.1213203435596424, 2.1213203435596424]
+// 1.0 6.0 0 5 [1, 1]
+// [1.0, 2.0, 3.0] [3.0, 6.0] [0, 0] [1, 1, 1]
+// [1.0, 3.0, 6.0, 10.0, 15.0, 21.0] [[1.0, 2.0, 3.0], [5.0, 7.0, 9.0]] [[1.0, 2.0, 6.0], [4.0, 20.0, 120.0]]
+// [6.0, 15.0] [1, 1, 1] [1.0, 5.0, 7.0, 12.0, 15.0, 21.0]
+// [6.0, 15.0] 2 [3.0, 2.0, 1.0]
+// true false 4 [true, true] [false, false, true] [1, 1, 2]
+// NaN NaN 1 6 2 1.0 3.0 2
+// [3.0, NaN] [3.0, 4.0] [1.0, 7.0] [2.0, 4.0]
+// 0 1 NaN none none 0 false true
+// 19 1620 -2 9 1 2 [5, 3, 12, 21, 19]
+// 7 7 7.0
+// 10000 0.1 true
+// [[30, 33, 36, 39], [330, 333, 336, 339]]
+// [2, 3] 23
+
+// Array reductions: whole-array and `_along` forms over contiguous
+// arrays, transposed and stepped views; NaN propagates through the plain
+// forms and is left out by the `nan` forms; empty arrays.
+use core::array::{Array, Matrix, Vector};
+
+let m: Matrix<f64> = [[1, 2, 3], [4, 5, 6]];
+println(f"{m.sum()} {m.prod()} {m.mean()} {m.var()} {m.std(ddof: 1)}");
+println(f"{m.sum_along(0):?} {m.sum_along(1):?} {m.prod_along(0):?}");
+println(f"{m.mean_along(0):?} {m.var_along(1):?} {m.std_along(0, ddof: 1):?}");
+println(f"{m.min():?} {m.max():?} {m.argmin():?} {m.argmax():?} {m.unravel(4):?}");
+println(f"{m.min_along(0):?} {m.max_along(1):?} {m.argmin_along(1):?} {m.argmax_along(0):?}");
+println(f"{m.cumsum():?} {m.cumsum_along(0):?} {m.cumprod_along(1):?}");
+let t = m.t();
+println(f"{t.sum_along(0):?} {t.argmax_along(1):?} {t.cumsum():?}");
+let s = m[:, ::-1];
+println(f"{s.sum_along(1):?} {s.argmin():?} {s.min_along(0):?}");
+let b = m .> 2.5;
+println(f"{b.any()} {b.all()} {b.count()} {b.any_along(1):?} {b.all_along(0):?} {b.count_along(0):?}");
+let v: Vector<f64> = [3.0, f64::NAN, 1.0, 2.0];
+println(f"{v.sum()} {v.min():?} {v.argmax():?} {v.nansum()} {v.nanmean()} {v.nanmin():?} {v.nanmax():?} {v.nanargmin():?}");
+let n: Matrix<f64> = [[1.0, f64::NAN], [3.0, 4.0]];
+println(f"{n.max_along(0):?} {n.nanmax_along(0):?} {n.nansum_along(1):?} {n.nanmean_along(0):?}");
+let e: Vector<f64> = [];
+println(f"{e.sum()} {e.prod()} {e.mean()} {e.min():?} {e.argmax():?} {e.cumsum().len()} {(e .> 0.0).any()} {(e .> 0.0).all()}");
+let i: Vector<i64> = [5, -2, 9, 9, -2];
+println(f"{i.sum()} {i.prod()} {i.min():?} {i.max():?} {i.argmin():?} {i.argmax():?} {i.cumsum():?}");
+let r0: Array<f64, 0> = Array::full([], 7.0);
+println(f"{r0.sum()} {r0.mean()} {r0.max():?}");
+let big: Vector<f64> = Array::from_fn([100000], |_k: [usize; 1]| -> f64 { 0.1 });
+println(f"{big.sum()} {big.mean()} {big.var() < 1e-25}");
+let cube: Array<i64, 3> = Array::from_fn([2, 3, 4], |k: [usize; 3]| -> i64 { (k[0] * 100 + k[1] * 10 + k[2]) as i64 });
+println(f"{cube.sum_along(1):?}");
+println(f"{cube.max_along(2).shape():?} {cube.min_along(0)[2, 3]}");

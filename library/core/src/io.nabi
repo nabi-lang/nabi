@@ -1,0 +1,1092 @@
+//! core::io: `IoError`, the byte-stream traits `Read`,
+//! `BufRead`, `Write`, `Seek` and their async twins, the buffers, `Cursor`,
+//! `copy` and the standard streams. The prelude names the module `io` and
+//! the traits `Read`, `Write`, `AsyncRead`, `AsyncWrite`.
+//!
+//! Reads fill a `SliceMut<u8>` (a view of the caller's list); writes take
+//! anything `AsBytes`. Bytes cross to the runtime as `GcBuf<u8>` regions
+//! `(buf, off, len)`, and become a `str` only through the UTF-8 check.
+//!
+//! Async methods take `ref self`. A buffer owns its inner stream; over a
+//! stream that is not affine, and for a `Cursor`, copies share the state
+//! (it lives in lists).
+
+mod buffer;
+mod memory;
+mod stdio;
+
+pub use core::io::buffer::{BufReader, BufWriter, LineWriter};
+pub use core::io::memory::{Cursor, Empty, Repeat, Sink, empty, repeat, sink};
+pub use core::io::stdio::{Stderr, Stdin, Stdout, stderr, stdin, stdout};
+
+use core::rt::buf_copy;
+
+// The runtime's numbering of the kinds (`nabi_os_errno_kind`).
+const KIND_OTHER: i32 = 0;
+const KIND_NOT_FOUND: i32 = 1;
+const KIND_PERMISSION_DENIED: i32 = 2;
+const KIND_ALREADY_EXISTS: i32 = 3;
+const KIND_NOT_A_DIRECTORY: i32 = 4;
+const KIND_IS_A_DIRECTORY: i32 = 5;
+const KIND_DIRECTORY_NOT_EMPTY: i32 = 6;
+const KIND_INVALID_INPUT: i32 = 7;
+const KIND_BROKEN_PIPE: i32 = 8;
+const KIND_INTERRUPTED: i32 = 9;
+const KIND_WOULD_BLOCK: i32 = 10;
+const KIND_TIMED_OUT: i32 = 11;
+const KIND_STORAGE_FULL: i32 = 12;
+const KIND_CROSSES_DEVICES: i32 = 13;
+const KIND_UNSUPPORTED: i32 = 14;
+const KIND_UNEXPECTED_EOF: i32 = 15;
+const KIND_INVALID_DATA: i32 = 16;
+const KIND_WRITE_ZERO: i32 = 17;
+const KIND_FILESYSTEM_LOOP: i32 = 18;
+const KIND_RESOURCE_BUSY: i32 = 19;
+
+/// Bytes per read when the size is unknown.
+pub(pkg) const CHUNK: usize = 8192;
+
+// errors
+
+/// What went wrong, from the OS error (`os_code`) or the library itself.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum IoErrorKind {
+    Other,
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    NotADirectory,
+    IsADirectory,
+    DirectoryNotEmpty,
+    InvalidInput,
+    BrokenPipe,
+    Interrupted,
+    WouldBlock,
+    TimedOut,
+    StorageFull,
+    CrossesDevices,
+    Unsupported,
+    UnexpectedEof,
+    InvalidData,
+    /// A write returned 0 before everything was written.
+    WriteZero,
+    /// Too many symbolic links, or a final symbolic link where an open
+    /// said not to follow one (`follow_symlinks: false`).
+    FilesystemLoop,
+    /// The file or device is in use: another handle's share mode denies
+    /// this access (Windows), or it is busy (`EBUSY`, `ETXTBSY`).
+    ResourceBusy,
+}
+
+impl IoErrorKind {
+    /// The kind's number.
+    pub(pkg) const fn index(self) -> i32 {
+        match self {
+            IoErrorKind::Other => KIND_OTHER,
+            IoErrorKind::NotFound => KIND_NOT_FOUND,
+            IoErrorKind::PermissionDenied => KIND_PERMISSION_DENIED,
+            IoErrorKind::AlreadyExists => KIND_ALREADY_EXISTS,
+            IoErrorKind::NotADirectory => KIND_NOT_A_DIRECTORY,
+            IoErrorKind::IsADirectory => KIND_IS_A_DIRECTORY,
+            IoErrorKind::DirectoryNotEmpty => KIND_DIRECTORY_NOT_EMPTY,
+            IoErrorKind::InvalidInput => KIND_INVALID_INPUT,
+            IoErrorKind::BrokenPipe => KIND_BROKEN_PIPE,
+            IoErrorKind::Interrupted => KIND_INTERRUPTED,
+            IoErrorKind::WouldBlock => KIND_WOULD_BLOCK,
+            IoErrorKind::TimedOut => KIND_TIMED_OUT,
+            IoErrorKind::StorageFull => KIND_STORAGE_FULL,
+            IoErrorKind::CrossesDevices => KIND_CROSSES_DEVICES,
+            IoErrorKind::Unsupported => KIND_UNSUPPORTED,
+            IoErrorKind::UnexpectedEof => KIND_UNEXPECTED_EOF,
+            IoErrorKind::InvalidData => KIND_INVALID_DATA,
+            IoErrorKind::WriteZero => KIND_WRITE_ZERO,
+            IoErrorKind::FilesystemLoop => KIND_FILESYSTEM_LOOP,
+            IoErrorKind::ResourceBusy => KIND_RESOURCE_BUSY,
+        }
+    }
+
+    /// The kind of OS error `code`, as the runtime classifies it.
+    pub fn of_os(code: i32) -> IoErrorKind {
+        let k = unsafe { nabi_os_errno_kind(code) };
+        // Constants are not patterns: compare one by one.
+        if k == KIND_NOT_FOUND { return IoErrorKind::NotFound; }
+        if k == KIND_PERMISSION_DENIED { return IoErrorKind::PermissionDenied; }
+        if k == KIND_ALREADY_EXISTS { return IoErrorKind::AlreadyExists; }
+        if k == KIND_NOT_A_DIRECTORY { return IoErrorKind::NotADirectory; }
+        if k == KIND_IS_A_DIRECTORY { return IoErrorKind::IsADirectory; }
+        if k == KIND_DIRECTORY_NOT_EMPTY { return IoErrorKind::DirectoryNotEmpty; }
+        if k == KIND_INVALID_INPUT { return IoErrorKind::InvalidInput; }
+        if k == KIND_BROKEN_PIPE { return IoErrorKind::BrokenPipe; }
+        if k == KIND_INTERRUPTED { return IoErrorKind::Interrupted; }
+        if k == KIND_WOULD_BLOCK { return IoErrorKind::WouldBlock; }
+        if k == KIND_TIMED_OUT { return IoErrorKind::TimedOut; }
+        if k == KIND_STORAGE_FULL { return IoErrorKind::StorageFull; }
+        if k == KIND_CROSSES_DEVICES { return IoErrorKind::CrossesDevices; }
+        if k == KIND_UNSUPPORTED { return IoErrorKind::Unsupported; }
+        if k == KIND_FILESYSTEM_LOOP { return IoErrorKind::FilesystemLoop; }
+        if k == KIND_RESOURCE_BUSY { return IoErrorKind::ResourceBusy; }
+        IoErrorKind::Other
+    }
+}
+
+impl Debug for IoErrorKind {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(match self {
+            IoErrorKind::Other => "Other",
+            IoErrorKind::NotFound => "NotFound",
+            IoErrorKind::PermissionDenied => "PermissionDenied",
+            IoErrorKind::AlreadyExists => "AlreadyExists",
+            IoErrorKind::NotADirectory => "NotADirectory",
+            IoErrorKind::IsADirectory => "IsADirectory",
+            IoErrorKind::DirectoryNotEmpty => "DirectoryNotEmpty",
+            IoErrorKind::InvalidInput => "InvalidInput",
+            IoErrorKind::BrokenPipe => "BrokenPipe",
+            IoErrorKind::Interrupted => "Interrupted",
+            IoErrorKind::WouldBlock => "WouldBlock",
+            IoErrorKind::TimedOut => "TimedOut",
+            IoErrorKind::StorageFull => "StorageFull",
+            IoErrorKind::CrossesDevices => "CrossesDevices",
+            IoErrorKind::Unsupported => "Unsupported",
+            IoErrorKind::UnexpectedEof => "UnexpectedEof",
+            IoErrorKind::InvalidData => "InvalidData",
+            IoErrorKind::WriteZero => "WriteZero",
+            IoErrorKind::FilesystemLoop => "FilesystemLoop",
+            IoErrorKind::ResourceBusy => "ResourceBusy",
+        })
+    }
+}
+
+/// The kind in words, lowercase (`not found`, `permission denied`).
+impl Display for IoErrorKind {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.pad(match self {
+            IoErrorKind::Other => "other error",
+            IoErrorKind::NotFound => "not found",
+            IoErrorKind::PermissionDenied => "permission denied",
+            IoErrorKind::AlreadyExists => "already exists",
+            IoErrorKind::NotADirectory => "not a directory",
+            IoErrorKind::IsADirectory => "is a directory",
+            IoErrorKind::DirectoryNotEmpty => "directory not empty",
+            IoErrorKind::InvalidInput => "invalid input",
+            IoErrorKind::BrokenPipe => "broken pipe",
+            IoErrorKind::Interrupted => "interrupted",
+            IoErrorKind::WouldBlock => "operation would block",
+            IoErrorKind::TimedOut => "timed out",
+            IoErrorKind::StorageFull => "no storage space",
+            IoErrorKind::CrossesDevices => "cross-device link",
+            IoErrorKind::Unsupported => "unsupported",
+            IoErrorKind::UnexpectedEof => "unexpected end of file",
+            IoErrorKind::InvalidData => "invalid data",
+            IoErrorKind::WriteZero => "write zero",
+            IoErrorKind::FilesystemLoop => "filesystem loop",
+            IoErrorKind::ResourceBusy => "resource busy",
+        })
+    }
+}
+
+/// An I/O failure: its kind, the OS error code (`none` when the
+/// library raised it or a name did not resolve) and a readable message.
+#[derive(Clone, PartialEq, Eq)]
+pub struct IoError {
+    kind: IoErrorKind;
+    os_code: i32 | none;
+    message: str;
+}
+
+impl IoError {
+    /// A library-raised error: no OS code.
+    pub const fn new(kind: IoErrorKind, message: str) -> IoError {
+        IoError { kind, os_code: none, message }
+    }
+
+    /// The error for OS error `code` (errno; Windows: a Win32 or
+    /// Winsock code), its kind and message as the OS gives them;
+    /// `context` (a path, a call) prefixes the message unless empty.
+    pub fn from_os_code(code: i32, context: str = "") -> IoError {
+        IoError { kind: IoErrorKind::of_os(code), os_code: code, message: os_message(code, context) }
+    }
+
+    /// The error the last `#[errno]` C call on this thread reported
+    /// (Windows: its `GetLastError` when set, else errno), as
+    /// `from_os_code` gives it.
+    pub fn last_os_error() -> IoError {
+        let code = unsafe { nabi_last_error_get() } as i32;
+        if code == 0 { code = unsafe { nabi_errno_get() }; }
+        IoError::from_os_code(code)
+    }
+
+    /// A failed name lookup with runtime code `code`: a resolver (EAI)
+    /// code is no OS error code.
+    #[internal("write `IoError::from_os_code(code, context)`")]
+    pub fn resolver(code: i32, context: str) -> IoError {
+        if !is_eai(code) { return IoError::from_os_code(code, context); }
+        IoError { kind: IoErrorKind::of_os(code), os_code: none, message: os_message(code, context) }
+    }
+
+    /// `self` with its message told again for `context`.
+    #[internal]
+    pub fn retold(self, context: str) -> IoError {
+        match self.os_code {
+            c: i32 => IoError::from_os_code(c, context),
+            none => self,
+        }
+    }
+
+    /// What kind of failure this is.
+    pub const fn kind(self) -> IoErrorKind { self.kind }
+    /// The platform's code (errno; Windows: `GetLastError` / WSA), or
+    /// `none` when the library raised the error or a name did not
+    /// resolve.
+    pub const fn os_code(self) -> i32 | none { self.os_code }
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { self.message }
+}
+
+/// Whether runtime code `code` is a resolver failure (`getaddrinfo`'s
+/// EAI codes, numbered from the runtime's `EAI_BASE`).
+#[cfg(not(target_os = "windows"))]
+fn is_eai(code: i32) -> bool { code >= 100000 }
+
+/// Windows resolver failures are Winsock codes.
+#[cfg(target_os = "windows")]
+fn is_eai(code: i32) -> bool { false }
+
+/// The OS text of error `code`, after `context: ` unless that is empty.
+fn os_message(code: i32, context: str) -> str {
+    let msg = unsafe { nabi_os_strerror(code) };
+    if context.len() > 0 { f"{context}: {msg}" } else { msg }
+}
+
+impl Display for IoError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message) }
+}
+
+impl Debug for IoError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let code = match self.os_code {
+            c: i32 => f"{c}",
+            none => "none",
+        };
+        try f.write_str(f"IoError({self.kind:?}, {code}, {self.message})")
+    }
+}
+
+impl Error for IoError {}
+
+/// `r`, or its OS error thrown when `r < 0` (the runtime's `-errno`).
+#[discardable]
+pub(pkg) fn check(r: i64, context: str) throws (IoError) -> i64 {
+    if r < 0 { throw IoError::from_os_code((0 - r) as i32, context); }
+    r
+}
+
+fn unexpected_eof() -> IoError {
+    IoError::new(IoErrorKind::UnexpectedEof, "failed to fill whole buffer")
+}
+
+fn write_zero() -> IoError {
+    IoError::new(IoErrorKind::WriteZero, "failed to write whole buffer")
+}
+
+/// Bytes as text, or `InvalidData`.
+fn text_of<B: AsBytes>(bytes: B) throws (IoError) -> str {
+    try str::from_utf8(bytes.byte_slice()) catch _ {
+        throw IoError::new(IoErrorKind::InvalidData, "stream did not contain valid UTF-8");
+    }
+}
+
+/// A list of `n` zero bytes.
+pub(pkg) const fn zeroed(n: usize) -> List<u8> {
+    let out: List<u8> = List::with_capacity(n);
+    unsafe { out.set_len(n) };
+    out
+}
+
+/// `line` without one trailing `\n` or `\r\n`.
+const fn chomp(line: str) -> str {
+    if line.ends_with("\n") { line = line[:line.len() - 1]; }
+    if line.ends_with("\r") { line = line[:line.len() - 1]; }
+    line
+}
+
+/// Grow `out` by `want` bytes for an in-place read: the new length is set
+/// back by the caller.
+pub(pkg) const fn grow(out: List<u8>, want: usize) -> usize {
+    let m = out.len();
+    out.reserve(want);
+    unsafe { out.set_len(m + want) };
+    m
+}
+
+/// Room for the next `read_to_end_into` step: the spare capacity, or a
+/// chunk when there is little.
+const fn room(out: List<u8>) -> usize {
+    let spare = out.capacity() - out.len();
+    if spare >= 32 { spare } else { CHUNK }
+}
+
+/// Append `src` to `out`.
+pub(pkg) const fn append(out: List<u8>, src: Slice<u8>) {
+    let n = src.len();
+    let m = grow(out, n);
+    let (d, to, _) = unsafe { out[m:m + n].raw_parts() };
+    let (b, from, _) = unsafe { src.raw_parts() };
+    buf_copy(d, to, b, from, n);
+}
+
+/// The length of `s` through the first `delim` (or all of it), and
+/// whether `delim` was found.
+const fn upto(s: Slice<u8>, delim: u8) -> (usize, bool) {
+    for i in 0..s.len() {
+        if s[i] == delim { return (i + 1, true); }
+    }
+    (s.len(), false)
+}
+
+// close
+
+/// A resource whose close can fail: a file, a socket, a pipe, a buffered
+/// writer. Its owner closes it, `try x.close()` or `using`; leaving its
+/// scope open is an error, since a close error would be lost.
+#[lang("close_trait")]
+pub trait Close {
+    /// Close now, throwing the error the OS reports; later use fails.
+    fn close(self) throws (IoError);
+}
+
+// Read
+
+/// A source of bytes.
+pub trait Read {
+    /// Read up to `buf.len()` bytes into `buf[0..n]`; `0` is the end of
+    /// the stream (or an empty `buf`).
+    fn read(ref self, buf: SliceMut<u8>) throws (IoError) -> usize;
+
+    /// The OS handle `copy` may give the kernel: one with no buffer,
+    /// timeout or non-blocking mode of the stream's own; `-1` if none.
+    #[internal]
+    fn copy_handle(self) -> i32 { -1 }
+
+    /// Scatter read: the default reads into the first non-empty buffer.
+    fn read_vectored(ref self, bufs: Slice<SliceMut<u8>>) throws (IoError) -> usize {
+        for b in bufs {
+            if b.len() > 0 { return try self.read(b); }
+        }
+        0
+    }
+
+    /// Fill all of `buf`, or `UnexpectedEof`.
+    fn read_exact(ref self, buf: SliceMut<u8>) throws (IoError) {
+        let at = 0usize;
+        let n = buf.len();
+        while at < n {
+            let k = try self.read(buf[at:n]);
+            if k == 0 { throw unexpected_eof(); }
+            at += k;
+        }
+    }
+
+    /// Append every remaining byte to `out`, reading into its spare
+    /// capacity (no zero fill first); the count.
+    fn read_to_end_into(ref self, out: List<u8>) throws (IoError) -> usize {
+        let start = out.len();
+        loop {
+            let want = room(out);
+            let m = grow(out, want);
+            let k = try self.read(out[m:m + want]) catch e {
+                unsafe { out.set_len(m) };
+                throw e;
+            };
+            unsafe { out.set_len(m + k) };
+            if k == 0 { return out.len() - start; }
+        }
+    }
+
+    /// Every remaining byte.
+    fn read_to_end(ref self) throws (IoError) -> List<u8> {
+        let out: List<u8> = List::new();
+        _ = try self.read_to_end_into(out);
+        out
+    }
+
+    /// Every remaining byte as text (`InvalidData` if not UTF-8).
+    fn read_to_str(ref self) throws (IoError) -> str {
+        try text_of(try self.read_to_end())
+    }
+
+    // `bytes`, `take`, `lines` and `split` return scoped views: they
+    // read through the stream and stay in its owner's scope. The `into_`
+    // forms own the stream instead.
+
+    /// The remaining bytes one at a time. Each is one `read`: wrap an
+    /// unbuffered stream in `BufReader` first.
+    const fn bytes(ref self) -> Bytes<Self> {
+        let r = view(self);
+        Bytes { r: r, one: zeroed(1) }
+    }
+
+    /// At most `limit` more bytes, then the end.
+    const fn take(ref self, limit: u64) -> Take<Self> {
+        let r = view(self);
+        Take { r: r, left: [limit] }
+    }
+
+    /// `bytes` owning the stream: it may leave the scope or move to a
+    /// task, closes the stream with itself, and `into_inner` gives it back.
+    const fn into_bytes(self) -> Owned<Bytes<Self>, Self> {
+        let v = self.bytes();
+        Owned { v: v, r: self }
+    }
+
+    /// `take` owning the stream.
+    const fn into_take(self, limit: u64) -> Owned<Take<Self>, Self> {
+        let v = self.take(limit);
+        Owned { v: v, r: self }
+    }
+
+    /// This stream to its end, then `next`. The chain owns both and
+    /// closes both.
+    const fn chain<R: Read>(self, next: R) -> Chain<Self, R> {
+        Chain { a: self, b: next, first: [true] }
+    }
+}
+
+// BufRead
+
+/// A `Read` with a buffer: line and delimiter reads cost no call per
+/// byte.
+pub trait BufRead: Read {
+    /// The buffered bytes, refilled when empty; empty at the end. Valid
+    /// until the next call on the stream.
+    fn fill_buf(ref self) throws (IoError) -> Slice<u8>;
+
+    /// Mark `n` buffered bytes as read; panics past what is buffered.
+    fn consume(ref self, n: usize);
+
+    /// Append bytes through `delim` (included) to `out`; the count, `0`
+    /// at the end.
+    fn read_until(ref self, delim: u8, out: List<u8>) throws (IoError) -> usize {
+        let total = 0usize;
+        loop {
+            let avail = try self.fill_buf();
+            if avail.len() == 0 { return total; }
+            let (take, found) = upto(avail, delim);
+            append(out, avail[0:take]);
+            BufRead::consume(ref self, take);
+            total += take;
+            if found { return total; }
+        }
+    }
+
+    /// The next line, `\n` included, appended to `out`; the byte count,
+    /// `0` at the end. `InvalidData` if the line is not UTF-8.
+    fn read_line(ref self, out: StrBuf) throws (IoError) -> usize {
+        let line: List<u8> = List::new();
+        let n = try self.read_until(10u8, line);
+        out.push_str(try text_of(line));
+        n
+    }
+
+    /// Skip bytes through `delim` (included); the count.
+    fn skip_until(ref self, delim: u8) throws (IoError) -> usize {
+        let total = 0usize;
+        loop {
+            let avail = try self.fill_buf();
+            if avail.len() == 0 { return total; }
+            let (take, found) = upto(avail, delim);
+            BufRead::consume(ref self, take);
+            total += take;
+            if found { return total; }
+        }
+    }
+
+    /// The remaining lines, without `\n` / `\r\n`.
+    const fn lines(ref self) -> Lines<Self> {
+        let r = view(self);
+        Lines { r: r }
+    }
+
+    /// The pieces between `delim` bytes, `delim` removed.
+    const fn split(ref self, delim: u8) -> Split<Self> {
+        let r = view(self);
+        Split { r: r, delim: delim }
+    }
+
+    /// `lines` owning the stream (`Read::into_bytes`).
+    const fn into_lines(self) -> Owned<Lines<Self>, Self> {
+        let v = self.lines();
+        Owned { v: v, r: self }
+    }
+
+    /// `split` owning the stream.
+    const fn into_split(self, delim: u8) -> Owned<Split<Self>, Self> {
+        let v = self.split(delim);
+        Owned { v: v, r: self }
+    }
+}
+
+/// `prompt` written to stdout (flushed), then the next line of standard
+/// input without its `\n` / `\r\n`; `none` at the end. Python:
+/// `input(prompt)`, which raises at the end instead.
+pub fn input(prompt: str = "") throws (IoError) -> str | none {
+    let out = stdout();
+    try out.write_all(prompt);
+    try out.flush();
+    try read_line()
+}
+
+/// The next line of standard input without its `\n` / `\r\n`; `none` at
+/// the end.
+pub fn read_line() throws (IoError) -> str | none {
+    let out = StrBuf::new();
+    if (try stdin().read_line(out)) == 0 { return none; }
+    chomp(out.to_str())
+}
+
+// Write
+
+/// A sink of bytes.
+pub trait Write {
+    /// Write some prefix of `buf` (a `str`, a `List<u8>`, a `Slice<u8>`,
+    /// ..); its length.
+    fn write<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize;
+
+    /// Hand buffered bytes on.
+    fn flush(ref self) throws (IoError);
+
+    /// As `Read::copy_handle`.
+    #[internal]
+    fn copy_handle(self) -> i32 { -1 }
+
+    /// Gather write: the default writes the first non-empty buffer.
+    fn write_vectored(ref self, bufs: Slice<Slice<u8>>) throws (IoError) -> usize {
+        for b in bufs {
+            if b.len() > 0 { return try self.write(b); }
+        }
+        0
+    }
+
+    /// Write all of `buf`; `WriteZero` if a write takes nothing.
+    fn write_all<B: AsBytes>(ref self, buf: B) throws (IoError) {
+        let rest = buf.byte_slice();
+        while rest.len() > 0 {
+            let n = try self.write(rest);
+            if n == 0 { throw write_zero(); }
+            rest = rest[n:rest.len()];
+        }
+    }
+
+    /// Write an f-string piece by piece, its holes through `Display`
+    /// into the writer, never as one `str` of the whole text:
+    /// `try w.write_fmt(f"{name}: {value}\n")`.
+    fn write_fmt(ref self, args: fmt::Arguments) throws (IoError) {
+        let failed: IoError | none = none;
+        let out = Formatter::from_sink([ref self, ref failed] |s: str| -> bool {
+            try self.write_all(s) catch err {
+                failed = err;
+                return false;
+            };
+            true
+        });
+        let ok = true;
+        try Display::fmt(args, ref out) catch _ { ok = false; };
+        if ok { try out.flush() catch _ { ok = false; }; }
+        if let err: IoError = failed { throw err; }
+        if !ok { throw IoError::new(IoErrorKind::Other, "a `Display` implementation failed (FmtError)"); }
+    }
+
+    /// Write `x` as `print` shows it (`Display`), in chunks as the text
+    /// is made, so a large value is never held whole. A failed write is
+    /// thrown as it is; a `Display` that fails on its own is `Other`.
+    fn write_display<T: Display>(ref self, x: T) throws (IoError) {
+        let failed: IoError | none = none;
+        let out = Formatter::from_sink([ref self, ref failed] |s: str| -> bool {
+            try self.write_all(s) catch err {
+                failed = err;
+                return false;
+            };
+            true
+        });
+        let ok = true;
+        try Display::fmt(x, ref out) catch _ { ok = false; };
+        if ok { try out.flush() catch _ { ok = false; }; }
+        if let err: IoError = failed { throw err; }
+        if !ok { throw IoError::new(IoErrorKind::Other, "a `Display` implementation failed (FmtError)"); }
+    }
+}
+
+// Seek
+
+/// A position for `Seek::seek`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum SeekFrom {
+    Start(u64),
+    End(i64),
+    Current(i64),
+}
+
+/// Moves a byte cursor: files, `Cursor` and buffered readers.
+pub trait Seek {
+    /// Move the cursor; the new offset from the start.
+    fn seek(ref self, pos: SeekFrom) throws (IoError) -> u64;
+
+    /// Back to the start: `seek(SeekFrom::Start(0))`.
+    fn rewind(ref self) throws (IoError) {
+        _ = try self.seek(SeekFrom::Start(0u64));
+    }
+
+    /// The offset from the start: `seek(SeekFrom::Current(0))`.
+    fn stream_position(ref self) throws (IoError) -> u64 {
+        try self.seek(SeekFrom::Current(0i64))
+    }
+}
+
+// async twins
+
+/// `Read` that suspends the task instead of blocking the thread.
+pub trait AsyncRead {
+    /// As `Read::read`.
+    async fn read_async(ref self, buf: SliceMut<u8>) throws (IoError) -> usize;
+
+    /// As `Read::read_vectored`.
+    async fn read_vectored_async(ref self, bufs: Slice<SliceMut<u8>>) throws (IoError) -> usize {
+        for b in bufs {
+            if b.len() > 0 { return try await self.read_async(b); }
+        }
+        0
+    }
+
+    /// As `Read::read_exact`.
+    async fn read_exact_async(ref self, buf: SliceMut<u8>) throws (IoError) {
+        let at = 0usize;
+        let n = buf.len();
+        while at < n {
+            let k = try await self.read_async(buf[at:n]);
+            if k == 0 { throw unexpected_eof(); }
+            at += k;
+        }
+    }
+
+    /// As `Read::read_to_end_into`.
+    async fn read_to_end_into_async(ref self, out: List<u8>) throws (IoError) -> usize {
+        let start = out.len();
+        loop {
+            let want = room(out);
+            let m = grow(out, want);
+            let k = try await self.read_async(out[m:m + want]) catch e {
+                unsafe { out.set_len(m) };
+                throw e;
+            };
+            unsafe { out.set_len(m + k) };
+            if k == 0 { return out.len() - start; }
+        }
+    }
+
+    /// As `Read::read_to_end`.
+    async fn read_to_end_async(ref self) throws (IoError) -> List<u8> {
+        let out: List<u8> = List::new();
+        _ = try await self.read_to_end_into_async(out);
+        out
+    }
+
+    /// As `Read::read_to_str`.
+    async fn read_to_str_async(ref self) throws (IoError) -> str {
+        try text_of(try await self.read_to_end_async())
+    }
+
+    /// The remaining bytes as a stream, one `read_async` each.
+    const fn bytes_async(ref self) -> BytesStream {
+        let r = view(self);
+        BytesStream { s: bytes_of(r) }
+    }
+
+    /// `bytes_async` owning the stream (`Read::into_bytes`).
+    const fn into_bytes_async(self) -> Owned<BytesStream, Self> {
+        let v = self.bytes_async();
+        Owned { v: v, r: self }
+    }
+}
+
+/// `BufRead` that suspends the task.
+pub trait AsyncBufRead: AsyncRead {
+    /// As `BufRead::fill_buf`.
+    async fn fill_buf_async(ref self) throws (IoError) -> Slice<u8>;
+
+    /// As `BufRead::consume` (it never waits).
+    fn consume(ref self, n: usize);
+
+    /// As `BufRead::read_until`.
+    async fn read_until_async(ref self, delim: u8, out: List<u8>) throws (IoError) -> usize {
+        let total = 0usize;
+        loop {
+            let avail = try await self.fill_buf_async();
+            if avail.len() == 0 { return total; }
+            let (take, found) = upto(avail, delim);
+            append(out, avail[0:take]);
+            AsyncBufRead::consume(ref self, take);
+            total += take;
+            if found { return total; }
+        }
+    }
+
+    /// As `BufRead::read_line`.
+    async fn read_line_async(ref self, out: StrBuf) throws (IoError) -> usize {
+        let line: List<u8> = List::new();
+        let n = try await self.read_until_async(10u8, line);
+        out.push_str(try text_of(line));
+        n
+    }
+
+    /// The remaining lines as a stream, without `\n` / `\r\n`.
+    const fn lines_async(ref self) -> LinesStream {
+        let r = view(self);
+        LinesStream { s: lines_of(r) }
+    }
+
+    /// `lines_async` owning the stream (`Read::into_bytes`).
+    const fn into_lines_async(self) -> Owned<LinesStream, Self> {
+        let v = self.lines_async();
+        Owned { v: v, r: self }
+    }
+}
+
+/// `Write` that suspends the task.
+pub trait AsyncWrite {
+    /// As `Write::write`.
+    async fn write_async<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize;
+    /// As `Write::flush`.
+    async fn flush_async(ref self) throws (IoError);
+
+    /// As `Write::write_vectored`.
+    async fn write_vectored_async(ref self, bufs: Slice<Slice<u8>>) throws (IoError) -> usize {
+        for b in bufs {
+            if b.len() > 0 { return try await self.write_async(b); }
+        }
+        0
+    }
+
+    /// As `Write::write_all`.
+    async fn write_all_async<B: AsBytes>(ref self, buf: B) throws (IoError) {
+        let rest = buf.byte_slice();
+        while rest.len() > 0 {
+            let n = try await self.write_async(rest);
+            if n == 0 { throw write_zero(); }
+            rest = rest[n:rest.len()];
+        }
+    }
+}
+
+/// `Seek` that suspends the task.
+pub trait AsyncSeek {
+    /// As `Seek::seek`.
+    async fn seek_async(ref self, pos: SeekFrom) throws (IoError) -> u64;
+}
+
+/// `Close` that suspends the task while the resource closes.
+pub trait AsyncClose {
+    /// Close without blocking the thread, throwing the error the OS
+    /// reports; later use fails.
+    async fn close_async(self) throws (IoError);
+}
+
+async yield fn bytes_of<R: AsyncRead>(r: R) throws (IoError) -> u8 {
+    let one = zeroed(1);
+    while (try await r.read_async(one)) > 0 {
+        yield one[0];
+    }
+}
+
+async yield fn lines_of<R: AsyncBufRead>(r: R) throws (IoError) -> str {
+    loop {
+        let out = StrBuf::new();
+        if (try await r.read_line_async(out)) == 0 { break; }
+        yield chomp(out.to_str());
+    }
+}
+
+/// `bytes_async()`: a `TryStream` of the bytes, a view of the stream.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `try for await`, or call `try await {}.collect()`")]
+pub struct BytesStream {
+    s: TryAsyncStream<u8, IoError>;
+}
+
+impl !Send for BytesStream {}
+impl !Sync for BytesStream {}
+
+impl Debug for BytesStream {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("BytesStream") }
+}
+
+impl TryStream for BytesStream {
+    type Item = u8;
+    type Error = IoError;
+    fn poll_next(ref self, ref ctx: Context) throws (IoError) -> Poll<u8 | none> {
+        try self.s.poll_next(ref ctx)
+    }
+}
+
+/// `lines_async()`: a `TryStream` of the lines, a view of the stream.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `try for await`, or call `try await {}.collect()`")]
+pub struct LinesStream {
+    s: TryAsyncStream<str, IoError>;
+}
+
+impl !Send for LinesStream {}
+impl !Sync for LinesStream {}
+
+impl Debug for LinesStream {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("LinesStream") }
+}
+
+impl TryStream for LinesStream {
+    type Item = str;
+    type Error = IoError;
+    fn poll_next(ref self, ref ctx: Context) throws (IoError) -> Poll<str | none> {
+        try self.s.poll_next(ref ctx)
+    }
+}
+
+// iterators and adapters
+
+/// `r.lines()`: each line without `\n` / `\r\n`; a failed read throws.
+/// A view of `r`: it stays in the scope of `r`'s owner.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `try for`, or call `try {}.collect()`")]
+pub struct Lines<R> {
+    r: R;
+}
+
+impl<R> !Send for Lines<R> {}
+impl<R> !Sync for Lines<R> {}
+
+impl<R> Debug for Lines<R> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Lines") }
+}
+
+impl<R: BufRead> TryIterator for Lines<R> {
+    type Item = str;
+    type Error = IoError;
+    fn next(ref self) throws (IoError) -> str | none {
+        let out = StrBuf::new();
+        if (try self.r.read_line(out)) == 0 { return none; }
+        chomp(out.to_str())
+    }
+}
+
+/// `r.split(delim)`: the pieces between `delim` bytes; a view of `r`.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `try for`, or call `try {}.collect()`")]
+pub struct Split<R> {
+    r: R;
+    delim: u8;
+}
+
+impl<R> !Send for Split<R> {}
+impl<R> !Sync for Split<R> {}
+
+impl<R> Debug for Split<R> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Split") }
+}
+
+impl<R: BufRead> TryIterator for Split<R> {
+    type Item = List<u8>;
+    type Error = IoError;
+    fn next(ref self) throws (IoError) -> List<u8> | none {
+        let out: List<u8> = List::new();
+        if (try self.r.read_until(self.delim, out)) == 0 { return none; }
+        if out[out.len() - 1] == self.delim { out.pop(); }
+        out
+    }
+}
+
+/// `r.bytes()`: the bytes one at a time; a failed read throws, and the
+/// next `next` reads on. A view of `r`.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `try for`, or call `try {}.collect()`")]
+pub struct Bytes<R> {
+    r: R;
+    one: List<u8>;
+}
+
+impl<R> !Send for Bytes<R> {}
+impl<R> !Sync for Bytes<R> {}
+
+impl<R> Debug for Bytes<R> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Bytes") }
+}
+
+impl<R: Read> TryIterator for Bytes<R> {
+    type Item = u8;
+    type Error = IoError;
+    fn next(ref self) throws (IoError) -> u8 | none {
+        if (try self.r.read(self.one)) == 0 { return none; }
+        self.one[0]
+    }
+}
+
+/// `r.take(limit)`: at most `limit` bytes of `r`; a view of `r`.
+pub struct Take<R> {
+    r: R;
+    left: List<u64>;
+}
+
+impl<R> !Send for Take<R> {}
+impl<R> !Sync for Take<R> {}
+
+impl<R> Debug for Take<R> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Take") }
+}
+
+impl<R> Take<R> {
+    /// Bytes still allowed.
+    pub const fn limit(self) -> u64 { self.left[0] }
+    /// Allow `limit` more bytes.
+    pub const fn set_limit(self, limit: u64) { self.left[0] = limit; }
+}
+
+impl<R: Read> Read for Take<R> {
+    fn read(ref self, buf: SliceMut<u8>) throws (IoError) -> usize {
+        let left = self.left[0];
+        if left == 0u64 { return 0; }
+        let n = buf.len();
+        if (n as u64) > left { n = left as usize; }
+        let k = try self.r.read(buf[0:n]);
+        self.left[0] = left - k as u64;
+        k
+    }
+}
+
+/// A view `V` of the stream `R` together with the stream: what the
+/// `into_` adapters return (`r.into_lines()`). It iterates, reads or
+/// streams as `V` does, closes `R` with itself and gives it back with
+/// `into_inner`.
+pub struct Owned<V, R> {
+    v: V;
+    r: R;
+}
+
+// The view reaches only `r`, which moves with it.
+unsafe impl<V, R: Send> Send for Owned<V, R> {}
+
+impl<V, R> Debug for Owned<V, R> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Owned") }
+}
+
+impl<V, R> Owned<V, R> {
+    /// `v`, a view of `r`, with `r`.
+    #[internal]
+    pub const fn of(v: V, r: R) -> Owned<V, R> { Owned { v: v, r: r } }
+
+    /// The stream, giving up the adapter.
+    pub const fn into_inner(self) -> R { self.r }
+}
+
+impl<V, R: Close> Close for Owned<V, R> {
+    fn close(self) throws (IoError) { try self.into_inner().close(); }
+}
+
+impl<V, R: AsyncClose> AsyncClose for Owned<V, R> {
+    async fn close_async(self) throws (IoError) { try await self.into_inner().close_async(); }
+}
+
+impl<V: TryIterator, R> TryIterator for Owned<V, R> {
+    type Item = V::Item;
+    type Error = V::Error;
+    fn next(ref self) throws (V::Error) -> V::Item | none { try self.v.next() }
+}
+
+impl<V: TryStream, R> TryStream for Owned<V, R> {
+    type Item = V::Item;
+    type Error = V::Error;
+    fn poll_next(ref self, ref ctx: Context) throws (V::Error) -> Poll<V::Item | none> {
+        try self.v.poll_next(ref ctx)
+    }
+}
+
+impl<V: Read, R> Read for Owned<V, R> {
+    fn read(ref self, buf: SliceMut<u8>) throws (IoError) -> usize { try self.v.read(buf) }
+}
+
+/// `a.chain(b)`: `a` to its end, then `b`. It owns both: closing it
+/// closes both, `into_inner` gives them back.
+pub struct Chain<A, B> {
+    a: A;
+    b: B;
+    first: List<bool>;
+}
+
+impl<A, B> Debug for Chain<A, B> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Chain") }
+}
+
+impl<A, B> Chain<A, B> {
+    /// The two readers, giving up the chain.
+    pub const fn into_inner(self) -> (A, B) { (self.a, self.b) }
+}
+
+impl<A: Close, B: Close> Close for Chain<A, B> {
+    /// Close both; the first error wins, and `b` is closed anyway.
+    fn close(self) throws (IoError) {
+        let (a, b) = self.into_inner();
+        try a.close() catch e {
+            try b.close() catch _ {};
+            throw e;
+        };
+        try b.close();
+    }
+}
+
+impl<A: AsyncClose, B: AsyncClose> AsyncClose for Chain<A, B> {
+    /// As `close`.
+    async fn close_async(self) throws (IoError) {
+        let (a, b) = self.into_inner();
+        try await a.close_async() catch e {
+            try await b.close_async() catch _ {};
+            throw e;
+        };
+        try await b.close_async();
+    }
+}
+
+impl<A: Read, B: Read> Read for Chain<A, B> {
+    fn read(ref self, buf: SliceMut<u8>) throws (IoError) -> usize {
+        if self.first[0] {
+            let k = try self.a.read(buf);
+            if k > 0 || buf.len() == 0 { return k; }
+            self.first[0] = false;
+        }
+        try self.b.read(buf)
+    }
+}
+
+/// Copy `r` to its end into `w`; the byte count. Between two OS handles
+/// the runtime lets the kernel move the bytes where their kinds allow
+/// (`copy_file_range` / `sendfile` / `splice`); other streams copy
+/// through `read` / `write_all`.
+#[discardable]
+pub fn copy<R: Read, W: Write>(ref r: R, ref w: W) throws (IoError) -> u64 {
+    let (from, to) = (Read::copy_handle(r), Write::copy_handle(w));
+    if from >= 0 && to >= 0 {
+        return (try check(unsafe { nabi_os_copy_fd(from, to) }, "copy")) as u64;
+    }
+    let total = 0u64;
+    let chunk = zeroed(CHUNK);
+    loop {
+        let n = try r.read(chunk);
+        if n == 0 { return total; }
+        try w.write_all(chunk[0:n]);
+        total += n as u64;
+    }
+}
+
+/// `copy` that suspends the task. Awaited at once, the call gives `r`
+/// and `w` back to the caller.
+#[discardable]
+pub async fn copy_async<R: AsyncRead, W: AsyncWrite>(r: R, w: W) throws (IoError) -> u64 {
+    let total = 0u64;
+    let chunk = zeroed(CHUNK);
+    loop {
+        let n = try await r.read_async(chunk);
+        if n == 0 { return total; }
+        try await w.write_all_async(chunk[0:n]);
+        total += n as u64;
+    }
+}

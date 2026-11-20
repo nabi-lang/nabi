@@ -1,0 +1,35 @@
+// expect-exit: 0
+// expect-stdout:
+// 4 7 11 true
+// 5 [2, 4] 12 3
+// 7
+
+// `x |> f` is `f(x)`, `x |> f(a, b)` is `f(x, a, b)`; it binds looser
+// than every other operator, ranges included, and chains left to right.
+mod m {
+    pub fn twice(x: i64) -> i64 { x * 2 }
+}
+
+fn inc(x: i64) -> i64 { x + 1 }
+fn add(x: i64, a: i64, b: i64) -> i64 { x + a + b }
+fn total(r: Range<i64>) -> i64 { r.sum() }
+fn first<T>(xs: List<T>, d: T) -> T { xs.get(0) ?? d }
+
+fn main() {
+    let a = 3 |> inc;
+    let b = 1 |> add(2, 4);
+    let c = 1 + 2 * 4 |> inc |> m::twice |> add(-10, 1);
+    let d = 2 < 3 && true |> std_id;
+    println(f"{a} {b} {c} {d}");
+    let xs = [1, 2]
+        |> map_twice
+        |> keep;
+    let s = 0..4 |> total;
+    let e = 2 |> (|v| v + 1);
+    println(f"{xs.len() + 3} {xs:?} {s + 6} {e}");
+    println([7, 8] |> first::<i64>(0));
+}
+
+fn std_id(b: bool) -> bool { b }
+fn map_twice(xs: List<i64>) -> List<i64> { xs.iter().map(|x| x * 2).collect() }
+fn keep(xs: List<i64>) -> List<i64> { xs }

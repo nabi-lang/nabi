@@ -1,0 +1,32 @@
+// needs: threads
+// expect-exit: 0
+// gc-stress: 50
+// run-env: NABIR_GC_YOUNG=1048576
+// expect-stdout:
+// inside 0 collections, 4 threads, 80000 strings
+
+// A `no_collect` region holds collections off on every thread: four
+// threads allocate inside it and none of them collects.
+use bare::gc;
+use std::thread;
+
+fn work(seed: i64) -> i64 {
+    let l: List<str> = [];
+    for i in 0..20000 { l.push(f"t{seed} {i}"); }
+    l.len() as i64
+}
+
+fn main() {
+    let before = gc::stats();
+    let (total, during) = gc::no_collect(|| {
+        let hs: List<thread::JoinHandle<i64>> = [];
+        for t in 0..4 {
+            let seed = t;
+            hs.push(thread::spawn(|| work(seed)));
+        }
+        let total: i64 = 0;
+        for h in hs { total += try! h.join(); }
+        (total, gc::stats().collections - before.collections)
+    });
+    println(f"inside {during} collections, 4 threads, {total} strings");
+}

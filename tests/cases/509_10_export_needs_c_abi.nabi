@@ -1,0 +1,12 @@
+// expect-error: `compute` is exported to C but uses the Nabi ABI: write `pub extern "C" fn compute(..)`
+// expect-error: `area` is exported to C but uses the Nabi ABI: write `pub extern "C" fn area(..)`
+
+// C calls an export with the C convention: a Nabi-ABI function would get
+// its aggregates, `str`s and narrow integers wrong.
+#[export_name("compute")]
+pub fn compute(x: i64) -> i64 { x * 2 }
+
+#[export]
+pub fn area(w: f64, h: f64) -> f64 { w * h }
+
+fn main() {}

@@ -1,0 +1,38 @@
+// Checked arithmetic over a slice (`for x in xs[a:]`, an index through
+// `isize` and a checked `+`) panics at the element the scalar loop
+// panics at, every element before it done, also when the loop is
+// vectorized (`-O2`).
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/cg_vector_slice_panic.nabi:22:17:
+// expect-stderr: attempt to add with overflow
+// expect-stdout:
+// 897 30 0
+// 10 10 0
+
+fn sum(xs: List<i16>, a: usize) -> i16 {
+    let s: i16 = 0;
+    for x in xs[a:] {
+        s += x;
+    }
+    s
+}
+
+fn twice(xs: List<i32>, ys: List<i32>, a: usize) {
+    for (i, x) in xs[a:].iter().enumerate() {
+        ys[i] = x + x;
+    }
+}
+
+fn main() -> i32 {
+    let xs: List<i16> = List::filled(1000, 3i16);
+    xs[700] = 30000;
+    println(f"{sum(xs, 701)} {sum(xs, 990)} {sum(xs, 1000)}");
+    let big: List<i32> = List::filled(300, 5);
+    let ys: List<i32> = List::filled(300, 0);
+    big[211] = 1073741824;
+    twice(big, ys, 212);
+    println(f"{ys[0]} {ys[87]} {ys[88]}");
+    twice(big, ys, 3);
+    println("unreachable");
+    return 0;
+}

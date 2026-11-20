@@ -1,0 +1,24 @@
+// needs: objc
+// only-os: macos
+// expect-error: `maximumConcurrentCompilationTaskCount` needs macOS 13.3, the deployment target is 11.0: wrap it in `if objc::available(macos: "13.3") { .. }`
+// expect-error: `maximumConcurrentCompilationTaskCount` needs macOS 13.3, the `objc::available` around it checks for 13.0
+
+// An API newer than the deployment target is called only inside
+// `if objc::available(macos: "..") { .. }` for its version (iOS:
+// 110_11_objc_available_ios_errors).
+mod mtl {
+    ffi::objc::import { "Metal/Metal.h" }
+}
+use mtl::*;
+use bare::ffi::objc;
+
+fn main() {
+    let d = MTLCreateSystemDefaultDevice() ?? panic("no Metal device");
+    println(f"{d.maximumConcurrentCompilationTaskCount()}");
+    if objc::available(macos: "13.0") {
+        println(f"{d.maximumConcurrentCompilationTaskCount()}");
+    }
+    if objc::available(macos: "13.3") {
+        println(f"{d.maximumConcurrentCompilationTaskCount()}");
+    }
+}

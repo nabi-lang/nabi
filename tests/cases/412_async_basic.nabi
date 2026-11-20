@@ -1,0 +1,13 @@
+// expect-exit: 7
+// expect-stdout:
+
+// Async fn + await.
+async fn produce() -> i32 {
+    return 7;
+}
+
+// `await` only inside an async body, so main is async.
+async fn main() -> i32 {
+    let v = await produce();
+    return v;
+}

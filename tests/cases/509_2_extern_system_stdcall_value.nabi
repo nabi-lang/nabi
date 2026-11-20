@@ -1,0 +1,28 @@
+// only-target: i686-pc-windows-msvc
+// expect-exit: 0
+// expect-stdout:
+// true 14 true
+
+// A stdcall callback handed to Windows and called back through the pointer.
+use bare::ptr::Ptr;
+
+extern "system" {
+    fn EnumSystemCodePagesW(cb: extern "system" fn(Ptr<u16>) -> i32, flags: u32) -> i32;
+}
+
+static SEEN: Atomic<i32> = Atomic::new(0);
+
+extern "system" fn count(name: Ptr<u16>) -> i32 {
+    SEEN.fetch_add(1);
+    1
+}
+
+extern "system" fn twice(x: i32) -> i32 { x * 2 }
+
+fn call(f: extern "system" fn(i32) -> i32, x: i32) -> i32 { f(x) }
+
+fn main() {
+    // CP_INSTALLED
+    let ok = unsafe { EnumSystemCodePagesW(count, 1u32) };
+    println(f"{ok != 0} {call(twice, 7)} {SEEN.load() > 0}");
+}

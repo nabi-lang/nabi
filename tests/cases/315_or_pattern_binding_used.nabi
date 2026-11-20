@@ -1,0 +1,24 @@
+// expect-exit: 0
+// expect-stdout: 4 7
+// forbid-warning: unused variable `v`
+// expect-lint: 18:14 unused variable `w`
+
+// An or-pattern's binding is one variable: a use in the arm uses it in
+// every alternative, and an unused one is reported once.
+enum D { A(List<i64>), B(List<i64>) }
+
+fn first(d: D) -> i64 {
+    match d {
+        D::A(v) | D::B(v) => v[0],
+    }
+}
+
+fn seven(d: D) -> i64 {
+    match d {
+        D::A(w) | D::B(w) => 7,
+    }
+}
+
+fn main() {
+    println(f"{first(D::B([4]))} {seven(D::A([1]))}");
+}

@@ -1,0 +1,19 @@
+// expect-exit: 15
+// expect-stdout:
+// 15 55 1
+// 4.5
+
+fn sum_down<T: PartialOrd + ops::Add<T, Output = T> + ops::Sub<T, Output = T>>(n: T, one: T) -> T {
+    if n <= one {
+        return n;
+    }
+    return n + sum_down(n - one, one);
+}
+
+fn main() -> i32 {
+    println(f"{sum_down(5, 1)} {sum_down(10i64, 1)} {sum_down(1u8, 1)}");
+    // 2.5 + 1.5 + 0.5
+    println(f"{sum_down(2.5, 1.0)}");
+    return sum_down(5, 1);
+}
+

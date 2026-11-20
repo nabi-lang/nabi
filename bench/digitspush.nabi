@@ -1,0 +1,38 @@
+// Decimal digits of u64 values pushed byte by byte into a `StrBuf`:
+// `% 10` and `/ 10` by a constant, a counted loop over a small array
+// and `push_byte` (its grow path out of line). Output matches
+// bench/c/digitspush.c.
+fn digits(out: StrBuf, v: u64) {
+    let tmp: [u8; 20] = [0u8; 20];
+    let n: usize = 0;
+    while v >= 10u64 {
+        tmp[n] = (v % 10u64) as u8 + 48u8;
+        v = v / 10u64;
+        n += 1;
+    }
+    tmp[n] = v as u8 + 48u8;
+    n += 1;
+    for k in 0..n {
+        unsafe { out.push_byte(tmp[n - 1 - k]); }
+    }
+}
+
+fn main() -> i32 {
+    let out = StrBuf::with_capacity(64);
+    let x: u64 = 7;
+    let sum: u64 = 0;
+    for r in 0..3000000u64 {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        // 17 digits
+        let v = 10000000000000000u64 + (x >> 8) % 90000000000000000u64;
+        digits(out, v);
+        if out.len() > 4000 {
+            let s = out.to_str();
+            sum = sum.wrapping_add(s.len() as u64).wrapping_add(s.byte(r as usize % 17) as u64);
+            out.clear();
+        }
+    }
+    let s = out.to_str();
+    println(f"{sum} {s.len()} {s[0:17]}");
+    return 0;
+}

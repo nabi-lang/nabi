@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout:
+// collections true, full true, pauses true, live true, heap true, 1000
+
+// `bare::gc::stats` counts the collections and pauses so far.
+use bare::gc;
+
+fn main() {
+    let before = gc::stats();
+    let keep: List<str> = [];
+    for i in 0..1000 { keep.push(f"item {i}"); }
+    gc::collect();
+    let s = gc::stats();
+    println(f"collections {s.collections > before.collections}, full {s.full > before.full}, pauses {s.pause_total_ns > 0 && s.pause_max_ns <= s.pause_total_ns}, live {s.live_bytes > 0}, heap {s.heap_bytes >= s.live_bytes}, {keep.len()}");
+}

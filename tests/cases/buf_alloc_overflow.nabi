@@ -1,0 +1,15 @@
+// expect-exit: 101
+// expect-stdout: before
+// expect-stderr: nabi runtime: allocation too large
+
+// A buffer whose `len * size + header` overflows `usize` is a fatal
+// "allocation too large", not a small allocation written past its end.
+use bare::mem::{GcBuf, buf_new};
+
+fn main() {
+    let n: usize = usize::MAX / 8 + 1; // `n * 8` wraps to 0
+    println("before");
+    // Raw buffer: collections check capacity themselves ("capacity overflow").
+    let b: GcBuf<i64> = unsafe { buf_new(n) };
+    println(f"after {unsafe { b[0] }}");
+}

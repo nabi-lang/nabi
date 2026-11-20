@@ -1,0 +1,7 @@
+// expect-error: 5:18: parameter `y` has no default but follows one that does; defaults are trailing
+// expect-error: help: give `y` a default, or move it before `x`
+
+// Defaults are trailing, checked at the declaration.
+fn g(x: i32 = 1, y: i32) -> i32 { x + y }
+
+fn main() {}

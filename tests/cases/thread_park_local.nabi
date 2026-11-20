@@ -1,0 +1,52 @@
+// needs: threads
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// 111
+// 111
+// 111
+// 101
+// 7
+// done
+
+// std::thread: `thread::local` gives each thread its own value
+// (made by `init` on first use); `park` / `unpark` / `park_timeout`;
+// `JoinHandle::detach`.
+use core::sync::{LoadOrdering, StoreOrdering};
+use std::thread;
+use core::time::Duration;
+
+fn main() -> i32 {
+    let counter = thread::local(|| 100);
+    counter.set(counter.with(|v| v + 1));
+    let hs: List<thread::JoinHandle<i32>> = [];
+    let t = 0;
+    while t < 3 {
+        hs.push(thread::spawn(|| {
+            counter.set(counter.with(|v| v + 10));
+            counter.set(counter.get() + 1);
+            counter.get()
+        }));
+        t += 1;
+    }
+    for h in hs { println(f"{try! h.join()}"); }
+    println(f"{counter.get()}");
+
+    let flag = Atomic::new(false);
+    let sleeper = thread::spawn(|| {
+        while !flag.load(LoadOrdering::Acquire) { thread::park(); }
+        7
+    });
+    thread::sleep(Duration::ms(5));
+    flag.store(true, StoreOrdering::Release);
+    sleeper.thread().unpark();
+    println(f"{try! sleeper.join()}");
+    thread::park_timeout(Duration::ms(1));
+    thread::current().unpark();
+    thread::park();
+    let d = thread::spawn(|| 1);
+    d.detach();
+    println("done");
+    return 0;
+}
+

@@ -1,0 +1,12 @@
+[package]
+name = "layout"
+description = "Checks the file and module layout rules of the Rust and Nabi sources"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true

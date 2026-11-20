@@ -1,0 +1,11 @@
+// nabic-arg: --extern idep=tests/cases/internal_mark_in_dependency_error/idep
+// expect-error: function `wake_io` is internal to the Nabi toolchain: only `bare`, `core` and `std` may use it
+// expect-error: lib.nabi:4:5
+// expect-error: `#[internal]` on `mine`: it marks items the Nabi toolchain's own packages share; to keep an item inside this package, write `pub(pkg)` instead
+
+// A dependency is no toolchain package: it can neither call an internal
+// item nor mark one of its own.
+fn main() {
+    idep::wake(3);
+    println(f"{idep::mine()}");
+}

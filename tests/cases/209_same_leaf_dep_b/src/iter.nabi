@@ -1,0 +1,11 @@
+use pkg::captures::Match;
+pub struct Iter { pub(pkg) at: usize; pub(pkg) n: usize; pub(pkg) w: usize; }
+impl Iterator for Iter {
+    type Item = Match;
+    fn next(ref self) -> Match? {
+        if self.at + self.w > self.n { return none; }
+        let m = Match::mk(self.at, self.at + self.w);
+        self.at += self.w;
+        m
+    }
+}

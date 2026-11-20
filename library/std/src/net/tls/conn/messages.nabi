@@ -1,0 +1,718 @@
+// std::net::tls::conn::messages: the handshake state and its
+// messages: hellos, certificates and their verification.
+
+use core::crypto::HashAlgorithm;
+use core::crypto::Secret;
+use core::crypto::ecdsa::EcCurve;
+use core::crypto::hkdf;
+use core::crypto::hmac::Hmac;
+use core::crypto::mlkem::EncapsulationKey768;
+use core::crypto::sha2::Digest;
+use core::crypto::{mlkem, x25519};
+use std::net::tls::conn::keys::{Dir, derive_secret, expand_label, joined, plain_dir, suite_hash, zeros};
+use std::net::tls::conn::wire::{ALERT_BAD_CERTIFICATE, ALERT_DECRYPT_ERROR, ALERT_HANDSHAKE_FAILURE, ALERT_ILLEGAL_PARAMETER, ALERT_MISSING_EXTENSION, ALERT_PROTOCOL_VERSION, CERTIFICATE_VERIFY, CLIENT_HELLO, ECDSA_P256_SHA256, ECDSA_P384_SHA384, ED25519_SCHEME, EXT_ALPN, EXT_COOKIE, EXT_EARLY_DATA, EXT_KEY_SHARE, EXT_PRE_SHARED_KEY, EXT_PSK_MODES, EXT_SERVER_NAME, EXT_SIGNATURE_ALGORITHMS, EXT_STATUS_REQUEST, EXT_SUPPORTED_GROUPS, EXT_SUPPORTED_VERSIONS, HRR_RANDOM, HYBRID_GROUP, RSA_PSS_PSS_SHA256, RSA_PSS_PSS_SHA384, RSA_PSS_PSS_SHA512, RSA_PSS_SHA256, RSA_PSS_SHA384, RSA_PSS_SHA512, Rd, SERVER_HELLO, X25519_GROUP, decode_err, ext, extensions, find_ext, message, only_exts, proto, put, put_list, put_u16, put_u24, put_u32, sig_schemes, vec16, vec8};
+use std::net::tls::x509;
+use std::net::tls::x509::{CertInfo, PubKey, SigAlg};
+use std::net::tls::{Certificate, CipherSuite, KeyKind, PrivateKey, TlsError, TlsErrorKind};
+use std::net::tls::{Ticket, TicketStore};
+use std::random;
+
+pub(pkg) const C_HELLO: u8 = 1u8;
+
+pub(pkg) const C_HELLO2: u8 = 2u8;
+
+pub(pkg) const C_EE: u8 = 3u8;
+
+pub(pkg) const C_CERT: u8 = 4u8;
+
+pub(pkg) const C_CERT2: u8 = 5u8;
+
+pub(pkg) const C_CV: u8 = 6u8;
+
+pub(pkg) const C_FIN: u8 = 7u8;
+
+pub(pkg) const S_HELLO: u8 = 11u8;
+
+pub(pkg) const S_HELLO2: u8 = 12u8;
+
+pub(pkg) const S_EARLY: u8 = 13u8;
+
+pub(pkg) const S_CCERT: u8 = 14u8;
+
+pub(pkg) const S_CCV: u8 = 15u8;
+
+pub(pkg) const S_FIN: u8 = 16u8;
+
+pub(pkg) const DONE: u8 = 20u8;
+
+/// What the handshake carries from one peer message to the next.
+pub(pkg) struct Hs {
+    pub(pkg) state: u8;
+    pub(pkg) transcript: Digest;
+    pub(pkg) retried: bool;
+    pub(pkg) suites: List<CipherSuite>;
+    pub(pkg) alpn: List<List<u8>>;
+    pub(pkg) hs_secret: Secret;
+    pub(pkg) c_hs: Secret;
+    pub(pkg) s_hs: Secret;
+    pub(pkg) c_ap: Secret;
+    /// Our certificate chain and key (the client's, if any).
+    pub(pkg) chain: List<Certificate>;
+    pub(pkg) key: PrivateKey | none;
+    /// Trust anchors for the peer's certificate.
+    pub(pkg) roots: List<Certificate>;
+    pub(pkg) infos: List<CertInfo>;
+    pub(pkg) ccs_sent: bool;
+    // Client.
+    pub(pkg) host: str;
+    pub(pkg) ip: List<u8> | none;
+    pub(pkg) random32: List<u8>;
+    pub(pkg) session_id: List<u8>;
+    pub(pkg) groups: List<u16>;
+    pub(pkg) shares: Shares | none;
+    pub(pkg) ch: List<u8>;
+    pub(pkg) cert_requested: List<u8> | none;
+    pub(pkg) peer_schemes: List<u16>;
+    pub(pkg) ticket: Ticket | none;
+    pub(pkg) early_data: List<u8>;
+    pub(pkg) early_offered: bool;
+    pub(pkg) early_dir: Dir;
+    // Server.
+    pub(pkg) first: ClientHelloInfo | none;
+    pub(pkg) group: u16;
+    pub(pkg) require_cert: bool;
+    pub(pkg) ocsp: List<u8>;
+    pub(pkg) store: TicketStore | none;
+    pub(pkg) max_early: u32;
+    pub(pkg) c_early: Secret;
+    pub(pkg) master: Secret;
+}
+
+pub(pkg) fn new_hs(state: u8) -> Hs {
+    Hs {
+        state,
+        transcript: Digest::new(HashAlgorithm::Sha256),
+        retried: false,
+        suites: [],
+        alpn: [],
+        hs_secret: Secret::zeroed(0),
+        c_hs: Secret::zeroed(0),
+        s_hs: Secret::zeroed(0),
+        c_ap: Secret::zeroed(0),
+        chain: [],
+        key: none,
+        roots: [],
+        infos: [],
+        ccs_sent: false,
+        host: "",
+        ip: none,
+        random32: [],
+        session_id: [],
+        groups: [],
+        shares: none,
+        ch: [],
+        cert_requested: none,
+        peer_schemes: [],
+        ticket: none,
+        early_data: [],
+        early_offered: false,
+        early_dir: plain_dir(),
+        first: none,
+        group: 0u16,
+        require_cert: false,
+        ocsp: [],
+        store: none,
+        max_early: 0u32,
+        c_early: Secret::zeroed(0),
+        master: Secret::zeroed(0),
+    }
+}
+
+impl Hs {
+    pub(pkg) fn wipe(self) {
+        for k in [self.hs_secret, self.c_hs, self.s_hs, self.c_ap, self.c_early, self.master] { k.wipe(); }
+        if let s: Shares = self.shares { s.wipe(); }
+        self.early_dir.wipe();
+    }
+}
+
+pub(pkg) const fn suite_code(s: CipherSuite) -> u16 {
+    match s {
+        CipherSuite::Aes128GcmSha256 => 0x1301u16,
+        CipherSuite::Aes256GcmSha384 => 0x1302u16,
+        CipherSuite::ChaCha20Poly1305Sha256 => 0x1303u16,
+    }
+}
+
+/// The configured suite with code `code` (one the client offered).
+pub(pkg) const fn pick_offered(code: u16, suites: List<CipherSuite>) throws (TlsError) -> CipherSuite {
+    for s in suites {
+        if suite_code(s) == code { return s; }
+    }
+    throw proto("server chose a cipher suite not offered", ALERT_ILLEGAL_PARAMETER);
+}
+
+/// The first configured suite the client offers (server preference).
+pub(pkg) const fn pick_suite(suites: List<CipherSuite>, offered: List<u16>) throws (TlsError) -> CipherSuite {
+    for s in suites {
+        if offered.contains(suite_code(s)) { return s; }
+    }
+    throw proto("no common cipher suite", ALERT_HANDSHAKE_FAILURE);
+}
+
+/// The client's key-exchange secrets for the groups it offers shares of.
+pub(pkg) struct Shares {
+    x: x25519::PrivateKey;
+    mlkem_dk: mlkem::DecapsulationKey768 | none;
+    mlkem_ek: List<u8>;
+    groups: List<u16>;
+}
+
+impl Shares {
+    /// Shares for `groups` (the hybrid's X25519 half reuses the X25519
+    /// secret).
+    pub(pkg) fn new(groups: List<u16>) -> Shares {
+        let xs = random::secret(32);
+        let x = try x25519::PrivateKey::from_bytes(xs) catch _ { panic("X25519 key length") };
+        xs.wipe();
+        let s = Shares { x, mlkem_dk: none, mlkem_ek: [], groups: [] };
+        for g in groups {
+            if g == HYBRID_GROUP {
+                let seed = random::secret(64);
+                let dk = try mlkem::DecapsulationKey768::from_seed(seed[0:32], seed[32:64]) catch _ { panic("ML-KEM seed length") };
+                seed.wipe();
+                s.mlkem_dk = dk;
+                s.mlkem_ek = dk.encapsulation_key().to_bytes();
+                s.groups.push(HYBRID_GROUP);
+            }
+        }
+        if groups.contains(X25519_GROUP) { s.groups.push(X25519_GROUP); }
+        s
+    }
+
+    pub(pkg) const fn has(self, g: u16) -> bool { self.groups.contains(g) }
+
+    pub(pkg) fn wipe(self) {
+        self.x.wipe();
+        if let k: mlkem::DecapsulationKey768 = self.mlkem_dk { k.wipe(); }
+    }
+
+    /// The key_share extension body.
+    fn entries(self) -> List<u8> {
+        let all: List<u8> = [];
+        for g in self.groups {
+            let k: List<u8> = [];
+            if g == HYBRID_GROUP { put_list(k, self.mlkem_ek); }
+            put(k, self.x.public_key().to_bytes()[0:32]);
+            put_u16(all, g as usize);
+            vec16(all, k);
+        }
+        let out: List<u8> = [];
+        vec16(out, all);
+        out
+    }
+
+    /// The shared secret from the server's share for `group`.
+    pub(pkg) fn finish(self, group: u16, share: List<u8>) throws (TlsError) -> Secret {
+        if !self.has(group) { throw proto("server chose a key share not offered", ALERT_ILLEGAL_PARAMETER); }
+        let bad = proto("bad key share", ALERT_ILLEGAL_PARAMETER);
+        if group == HYBRID_GROUP {
+            let ct = EncapsulationKey768::CIPHERTEXT_LEN;
+            if share.len() != ct + 32 { throw bad; }
+            let dk: mlkem::DecapsulationKey768 = self.mlkem_dk else { throw bad; };
+            let ss = try dk.decapsulate(share[0:ct]) catch _ { throw bad; };
+            let peer = try x25519::PublicKey::from_bytes(share[ct:share.len()]) catch _ { throw bad; };
+            match self.x.diffie_hellman(peer) {
+                v: Secret => {
+                    let j = joined(ss, v);
+                    ss.wipe();
+                    v.wipe();
+                    return j;
+                },
+                none => throw bad,
+            }
+        }
+        let peer = try x25519::PublicKey::from_bytes(share) catch _ { throw bad; };
+        match self.x.diffie_hellman(peer) {
+            v: Secret => v,
+            none => throw bad,
+        }
+    }
+}
+
+const fn host_is_name(ip: List<u8> | none) -> bool { ip is none }
+
+/// The ClientHello for handshake state `x`; with a ticket, the PSK
+/// binder is left zero for `bind`.
+pub(pkg) fn client_hello(x: Hs, cookie: List<u8> | none) -> List<u8> {
+    let b: List<u8> = [3u8, 3u8];
+    put_list(b, x.random32);
+    vec8(b, x.session_id);
+    let cs: List<u8> = [];
+    for s in x.suites { put_u16(cs, suite_code(s) as usize); }
+    vec16(b, cs);
+    b.push(1u8);
+    b.push(0u8);
+    let exts: List<u8> = [];
+    if host_is_name(x.ip) {
+        let name: List<u8> = [0u8];
+        vec16(name, x.host.as_bytes().to_list());
+        let sn: List<u8> = [];
+        vec16(sn, name);
+        ext(exts, EXT_SERVER_NAME, sn);
+    }
+    // OCSP, no responder ids or extensions.
+    ext(exts, EXT_STATUS_REQUEST, [1u8, 0u8, 0u8, 0u8, 0u8]);
+    let g: List<u8> = [];
+    for v in x.groups { put_u16(g, v as usize); }
+    let gl: List<u8> = [];
+    vec16(gl, g);
+    ext(exts, EXT_SUPPORTED_GROUPS, gl);
+    let sa: List<u8> = [];
+    for v in sig_schemes() { put_u16(sa, v as usize); }
+    let sal: List<u8> = [];
+    vec16(sal, sa);
+    ext(exts, EXT_SIGNATURE_ALGORITHMS, sal);
+    if x.alpn.len() > 0 {
+        let al: List<u8> = [];
+        for p in x.alpn { vec8(al, p); }
+        let a: List<u8> = [];
+        vec16(a, al);
+        ext(exts, EXT_ALPN, a);
+    }
+    ext(exts, EXT_SUPPORTED_VERSIONS, [2u8, 3u8, 4u8]);
+    if let c: List<u8> = cookie {
+        let cb: List<u8> = [];
+        vec16(cb, c);
+        ext(exts, EXT_COOKIE, cb);
+    }
+    let shares: Shares = x.shares else { panic("ClientHello without key shares") };
+    ext(exts, EXT_KEY_SHARE, shares.entries());
+    if let t: Ticket = x.ticket {
+        // psk_dhe_ke only; pre_shared_key goes last (RFC 8446 4.2.11).
+        ext(exts, EXT_PSK_MODES, [1u8, 1u8]);
+        if x.early_offered { ext(exts, EXT_EARLY_DATA, []); }
+        let hl = suite_hash(t.suite).output_len();
+        let id: List<u8> = [];
+        vec16(id, t.ticket);
+        put_u32(id, (t.received.elapsed().as_ms() as u32).wrapping_add(t.age_add));
+        let p: List<u8> = [];
+        vec16(p, id);
+        let binder: List<u8> = [];
+        vec8(binder, zeros(hl));
+        vec16(p, binder);
+        ext(exts, EXT_PRE_SHARED_KEY, p);
+    }
+    vec16(b, exts);
+    message(CLIENT_HELLO, b)
+}
+
+/// Fill in the PSK binder of ClientHello `ch` (RFC 8446 4.2.11.2): an
+/// HMAC over `tr` (the transcript before it) and `ch` up to the binders.
+pub(pkg) fn bind(ch: List<u8>, t: Ticket, tr: Digest) {
+    let h = suite_hash(t.suite);
+    let hl = h.output_len();
+    let cut = ch.len() - (3 + hl);
+    tr.update(ch[0:cut]);
+    let bk = derive_secret(h, hkdf::extract(h, "", t.psk), "res binder", Digest::new(h));
+    let b = Hmac::mac(h, expand_label(h, bk, "finished", [], hl), tr.finish());
+    for i in 0..hl { ch[cut + 3 + i] = b[i]; }
+}
+
+/// A parsed ServerHello or HelloRetryRequest.
+struct Hello {
+    pub(pkg) hrr: bool;
+    pub(pkg) suite: u16;
+    pub(pkg) group: u16;
+    pub(pkg) share: List<u8>;
+    pub(pkg) cookie: List<u8> | none;
+    /// The selected PSK identity.
+    pub(pkg) psk: usize | none;
+}
+
+pub(pkg) const fn parse_server_hello(body: List<u8>, session_id: List<u8>) throws (TlsError) -> Hello {
+    let r = Rd::new(body[0:body.len()], "ServerHello");
+    let version = try r.u16();
+    let random32 = try r.bytes(32);
+    let sid = try r.vec8();
+    let suite = (try r.u16()) as u16;
+    let comp = try r.u8();
+    let exts = try extensions(try r.vec16(), "ServerHello");
+    try r.end();
+    let hrr = random32 == HRR_RANDOM[0:32];
+    try only_exts(exts, if hrr { [EXT_SUPPORTED_VERSIONS, EXT_KEY_SHARE, EXT_COOKIE] } else { [EXT_SUPPORTED_VERSIONS, EXT_KEY_SHARE, EXT_PRE_SHARED_KEY] }, "ServerHello");
+    match find_ext(exts, EXT_SUPPORTED_VERSIONS) {
+        v: Slice<u8> => {
+            if v.len() != 2 || v[0] != 3u8 || v[1] != 4u8 { throw proto("server chose a version other than TLS 1.3", ALERT_ILLEGAL_PARAMETER); }
+        },
+        none => throw proto("server does not support TLS 1.3", ALERT_PROTOCOL_VERSION),
+    }
+    if version != 0x0303 || comp != 0u8 { throw proto("bad ServerHello", ALERT_ILLEGAL_PARAMETER); }
+    if sid.to_list() != session_id { throw proto("ServerHello session id mismatch", ALERT_ILLEGAL_PARAMETER); }
+    let h = Hello { hrr, suite, group: 0u16, share: [], cookie: none, psk: none };
+    if let p: Slice<u8> = find_ext(exts, EXT_PRE_SHARED_KEY) {
+        if hrr { throw proto("pre_shared_key in a HelloRetryRequest", ALERT_ILLEGAL_PARAMETER); }
+        let pr = Rd::new(p, "pre_shared_key");
+        h.psk = try pr.u16();
+        try pr.end();
+    }
+    match find_ext(exts, EXT_KEY_SHARE) {
+        k: Slice<u8> => {
+            let kr = Rd::new(k, "key_share");
+            h.group = (try kr.u16()) as u16;
+            if !hrr { h.share = (try kr.vec16()).to_list(); }
+            try kr.end();
+        },
+        none => {
+            // An HRR may carry only a cookie; psk_ke is not offered.
+            if !hrr { throw proto("ServerHello without key_share", ALERT_MISSING_EXTENSION); }
+        },
+    }
+    if hrr {
+        if let c: Slice<u8> = find_ext(exts, EXT_COOKIE) {
+            let cr = Rd::new(c, "cookie");
+            h.cookie = (try cr.vec16()).to_list();
+            try cr.end();
+        }
+    }
+    h
+}
+
+/// The certificates of a Certificate message without a request context
+/// (possibly none) and the leaf's stapled OCSP response (`status`: the
+/// peer may send one).
+pub(pkg) fn parse_certificate_msg(body: List<u8>, status_ok: bool) throws (TlsError) -> (List<Certificate>, List<u8> | none) {
+    let r = Rd::new(body[0:body.len()], "Certificate");
+    let ctx = try r.vec8();
+    if ctx.len() != 0 { throw proto("Certificate with a request context", ALERT_ILLEGAL_PARAMETER); }
+    let list = Rd::new(try r.vec24(), "Certificate");
+    try r.end();
+    let out: List<Certificate> = [];
+    let status: List<u8> | none = none;
+    while list.left() > 0 {
+        let der = try list.vec24();
+        let exts = try extensions(try list.vec16(), "Certificate");
+        try only_exts(exts, if status_ok { [EXT_STATUS_REQUEST] } else { [] }, "Certificate");
+        if out.len() == 0 {
+            if let s: Slice<u8> = find_ext(exts, EXT_STATUS_REQUEST) {
+                let sr = Rd::new(s, "status_request");
+                if (try sr.u8()) != 1u8 { throw proto("unknown certificate status type", ALERT_ILLEGAL_PARAMETER); }
+                status = (try sr.vec24()).to_list();
+                try sr.end();
+            }
+        }
+        let c = try Certificate::from_der(der) catch e {
+            throw TlsError { kind: TlsErrorKind::Certificate, msg: e.msg, alert: ALERT_BAD_CERTIFICATE };
+        };
+        out.push(c);
+    }
+    (out, status)
+}
+
+/// A CertificateEntry list for `chain`, `leaf_ext` (an extension block)
+/// on the leaf.
+pub(pkg) const fn cert_entries(chain: List<Certificate>, leaf_ext: List<u8>) -> List<u8> {
+    let cl: List<u8> = [];
+    for i in 0..chain.len() {
+        let c = chain[i];
+        put_u24(cl, c.der.len());
+        put_list(cl, c.der);
+        vec16(cl, if i == 0 { leaf_ext } else { [] });
+    }
+    let out: List<u8> = [];
+    put_u24(out, cl.len());
+    put_list(out, cl);
+    out
+}
+
+/// The CertificateVerify signing input (RFC 8446 4.4.3).
+pub(pkg) fn verify_input(context: str, hash: List<u8>) -> List<u8> {
+    let m: List<u8> = [];
+    for _ in 0..64 { m.push(0x20u8); }
+    put(m, context.as_bytes());
+    m.push(0u8);
+    put_list(m, hash);
+    m
+}
+
+/// The hash of an RSA-PSS scheme.
+const fn pss_hash(scheme: u16) -> HashAlgorithm {
+    if scheme == RSA_PSS_SHA256 || scheme == RSA_PSS_PSS_SHA256 { return HashAlgorithm::Sha256; }
+    if scheme == RSA_PSS_SHA384 || scheme == RSA_PSS_PSS_SHA384 { return HashAlgorithm::Sha384; }
+    HashAlgorithm::Sha512
+}
+
+/// Check a peer's CertificateVerify against its key.
+pub(pkg) fn check_cert_verify(body: List<u8>, key: PubKey, signed: List<u8>) throws (TlsError) {
+    let r = Rd::new(body[0:body.len()], "CertificateVerify");
+    let scheme = (try r.u16()) as u16;
+    let sig = try r.vec16();
+    try r.end();
+    let alg = SigAlg::Other("");
+    // The scheme must fit the key: the curve for ECDSA, rsaEncryption
+    // for rsa_pss_rsae_*, id-RSASSA-PSS for rsa_pss_pss_*.
+    let key_ok = true;
+    if scheme == ED25519_SCHEME {
+        alg = SigAlg::EdDsa;
+    } else if scheme == ECDSA_P256_SHA256 || scheme == ECDSA_P384_SHA384 {
+        let want = if scheme == ECDSA_P256_SHA256 { EcCurve::P256 } else { EcCurve::P384 };
+        key_ok = match key {
+            PubKey::Ec(c, _) => c == want,
+            _ => false,
+        };
+        alg = SigAlg::Ecdsa(if scheme == ECDSA_P256_SHA256 { HashAlgorithm::Sha256 } else { HashAlgorithm::Sha384 });
+    } else if scheme == RSA_PSS_SHA256 || scheme == RSA_PSS_SHA384 || scheme == RSA_PSS_SHA512 {
+        key_ok = key is PubKey::Rsa;
+        alg = SigAlg::RsaPss(pss_hash(scheme), pss_hash(scheme).output_len());
+    } else if scheme == RSA_PSS_PSS_SHA256 || scheme == RSA_PSS_PSS_SHA384 || scheme == RSA_PSS_PSS_SHA512 {
+        key_ok = key is PubKey::RsaPss;
+        alg = SigAlg::RsaPss(pss_hash(scheme), pss_hash(scheme).output_len());
+    } else {
+        throw proto(f"unsupported CertificateVerify scheme {scheme:#06x}", ALERT_ILLEGAL_PARAMETER);
+    }
+    if !key_ok || !x509::verify_sig(key, alg, signed[0:signed.len()], sig) {
+        throw proto("bad CertificateVerify signature", ALERT_DECRYPT_ERROR);
+    }
+}
+
+/// The CertificateVerify scheme for `key` (of a certificate with public
+/// key `cert_key`) that the peer offers.
+pub(pkg) fn pick_scheme(key: PrivateKey, cert_key: PubKey, offered: List<u16>) throws (TlsError) -> u16 {
+    let want: List<u16> = match key.key {
+        KeyKind::Ed25519(_) => [ED25519_SCHEME],
+        KeyKind::Ec(k) => [if k.curve() == EcCurve::P256 { ECDSA_P256_SHA256 } else { ECDSA_P384_SHA384 }],
+        KeyKind::Rsa(_) => match cert_key {
+            PubKey::RsaPss(_, only, min_salt) => {
+                let l: List<u16> = [];
+                for s in [RSA_PSS_PSS_SHA256, RSA_PSS_PSS_SHA384, RSA_PSS_PSS_SHA512] {
+                    let h = pss_hash(s);
+                    if (only is none || only == h) && min_salt <= h.output_len() { l.push(s); }
+                }
+                l
+            },
+            _ => [RSA_PSS_SHA256, RSA_PSS_SHA384, RSA_PSS_SHA512],
+        },
+    };
+    for w in want {
+        if offered.contains(w) { return w; }
+    }
+    throw proto("peer accepts no signature scheme for our key", ALERT_HANDSHAKE_FAILURE);
+}
+
+/// A CertificateVerify message: `msg` signed with `key` under `scheme`
+/// (from `pick_scheme`). Every key was checked when it was loaded.
+pub(pkg) fn cert_verify(key: PrivateKey, scheme: u16, msg: List<u8>) -> List<u8> {
+    let sig: List<u8> = match key.key {
+        KeyKind::Ed25519(k) => k.sign(msg),
+        KeyKind::Ec(k) => k.sign(if k.curve() == EcCurve::P256 { HashAlgorithm::Sha256 } else { HashAlgorithm::Sha384 }, msg),
+        KeyKind::Rsa(k) => {
+            let h = pss_hash(scheme);
+            try k.sign_pss(h, msg, random::bytes(h.output_len())) catch _ { panic("RSA key") }
+        },
+    };
+    let b: List<u8> = [];
+    put_u16(b, scheme as usize);
+    vec16(b, sig);
+    message(CERTIFICATE_VERIFY, b)
+}
+
+/// A parsed ClientHello.
+struct ClientHelloInfo {
+    pub(pkg) session_id: List<u8>;
+    pub(pkg) suites: List<u16>;
+    groups: List<u16>;
+    shares: List<(u16, Slice<u8>)>;
+    pub(pkg) sig_algs: List<u16>;
+    pub(pkg) alpn: List<List<u8>>;
+    pub(pkg) sni: str | none;
+    pub(pkg) status_request: bool;
+    pub(pkg) early: bool;
+    pub(pkg) psk_modes: List<u8>;
+    /// pre_shared_key: `(identity, obfuscated age)` and binders, and the
+    /// bytes the binder list takes at the end of the message.
+    pub(pkg) psk_ids: List<(Slice<u8>, u32)>;
+    pub(pkg) binders: List<Slice<u8>>;
+    pub(pkg) binders_len: usize;
+}
+
+impl ClientHelloInfo {
+    pub(pkg) const fn share_for(self, g: u16) -> Slice<u8> | none {
+        for (x, k) in self.shares {
+            if x == g { return k; }
+        }
+        none
+    }
+}
+
+pub(pkg) const fn u16_list(b: Slice<u8>, what: str) throws (TlsError) -> List<u16> {
+    let r = Rd::new(b, what);
+    let l = Rd::new(try r.vec16(), what);
+    try r.end();
+    let out: List<u16> = [];
+    if l.left() % 2 != 0 { throw decode_err(what); }
+    while l.left() > 0 { out.push((try l.u16()) as u16); }
+    out
+}
+
+pub(pkg) const fn parse_client_hello(body: List<u8>) throws (TlsError) -> ClientHelloInfo {
+    let r = Rd::new(body[0:body.len()], "ClientHello");
+    let _version = try r.u16();
+    let _random = try r.bytes(32);
+    let sid = (try r.vec8()).to_list();
+    if sid.len() > 32 { throw decode_err("ClientHello"); }
+    let cs = Rd::new(try r.vec16(), "ClientHello");
+    let suites: List<u16> = [];
+    if cs.left() % 2 != 0 { throw decode_err("ClientHello"); }
+    while cs.left() > 0 { suites.push((try cs.u16()) as u16); }
+    let comp = try r.vec8();
+    if comp.len() != 1 || comp[0] != 0u8 { throw proto("compression offered", ALERT_ILLEGAL_PARAMETER); }
+    let exts = try extensions(try r.vec16(), "ClientHello");
+    try r.end();
+    let info = ClientHelloInfo {
+        session_id: sid, suites, groups: [], shares: [], sig_algs: [], alpn: [], sni: none,
+        status_request: false, early: false, psk_modes: [], psk_ids: [], binders: [], binders_len: 0,
+    };
+    match find_ext(exts, EXT_SUPPORTED_VERSIONS) {
+        v: Slice<u8> => {
+            let vr = Rd::new(v, "supported_versions");
+            let vl = Rd::new(try vr.vec8(), "supported_versions");
+            let ok = false;
+            while vl.left() >= 2 {
+                if (try vl.u16()) == 0x0304 { ok = true; }
+            }
+            if !ok { throw proto("client does not offer TLS 1.3", ALERT_PROTOCOL_VERSION); }
+        },
+        none => throw proto("client does not offer TLS 1.3", ALERT_PROTOCOL_VERSION),
+    }
+    if let g: Slice<u8> = find_ext(exts, EXT_SUPPORTED_GROUPS) { info.groups = try u16_list(g, "supported_groups"); }
+    match find_ext(exts, EXT_SIGNATURE_ALGORITHMS) {
+        s: Slice<u8> => { info.sig_algs = try u16_list(s, "signature_algorithms"); },
+        none => throw proto("ClientHello without signature_algorithms", ALERT_MISSING_EXTENSION),
+    }
+    match find_ext(exts, EXT_KEY_SHARE) {
+        k: Slice<u8> => {
+            let kr = Rd::new(k, "key_share");
+            let kl = Rd::new(try kr.vec16(), "key_share");
+            try kr.end();
+            while kl.left() > 0 {
+                let g = (try kl.u16()) as u16;
+                let key = try kl.vec16();
+                info.shares.push((g, key));
+            }
+        },
+        none => throw proto("ClientHello without key_share", ALERT_MISSING_EXTENSION),
+    }
+    if let a: Slice<u8> = find_ext(exts, EXT_ALPN) {
+        let ar = Rd::new(a, "ALPN");
+        let al = Rd::new(try ar.vec16(), "ALPN");
+        try ar.end();
+        while al.left() > 0 {
+            let p = try al.vec8();
+            if p.len() == 0 { throw decode_err("ALPN"); }
+            info.alpn.push(p.to_list());
+        }
+    }
+    if let s: Slice<u8> = find_ext(exts, EXT_SERVER_NAME) {
+        let sr = Rd::new(s, "server_name");
+        let sl = Rd::new(try sr.vec16(), "server_name");
+        try sr.end();
+        while sl.left() > 0 {
+            let t = try sl.u8();
+            let n = try sl.vec16();
+            if t == 0u8 { info.sni = try str::from_utf8(n) catch _ { throw decode_err("server_name"); }; }
+        }
+    }
+    if let s: Slice<u8> = find_ext(exts, EXT_STATUS_REQUEST) { info.status_request = s.len() > 0 && s[0] == 1u8; }
+    if let e: Slice<u8> = find_ext(exts, EXT_EARLY_DATA) {
+        if e.len() != 0 { throw decode_err("early_data"); }
+        info.early = true;
+    }
+    if let m: Slice<u8> = find_ext(exts, EXT_PSK_MODES) {
+        let mr = Rd::new(m, "psk_key_exchange_modes");
+        info.psk_modes = (try mr.vec8()).to_list();
+        try mr.end();
+    }
+    if let p: Slice<u8> = find_ext(exts, EXT_PRE_SHARED_KEY) {
+        let (last, _) = exts[exts.len() - 1];
+        if last != EXT_PRE_SHARED_KEY as usize { throw proto("pre_shared_key is not the last extension", ALERT_ILLEGAL_PARAMETER); }
+        if info.psk_modes.len() == 0 { throw proto("pre_shared_key without psk_key_exchange_modes", ALERT_MISSING_EXTENSION); }
+        let pr = Rd::new(p, "pre_shared_key");
+        let ids = Rd::new(try pr.vec16(), "pre_shared_key");
+        info.binders_len = pr.left();
+        let bs = Rd::new(try pr.vec16(), "pre_shared_key");
+        try pr.end();
+        while ids.left() > 0 {
+            let id = try ids.vec16();
+            let age = try ids.u32();
+            info.psk_ids.push((id, age));
+        }
+        while bs.left() > 0 { info.binders.push(try bs.vec8()); }
+        if info.psk_ids.len() == 0 || info.psk_ids.len() != info.binders.len() { throw proto("PSK identities and binders differ", ALERT_ILLEGAL_PARAMETER); }
+    }
+    info
+}
+
+/// The group to use: the hybrid if the client supports it, else X25519;
+/// 0 if neither.
+pub(pkg) const fn choose_group(c: ClientHelloInfo) -> u16 {
+    if c.groups.contains(HYBRID_GROUP) { return HYBRID_GROUP; }
+    if c.groups.contains(X25519_GROUP) { return X25519_GROUP; }
+    0u16
+}
+
+/// The server's share for `group` given the client's: `(reply, shared)`.
+pub(pkg) fn server_share(group: u16, client: Slice<u8>) throws (TlsError) -> (List<u8>, Secret) {
+    let bad = proto("bad client key share", ALERT_ILLEGAL_PARAMETER);
+    let xs = random::secret(32);
+    using secret = try x25519::PrivateKey::from_bytes(xs) catch _ { panic("X25519 key length") } {
+        xs.wipe();
+        let public_key = secret.public_key().to_bytes();
+        if group == HYBRID_GROUP {
+            let ek_len = EncapsulationKey768::LEN;
+            if client.len() != ek_len + 32 { throw bad; }
+            let ek = try EncapsulationKey768::from_bytes(client[0:ek_len]) catch _ { throw bad; };
+            let m = random::secret(32);
+            let (ss, ct) = try ek.encapsulate(m) catch _ { throw bad; };
+            m.wipe();
+            let peer = try x25519::PublicKey::from_bytes(client[ek_len:client.len()]) catch _ { throw bad; };
+            match secret.diffie_hellman(peer) {
+                v: Secret => {
+                    let j = joined(ss, v);
+                    ss.wipe();
+                    v.wipe();
+                    put(ct, public_key[0:32]);
+                    return (ct, j);
+                },
+                none => throw bad,
+            }
+        }
+        let peer = try x25519::PublicKey::from_bytes(client) catch _ { throw bad; };
+        match secret.diffie_hellman(peer) {
+            v: Secret => (public_key[0:32].to_list(), v),
+            none => throw bad,
+        }
+    }
+}
+
+/// A ServerHello (`share` none: a HelloRetryRequest naming `group`),
+/// accepting PSK identity `psk` if any.
+pub(pkg) const fn server_hello(random32: List<u8>, session_id: List<u8>, suite: CipherSuite, group: u16, share: List<u8> | none, psk: usize | none) -> List<u8> {
+    let b: List<u8> = [3u8, 3u8];
+    put_list(b, random32);
+    vec8(b, session_id);
+    put_u16(b, suite_code(suite) as usize);
+    b.push(0u8);
+    let exts: List<u8> = [];
+    ext(exts, EXT_SUPPORTED_VERSIONS, [3u8, 4u8]);
+    let ks: List<u8> = [];
+    put_u16(ks, group as usize);
+    if let s: List<u8> = share { vec16(ks, s); }
+    ext(exts, EXT_KEY_SHARE, ks);
+    if let i: usize = psk {
+        let p: List<u8> = [];
+        put_u16(p, i);
+        ext(exts, EXT_PRE_SHARED_KEY, p);
+    }
+    vec16(b, exts);
+    message(SERVER_HELLO, b)
+}

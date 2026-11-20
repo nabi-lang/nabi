@@ -1,0 +1,18 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/gc_arena_stale.nabi:17:14:
+// expect-stderr: Arena: this ArenaRef is from before the arena's last reset (or from another arena); keep values that outlive a frame in a List or a GcPtr
+// expect-stdout:
+// before 5
+
+// An `ArenaRef` used after its arena's `reset` panics instead of reading
+// the next frame's value.
+use bare::gc::Arena;
+
+fn main() {
+    let a: Arena<i64> = Arena::new();
+    let r = a.alloc(5);
+    println(f"before {a.get(r)}");
+    a.reset();
+    _ = a.alloc(6);
+    let _x = a.get(r);
+}

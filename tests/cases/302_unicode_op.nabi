@@ -1,0 +1,13 @@
+// expect-exit: 0
+// expect-stdout:
+// equal
+// less
+
+// `≡ ≤` are fixed tokens, synonyms of `== <=`.
+fn main() -> i32 {
+    let a = 5;
+    let b = 5;
+    if a ≡ b { println("equal"); }
+    if a ≤ 10 { println("less"); }
+    return 0;
+}

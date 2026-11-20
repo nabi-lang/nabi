@@ -1,0 +1,23 @@
+// needs: objc
+// expect-error: call to unsafe function `getCharacters_range` outside an `unsafe` block
+
+// A method that takes a raw pointer is `unsafe` to call, as the C
+// functions are; the others are safe.
+use bare::ffi::objc::{Id, NSString, ns};
+use bare::ptr::Ptr;
+
+#[repr(C)]
+struct NSRange { location: usize; length: usize; }
+
+#[link(name = "Foundation", kind = "framework")]
+#[objc::category(NSString)]
+extern "objc" {
+    fn length(self) -> usize;
+    fn getCharacters_range(self, buf: Ptr<u16>, range: NSRange);
+}
+
+fn main() {
+    let s = ns("abc");
+    let p = Ptr::<u16>::dangling();
+    s.getCharacters_range(p, NSRange { location: 0, length: s.length() });
+}

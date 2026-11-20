@@ -1,0 +1,12 @@
+//! A regex-like package: `Iter` and `Match` in modules, re-exported.
+pub mod captures;
+mod iter;
+pub use iter::Iter;
+pub use captures::Match;
+
+pub struct Regex { pat: str; }
+
+impl Regex {
+    pub fn new(p: str) -> Regex { Regex { pat: p } }
+    pub fn find_iter(self, h: str) -> Iter { Iter { at: 0, n: h.len(), w: self.pat.len() } }
+}

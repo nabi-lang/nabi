@@ -1,0 +1,25 @@
+// expect-exit: 0
+// expect-stdout:
+// call made
+// outer before
+// inner 1
+// inner 2
+// outer after 3
+
+// Calling an `async fn` only creates its frame;
+// the body starts when it is awaited, runs to completion through its own
+// suspensions, and `await` resumes the caller with the result.
+async fn inner() -> i32 {
+    println("inner 1");
+    await task::yield_now();
+    println("inner 2");
+    3
+}
+
+async fn main() {
+    let f = inner();
+    println("call made");
+    println("outer before");
+    let v = await f;
+    println(f"outer after {v}");
+}

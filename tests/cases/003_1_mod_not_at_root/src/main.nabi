@@ -1,0 +1,8 @@
+// expect-error: module `helper` body not found at
+// expect-error: helper.nabi`
+
+// `mod helper;` maps to `src/helper.nabi`; the `helper.nabi` beside
+// `src/` is not looked at.
+mod helper;
+
+println(f"{helper::one()}");

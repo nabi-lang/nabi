@@ -1,0 +1,20 @@
+// only-os: linux macos freebsd
+// needs: dlopen
+// expect-exit: 0
+// expect-stdout:
+// strlen: 5
+// Library(this)
+
+// `Library::this()` is the program and the libraries it was linked
+// with: it finds C's `strlen`. Closing it does nothing.
+use bare::ffi::Library;
+use bare::ptr::ConstPtr;
+
+fn main() throws (bare::ffi::LoadError | bare::ffi::SymbolError) {
+    let me = Library::this();
+    let strlen = try unsafe { me.symbol::<extern "C" fn(ConstPtr<c_char>) -> usize>("strlen") };
+    let s = try! bare::ffi::CString::new("hello");
+    println(f"strlen: {unsafe { strlen(s.as_ptr()) }}");
+    try unsafe { me.close() };
+    println(f"{me:?}");
+}

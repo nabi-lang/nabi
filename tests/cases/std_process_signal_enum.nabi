@@ -1,0 +1,39 @@
+// needs: process threads
+// only-os: macos linux
+// expect-exit: 0
+// expect-stdout:
+// numbers: 2 9 15
+// terminated: ExitStatus { signal: 15 }
+// killed: ExitStatus { signal: 9 }
+// exited: ExitStatus { code: 3 }
+// handled: true
+// Kill
+
+// `Signal` names the signals sent and handled. `ExitStatus` has `Debug`.
+use core::io::IoError;
+use std::process;
+use std::process::{Command, Signal};
+use std::thread;
+
+fn sleeper() throws (IoError) -> process::Child { try Command::new("sleep").arg("30").spawn() }
+
+fn main() throws (IoError) {
+    println(f"numbers: {Signal::Interrupt.number()} {Signal::Kill.number()} {Signal::Terminate.number()}");
+    let a = try sleeper();
+    try a.send_signal(Signal::Terminate);
+    println(f"terminated: {try a.wait():?}");
+    let b = try sleeper();
+    try process::send_signal(b.id(), Signal::Kill);
+    println(f"killed: {try b.wait():?}");
+    let d = try Command::new("sh").args(["-c", "exit 3"]).spawn();
+    println(f"exited: {try d.wait():?}");
+    let seen = Atomic::<bool>::new(false);
+    try process::on_signal(Signal::User1, || seen.store(true)) catch e { println(f"{e}"); };
+    try process::send_signal(process::id(), Signal::User1);
+    for _ in 0..500 {
+        if seen.load() { break; }
+        thread::sleep(Duration::ms(2));
+    }
+    println(f"handled: {seen.load()}");
+    println(f"{Signal::Kill:?}");
+}

@@ -1,0 +1,41 @@
+// expect-exit: 0
+// expect-stdout:
+// i64 f64 str true
+// 19 10 [2, 3] 42 42
+// true true K { a: 1 }
+// lit range
+// 7 -42 false -2 2 43 43 84 21 false true 2 21 84 40
+// in
+// drop r
+
+// Every place the compiler looks up a core lang slot.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+struct K { a: i32; }
+
+struct Res { name: str; }
+impl Drop for Res { fn drop(self) { println(f"drop {self.name}"); } }
+
+async fn seven() -> i32 { 7 }
+
+fn main() {
+    let n: i32 | none = none;
+    let i = 42;
+    let f = 3.14;
+    let s = "hello";
+    println(f"{i.type_name_of_val()} {f.type_name_of_val()} {s.type_name_of_val()} {n is none}");
+    let xs = [1, 2, 3, 4];
+    xs[0] = 10;
+    let t = 0;
+    for x in xs { t += x; }
+    let sl = xs[1:3];
+    println(f"{t} {xs[0]} {sl:?} {i} {i:?}");
+    let k = K { a: 1 };
+    let k2 = k.clone();
+    println(f"{k == k2} {k < K { a: 2 }} {k2:?}");
+    let lit = match i { 42 => "lit", _ => "other" };
+    let range = match i { 0..=50 => "range", _ => "big" };
+    println(f"{lit} {range}");
+    let v = task::block_on(seven());
+    println(f"{v} {-i} {!true} {~1} {i & 3} {i | 1} {i ^ 1} {i << 1} {i >> 1} {true && false} {true || false} {i % 5} {i / 2} {i * 2} {i - 2}");
+    using r = (Res { name: "r" }) { println("in"); }
+}

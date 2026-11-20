@@ -1,0 +1,19 @@
+[package]
+name = "nabic_mir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+nabic_core = { workspace = true }
+nabic_diagnostic = { workspace = true }
+nabic_hir = { workspace = true }
+nabic_ir_common = { workspace = true }
+nabic_target = { workspace = true }
+# The object header and TLS block layout the runtime uses.
+nabir_abi = { workspace = true }
+
+[lints]
+workspace = true

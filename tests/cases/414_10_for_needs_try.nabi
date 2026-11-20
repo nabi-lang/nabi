@@ -1,0 +1,8 @@
+// expect-error: 8:1: `next` of `TryGenIter<str, str>` can throw, so this loop must be `try for`
+
+// A `for` over a throwing generator throws at each `next`,
+// so it needs `try for`.
+yield fn lines() throws (str) -> str { yield "a"; }
+
+try for l in lines() { println(l); } catch _ { }
+for l in lines() { println(l); }

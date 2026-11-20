@@ -1,0 +1,34 @@
+// expect-exit: 0
+// expect-stdout:
+// true
+// false
+// num 5
+// str q
+// other
+// str whole
+
+// `is (A | B)` and `x: A | B` on an `any` value test each
+// member's tag; the binder is the value narrowed to the sum.
+fn wide(w: any) -> str {
+    match w {
+        x: i64 | str => match x {
+            n: i64 => f"num {n}",
+            s: str => f"str {s}",
+        },
+        _ => "other",
+    }
+}
+
+fn main() {
+    let w: any = 5;
+    let w2: any = 1.5;
+    println(f"{w is (i64 | str)}");
+    println(f"{w2 is (i64 | str)}");
+    println(wide(w));
+    println(wide("q"));
+    println(wide(w2));
+    // A sum value stored whole matches its own type pattern too.
+    let s: i64 | str = "whole";
+    println(wide(s));
+}
+

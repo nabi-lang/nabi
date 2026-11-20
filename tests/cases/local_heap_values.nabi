@@ -1,0 +1,48 @@
+// expect-exit: 0
+// expect-stdout:
+// 249640895 6 r5050
+
+// Boxes, closure captures and short buffers that never leave the
+// function hold their values once optimized away: a box made before
+// its source changes, captures holding strings across collections,
+// a buffer indexed at run time.
+trait Show { fn show(self) -> str; }
+struct Name { s: str; n: i64; }
+impl Show for Name { fn show(self) -> str { return f"{self.s}{self.n}"; } }
+
+fn each(xs: List<i64>, f: fn(i64) -> i64) -> i64 {
+    let t: i64 = 0;
+    for x in xs { t += f(x); }
+    t
+}
+
+fn pick(c: bool, a: str) -> any Show {
+    let n = Name { s: a, n: 7 };
+    let x: any Show = n;
+    n.n = 9;
+    if c { return x; }
+    return Name { s: "z", n: 1 };
+}
+
+fn main() -> i32 {
+    let xs: List<i64> = [];
+    for i in 0..1000 { xs.push(i); }
+    let total: i64 = 0;
+    let parts: List<str> = [];
+    for r in 0..300 {
+        let tag = f"r{r}";
+        let base = r * 2;
+        total += each(xs, |x| x + base + tag.len() as i64);
+        let s: any Show = Name { s: tag, n: r };
+        let junk: List<str> = [];
+        for k in 0..20 { junk.push(f"{k}{tag}"); }
+        if r % 50 == 0 { parts.push(s.show()); }
+        let w = [r, r + 1, 0];
+        w[2] = w[0] * w[1];
+        total += w[2];
+        let p = pick(r % 2 == 0, tag);
+        total += p.show().len() as i64;
+    }
+    println(f"{total} {parts.len()} {parts[1]}");
+    return 0;
+}

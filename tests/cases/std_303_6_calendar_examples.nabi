@@ -1,0 +1,78 @@
+// needs: os
+// expect-exit: 0
+// expect-stdout:
+// 2024-01-31 Wednesday day 31
+// 2024-02-29 2024-03-29 2024-03-31
+// 2025-02-28
+// P1Y1M1D 2025-03-01 395 days
+// (2020, 53)
+// 2024-01-31T09:05:00.250 2024-02-01T00:05:00.250 2024-02-01T09:05:00.250
+// day 29 is out of range for 2023-02 (1..=28)
+// 2024-03-10T03:30:00-04:00
+// 2024-03-10T01:30:00-05:00
+// 2024-03-10T02:30:00 does not exist in America/New_York: the clocks skip it (-05:00 to -04:00); pass Disambiguation::Earlier or Disambiguation::Later
+// 2024-03-10T12:00:00-04:00 2024-03-10T13:00:00-04:00
+// EST EDT
+// 2024-03-10T02:00:00+09:00 true
+// 2023-11-14T22:13:20.250Z Tue, 14 Nov 2023 22:13:20 GMT
+// 2023-11-15T07:13:20+09:00 2023-11-14T22:13:20Z Wednesday 15 November 2023, 07:13 AM +09:00
+// 2024-03-10T14:05:00 2024-03-10 14:05:00 2024-W10-7
+// cannot parse "2024-02-30": day 30 is out of range for 2024-02 (1..=29) at byte 8
+// 2026-11-14T09:30:00+09:00
+
+// The examples of the calendar sections of the time chapter, in order.
+// `America/New_York` comes from a TZif fixture, so the case runs on
+// targets with no tz database.
+use std::time::{Date, DateTime, Disambiguation, Offset, Period, SystemTime, Time, TimeZone, Zoned};
+
+const NEW_YORK: [u8; 3552] = include_bytes!("std_303_tzif/src/zoneinfo/America/New_York");
+
+fn civil() throws {
+    let d = try Date::new(2024, 1, 31);
+    println(f"{d} {d.weekday()} day {d.ordinal()}");
+    println(f"{d.add_months(1)} {d.add_months(1).add_months(1)} {d.add_months(2)}");
+    println(f"{try Date::new(2024, 2, 29).add_years(1)}");
+
+    let end = try Date::new(2025, 3, 1);
+    let p = d.until(end);
+    println(f"{p} {d + p} {end.days_since(d)} days");
+    println(f"{try Date::new(2021, 1, 3).iso_week():?}");
+
+    let t = try (try Time::new(9, 5, 0)).with_nanosecond(250000000);
+    let dt = d.and_time(t);
+    println(f"{dt} {dt + Duration::hours(15)} {dt + Period::of_days(1)}");
+    try { println(f"{try Date::new(2023, 2, 29)}"); } catch e { println(f"{e}"); }
+}
+
+fn zones() throws {
+    let ny = try TimeZone::from_tzif("America/New_York", NEW_YORK);
+    let dt = try DateTime::new(2024, 3, 10, 2, 30, 0);
+    println(f"{dt.in_zone(ny)}");
+    println(f"{try dt.in_zone_with(ny, Disambiguation::Earlier)}");
+    try { println(f"{try dt.in_zone_with(ny, Disambiguation::Reject)}"); } catch e { println(f"{e}"); }
+
+    let before = (try DateTime::new(2024, 3, 9, 12, 0, 0)).in_zone(ny);
+    println(f"{before.add_days(1)} {before + Duration::hours(24)}");
+    println(f"{before.abbreviation()} {before.add_days(1).abbreviation()}");
+
+    let seoul = before.in_zone(TimeZone::fixed(try Offset::new(9, 0)));
+    println(f"{seoul} {seoul == before}");
+}
+
+fn text() throws {
+    let t = SystemTime::from_unix(1700000000, 250000000);
+    println(f"{t} {t.to_http_date()}");
+    let z = try "2023-11-15T07:13:20+09:00".parse::<Zoned>();
+    println(f"{z} {z.to_utc()} {z.format("%A %-d %B %Y, %I:%M %p %:z")}");
+
+    let dt = try DateTime::parse_with("10/03/2024 2:05 PM", "%d/%m/%Y %I:%M %p");
+    println(f"{dt} {dt.format("%F %T")} {dt.date().format("%G-W%V-%u")}");
+    try { println(f"{try "2024-02-30".parse::<Date>()}"); } catch e { println(f"{e}"); }
+    println(f"{try Zoned::parse_rfc2822("Sat, 14 Nov 2026 09:30:00 +0900")}");
+}
+
+fn main() throws {
+    try civil();
+    try zones();
+    try text();
+}

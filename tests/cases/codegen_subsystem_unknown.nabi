@@ -1,0 +1,8 @@
+// nabic-arg: -C subsystem=gui
+// expect-error: error[E0132]: unknown codegen option `subsystem=gui`
+// expect-error: help: write `-C subsystem=console` or `-C subsystem=windows`
+
+// `-C subsystem=` takes `console` or `windows` (a Windows executable's
+// /SUBSYSTEM and entry point).
+
+fn main() {}

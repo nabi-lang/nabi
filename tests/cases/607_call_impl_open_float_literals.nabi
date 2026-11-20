@@ -1,0 +1,25 @@
+// expect-exit: 0
+// expect-stdout: 3 [2.0, 4.0] [0.0, 1.0, 2.0]
+
+// Several `Call` impls pick by the argument's type, also when its
+// element type is still an open float literal (`linspace(0.0, 1.0, 3)`).
+use core::array::{Array, Vector};
+
+struct Sp { a: f64; }
+
+impl ops::Call<f64> for Sp {
+    type Output = f64;
+    fn call(self, x: f64) -> f64 { self.a * x }
+}
+
+impl<const N: usize> ops::Call<Array<f64, N>> for Sp {
+    type Output = Array<f64, N>;
+    fn call(self, x: Array<f64, N>) -> Array<f64, N> { x.map(|v: f64| -> f64 { self.a * v }) }
+}
+
+fn main() {
+    let s = Sp { a: 2.0 };
+    let xs: Vector<f64> = [1.0, 2.0];
+    let ys = core::array::linspace(0.0, 1.0, 3);
+    println(f"{s(1.5)} {s(xs):?} {s(ys):?}");
+}

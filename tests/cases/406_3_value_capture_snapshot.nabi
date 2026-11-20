@@ -1,0 +1,15 @@
+// expect-exit: 21
+// expect-stdout:
+// 1 2 99
+
+// Closures capture a value snapshot at creation: f1 binds i=1,
+// f2 binds i=2, and later setting i to 99 changes neither.
+fn main() -> i32 {
+    let i = 1;
+    let f1 = || { i };
+    i = 2;
+    let f2 = || { i };
+    i = 99;
+    println(f"{f1()} {f2()} {i}");
+    return f1() + f2() * 10;
+}

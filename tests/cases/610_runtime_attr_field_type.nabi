@@ -1,0 +1,8 @@
+// expect-error: 6:41: field `values` of runtime attribute `Choices` is `List<str>`
+// expect-error: help: a runtime attribute's fields are numbers, `bool`, `char` or `str`
+
+// A runtime attribute holds constants only.
+#[runtime_attribute(choices)]
+pub struct Choices { pub name: str; pub values: List<str>; }
+
+fn main() {}

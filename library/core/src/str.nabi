@@ -1,0 +1,1564 @@
+//! core::str - `str` methods and trait impls.
+//!
+//! `str` is an immutable `(ptr, len)` value: literals are static
+//! bytes, run-time strings GC objects, and a slice shares its source's
+//! bytes, so slicing, `lines`, `split*`, `match_indices`, `trim*` and
+//! `strip_*` copy nothing. `StrBuf` is the growable buffer.
+
+pub mod unicode;
+
+use bare::gc::{Pinnable, Pinned};
+use bare::mem::transmute_unchecked;
+use bare::ptr::Ptr;
+use core::marker::{Memo, Transfer, buf_is_null};
+use core::rt::{PARKED, buf_copy};
+
+impl str {
+    /// The empty string.
+    #[must_use]
+    pub const fn new() -> str { "" }
+
+    /// `bytes` as a `str`; throws if they are not UTF-8.
+    #[must_use]
+    pub const fn from_utf8<B: AsBytes>(bytes: B) throws (Utf8Error) -> str {
+        let view = bytes.byte_slice();
+        let (buf, at, n) = unsafe { view.raw_parts() };
+        let bad = utf8_error(buf, at, n);
+        if bad >= 0 { throw Utf8Error { valid_up_to: bad as usize }; }
+        unsafe { nabi_str_from_buf(buf, at, n) }
+    }
+
+    /// `bytes` as a `str` with each ill-formed run replaced by U+FFFD,
+    /// one per maximal subpart (Unicode 3.9 "U+FFFD Substitution of
+    /// Maximal Subparts", as WHATWG UTF-8 decode does).
+    #[must_use]
+    pub const fn from_utf8_lossy<B: AsBytes>(bytes: B) -> str {
+        let view = bytes.byte_slice();
+        let (buf, at, n) = unsafe { view.raw_parts() };
+        let first = utf8_error(buf, at, n);
+        if first < 0 {
+            return unsafe { nabi_str_from_buf(buf, at, n) };
+        }
+        let out = StrBuf::with_capacity(n + 2);
+        let i: usize = 0;
+        let bad = first;
+        while i < n {
+            if bad < 0 {
+                out.push_str(unsafe { nabi_str_from_buf(buf, at + i, n - i) });
+                break;
+            }
+            let b = bad as usize;
+            out.push_str(unsafe { nabi_str_from_buf(buf, at + i, b) });
+            out.push('\u{FFFD}');
+            i += b + bad_run(buf, at + i + b, at + n);
+            if i < n {
+                bad = utf8_error(buf, at + i, n - i);
+            }
+        }
+        out.to_str()
+    }
+
+    /// The UTF-16 code units of the string, no NUL (Windows `W` APIs
+    /// take them; `bare::ffi::WideCString` adds the NUL).
+    #[must_use]
+    pub const fn encode_utf16(self) -> List<u16> {
+        let out: List<u16> = List::with_capacity(self.len());
+        for c in self.chars() {
+            let n = c as u32;
+            if n < 0x10000u32 {
+                out.push(n as u16);
+            } else {
+                let m = n - 0x10000u32;
+                out.push((0xD800u32 + (m >> 10)) as u16);
+                out.push((0xDC00u32 + (m & 0x3FFu32)) as u16);
+            }
+        }
+        out
+    }
+
+    /// UTF-16 code units (a `List<u16>`, `Slice<u16>` or `[u16; N]`) as
+    /// a `str`; throws at the first unpaired surrogate.
+    #[must_use]
+    pub const fn from_utf16<U: IntoIterator<Item = u16>>(units: U) throws (Utf16Error) -> str {
+        match utf16_decode(units, false) {
+            s: str => s,
+            i: usize => throw Utf16Error { valid_up_to: i },
+        }
+    }
+
+    /// `from_utf16` with each unpaired surrogate replaced by U+FFFD.
+    #[must_use]
+    pub const fn from_utf16_lossy<U: IntoIterator<Item = u16>>(units: U) -> str {
+        match utf16_decode(units, true) {
+            s: str => s,
+            _: usize => unreachable(),
+        }
+    }
+
+    /// The UTF-8 bytes as a read-only view of the string itself (no
+    /// copy, O(1)).
+    #[must_use]
+    pub const fn as_bytes(self) -> Slice<u8> {
+        Slice { buf: unsafe { nabi_str_bytes_buf(self) }, start: 0, len: self.len(), stride: 1, whole: false }
+    }
+
+    /// The first byte's address, for FFI (`len()` bytes, no NUL
+    /// promised; an empty `str` gives a dangling pointer). Valid while a
+    /// variable holding the string is in scope in a function where a
+    /// pointer type appears; pin it to keep it longer.
+    #[must_use]
+    pub fn as_ptr(self) -> bare::ptr::ConstPtr<u8> {
+        let p = bare::ptr::ConstPtr::<u8>::dangling();
+        if self.is_empty() { p } else { p.with_addr(unsafe { nabi_str_addr(self) }) }
+    }
+
+    /// Byte `i`, O(1); panics if `i >= len()`.
+    #[track_caller]
+    #[must_use]
+    pub const fn byte(self, i: usize) -> u8 {
+        if i >= self.len() { index_oob("str::byte: index", i, self.len()); }
+        unsafe { nabi_str_byte(self, i) }
+    }
+
+    /// Byte length (not the char count).
+    #[must_use]
+    pub const fn len(self) -> usize { unsafe { nabi_str_len(self) } }
+    /// `true` when the string has no bytes.
+    #[must_use]
+    pub const fn is_empty(self) -> bool { unsafe { nabi_str_len(self) } == 0 }
+    /// Number of chars, as `s.chars().count()`.
+    #[must_use]
+    pub const fn char_count(self) -> usize {
+        if self.len() < PARKED { unsafe { nabi_str_char_count(self) } } else { char_count_parked(self) }
+    }
+
+    /// `true` when byte offset `i` starts a char or is `len()`, so
+    /// `s[i:]` cannot panic.
+    #[must_use]
+    pub const fn is_char_boundary(self, i: usize) -> bool {
+        if i >= self.len() { return i == self.len(); }
+        (unsafe { nabi_str_byte(self, i) } & 0xC0u8) != 0x80u8
+    }
+    /// The char boundary at or before byte `i` (`len()` past the end).
+    #[must_use]
+    pub const fn floor_char_boundary(self, i: usize) -> usize {
+        if i >= self.len() { return self.len(); }
+        let j = i;
+        while !self.is_char_boundary(j) { j -= 1; }
+        j
+    }
+    /// The char boundary at or after byte `i` (`len()` past the end).
+    #[must_use]
+    pub const fn ceil_char_boundary(self, i: usize) -> usize {
+        if i >= self.len() { return self.len(); }
+        let j = i;
+        while !self.is_char_boundary(j) { j += 1; }
+        j
+    }
+    /// `self[r.start:r.end]` when both are char boundaries in order
+    /// within `len()`, else `none`: the slice that never panics or
+    /// clamps.
+    #[must_use]
+    pub const fn get(self, r: Range<usize>) -> str | none {
+        if r.start > r.end || !self.is_char_boundary(r.start) || !self.is_char_boundary(r.end) {
+            return none;
+        }
+        self[r.start:r.end]
+    }
+    /// Chars `a` up to `b` (not included), counted from 0 like
+    /// `chars()`; both clamp to `char_count()`, and `a >= b` gives `""`.
+    /// O(b). By grapheme cluster: `grapheme_slice`.
+    #[must_use]
+    pub const fn char_slice(self, a: usize, b: usize) -> str {
+        if a >= b { return ""; }
+        let n = self.len();
+        let start = n;
+        let end = n;
+        let k: usize = 0;
+        for (i, _) in self.char_indices() {
+            if k == a { start = i; }
+            if k == b {
+                end = i;
+                break;
+            }
+            k += 1;
+        }
+        self[start:end]
+    }
+
+    /// `true` when `pat` occurs in `self` (always for an empty `pat`).
+    #[must_use]
+    pub const fn contains(self, pat: str) -> bool { search(self, pat) >= 0 }
+    /// `true` when `self` begins with `pat`.
+    #[must_use]
+    pub const fn starts_with(self, pat: str) -> bool { eq_at(self, 0, pat) }
+    /// `true` when `self` ends with `pat`.
+    #[must_use]
+    pub const fn ends_with(self, pat: str) -> bool {
+        let n = self.len();
+        let m = pat.len();
+        m <= n && eq_at(self, n - m, pat)
+    }
+    /// Byte index of the first occurrence of `pat`; `none` if absent.
+    #[must_use]
+    pub const fn find(self, pat: str) -> usize | none {
+        let i = search(self, pat);
+        if i < 0 { return none; }
+        i as usize
+    }
+    /// Byte index of the last occurrence of `pat`; `none` if absent.
+    #[must_use]
+    pub const fn rfind(self, pat: str) -> usize | none {
+        let i = rsearch(self, pat);
+        if i < 0 { return none; }
+        i as usize
+    }
+
+    /// `self` without a leading `prefix`, or `none` if it does not start
+    /// with it.
+    #[must_use]
+    pub const fn strip_prefix(self, prefix: str) -> str | none {
+        if !self.starts_with(prefix) { return none; }
+        self[prefix.len():]
+    }
+    /// `self` without a trailing `suffix`, or `none`.
+    #[must_use]
+    pub const fn strip_suffix(self, suffix: str) -> str | none {
+        if !self.ends_with(suffix) { return none; }
+        self[:self.len() - suffix.len()]
+    }
+    /// The pieces before and after the first `sep`, or `none`.
+    #[must_use]
+    pub const fn split_once(self, sep: str) -> (str, str) | none {
+        let i = self.find(sep)?;
+        (self[:i], self[i + sep.len():])
+    }
+    /// `n` copies back to back.
+    #[track_caller]
+    #[must_use]
+    pub const fn repeat(self, n: usize) -> str {
+        let b = StrBuf::with_capacity(cap_mul(self.len(), n));
+        for _ in 0..n { b.push_str(self); }
+        b.to_str()
+    }
+
+    /// `self` without leading and trailing Unicode whitespace.
+    #[must_use]
+    pub const fn trim(self) -> str { unsafe { nabi_str_trim(self, 0) } }
+    /// `self` without leading Unicode whitespace.
+    #[must_use]
+    pub const fn trim_start(self) -> str { unsafe { nabi_str_trim(self, 1) } }
+    /// `self` without trailing Unicode whitespace.
+    #[must_use]
+    pub const fn trim_end(self) -> str { unsafe { nabi_str_trim(self, 2) } }
+    /// `self` without every leading and trailing repeat of `pat`.
+    #[must_use]
+    pub const fn trim_matches(self, pat: str) -> str { self.trim_start_matches(pat).trim_end_matches(pat) }
+    /// `self` without every leading repeat of `pat` (unchanged for an empty
+    /// `pat`).
+    #[must_use]
+    pub const fn trim_start_matches(self, pat: str) -> str {
+        let m = pat.len();
+        if m == 0 { return self; }
+        let i = 0usize;
+        while i + m <= self.len() && eq_at(self, i, pat) { i += m; }
+        self[i:]
+    }
+    /// `self` without every trailing repeat of `pat` (unchanged for an empty
+    /// `pat`).
+    #[must_use]
+    pub const fn trim_end_matches(self, pat: str) -> str {
+        let m = pat.len();
+        if m == 0 { return self; }
+        let j = self.len();
+        while j >= m && eq_at(self, j - m, pat) { j -= m; }
+        self[:j]
+    }
+
+    /// Full Unicode case mapping (`"ß"` -> `"SS"`, final `σ` -> `ς`); no
+    /// locale rules.
+    #[must_use]
+    pub const fn to_lowercase(self) -> str { unsafe { nabi_str_case(self, 0) } }
+    /// Full Unicode uppercase mapping (`"ß"` -> `"SS"`); no locale rules.
+    #[must_use]
+    pub const fn to_uppercase(self) -> str { unsafe { nabi_str_case(self, 1) } }
+    /// A copy with every non-overlapping `from` replaced by `to`, left to
+    /// right.
+    #[must_use]
+    pub const fn replace(self, from: str, to: str) -> str { unsafe { nabi_str_replace(self, from, to) } }
+
+    /// Unicode scalar values, in order.
+    #[must_use]
+    pub const fn chars(self) -> Chars { Chars { s: self, pos: 0 } }
+
+    /// The characters in reverse order (code points; a combining mark
+    /// moves with them). Python: `s[::-1]`.
+    #[must_use]
+    pub const fn reversed(self) -> str {
+        let cs: List<char> = List::new();
+        for c in self.chars() {
+            cs.push(c);
+        }
+        let out = StrBuf::with_capacity(self.len());
+        let i = cs.len();
+        while i > 0 {
+            i -= 1;
+            out.push(cs[i]);
+        }
+        out.to_str()
+    }
+
+    /// The number of non-overlapping occurrences of `pat`, left to right;
+    /// for an empty `pat`, one more than the number of characters (as
+    /// Python's `count`).
+    #[must_use]
+    pub const fn count(self, pat: str) -> usize {
+        if pat.is_empty() {
+            return self.char_count() + 1;
+        }
+        let n: usize = 0;
+        let rest = self;
+        while let at: usize = rest.find(pat) {
+            n += 1;
+            rest = rest[at + pat.len():];
+        }
+        n
+    }
+
+    /// `replace` of the first `n` occurrences only, left to right.
+    #[must_use]
+    pub const fn replacen(self, from: str, to: str, n: usize) -> str {
+        if from.is_empty() || n == 0 {
+            return self;
+        }
+        let out = StrBuf::with_capacity(self.len());
+        let rest = self;
+        let left = n;
+        while left > 0 {
+            match rest.find(from) {
+                at: usize => {
+                    out.push_str(rest[:at]);
+                    out.push_str(to);
+                    rest = rest[at + from.len():];
+                    left -= 1;
+                }
+                none => break,
+            }
+        }
+        out.push_str(rest);
+        out.to_str()
+    }
+
+    /// Each word's first letter in title case and its other letters in
+    /// lowercase (full mappings). A word starts at a letter that does
+    /// not follow a letter, a digit or an apostrophe. Python:
+    /// `s.title()`, but `"don't"` stays one word.
+    #[must_use]
+    pub const fn to_titlecase(self) -> str {
+        let out = StrBuf::with_capacity(self.len());
+        let inside = false;
+        for c in self.chars() {
+            if c.is_alphabetic() {
+                out.push_str(if inside { c.to_lowercase() } else { c.to_titlecase() });
+                inside = true;
+            } else {
+                out.push(c);
+                inside = c.is_numeric() || c == '\'' || c == '\u{2019}';
+            }
+        }
+        out.to_str()
+    }
+    /// UTF-8 bytes, in order.
+    #[must_use]
+    pub fn bytes(self) -> Bytes { self.as_bytes().iter() }
+    /// The pieces between occurrences of `sep` (all of them, empty ones
+    /// included).
+    #[must_use]
+    pub const fn split(self, sep: str) -> Split { Split { rest: self, sep: sep, done: false } }
+    /// At most `n` pieces split on `sep` from the start; the last one is
+    /// the unsplit rest (`n == 0` yields nothing).
+    #[must_use]
+    pub const fn splitn(self, n: usize, sep: str) -> SplitN { SplitN { rest: self, sep: sep, left: n } }
+    /// The pieces `split` yields, last first.
+    #[must_use]
+    pub const fn rsplit(self, sep: str) -> RSplit { RSplit { rest: self, sep: sep, done: false } }
+    /// At most `n` pieces split on `sep` from the end, last first; the
+    /// final one is the unsplit start.
+    #[must_use]
+    pub const fn rsplitn(self, n: usize, sep: str) -> RSplitN { RSplitN { rest: self, sep: sep, left: n } }
+    /// `(byte offset, match)` for each non-overlapping `pat`, left to
+    /// right; an empty `pat` matches nothing.
+    #[must_use]
+    pub const fn match_indices(self, pat: str) -> MatchIndices {
+        MatchIndices { s: self, pat: pat, pos: 0 }
+    }
+    /// Lines without their `\n` / `\r\n`; a final line ending adds no
+    /// empty line.
+    #[must_use]
+    pub const fn lines(self) -> Lines { Lines { rest: self } }
+    /// `(byte offset, char)` pairs.
+    #[must_use]
+    pub const fn char_indices(self) -> CharIndices {
+        CharIndices { chars: Chars { s: self, pos: 0 } }
+    }
+    /// The non-empty pieces between runs of Unicode `White_Space` (the
+    /// set `trim` strips).
+    #[must_use]
+    pub const fn split_whitespace(self) -> SplitWhitespace {
+        SplitWhitespace { s: self, pos: 0 }
+    }
+
+    /// `T`'s value spelled by this string.
+    #[must_use]
+    pub const fn parse<T: FromStr>(self) throws (T::Err) -> T { try T::from_str(self) }
+}
+
+/// `s[a:b]` by byte offsets: O(1), sharing `s`'s bytes. The
+/// bounds clamp to the length (like Python); a clamped bound off a char
+/// boundary panics.
+impl Sliceable<Range<usize>> for str {
+    type Output = str;
+    #[track_caller]
+    const fn slice(self, r: Range<usize>) -> str {
+        let r = clamp_range(r, self.len());
+        unsafe { nabi_str_slice(self, r.start, r.end) }
+    }
+}
+
+impl Add for str {
+    type Output = str;
+    const fn add(self, rhs: str) -> str { unsafe { nabi_str_concat(self, rhs) } }
+}
+
+/// `s + 'c'`: `s` with `c` appended, as `s += 'c'`.
+impl Add<char> for str {
+    type Output = str;
+    const fn add(self, rhs: char) -> str {
+        unsafe { nabi_str_concat(self, nabi_str_from_char(rhs as u32)) }
+    }
+}
+
+impl PartialEq for str {
+    const fn eq(self, rhs: str) -> bool { str_eq(self, rhs) }
+    const fn ne(self, rhs: str) -> bool { !str_eq(self, rhs) }
+}
+
+impl PartialOrd for str {
+    const fn lt(self, rhs: str) -> bool { str_cmp(self, rhs) < 0 }
+    const fn gt(self, rhs: str) -> bool { str_cmp(self, rhs) > 0 }
+    const fn le(self, rhs: str) -> bool { str_cmp(self, rhs) <= 0 }
+    const fn ge(self, rhs: str) -> bool { str_cmp(self, rhs) >= 0 }
+}
+
+impl Eq for str {}
+
+impl Ord for str {
+    const fn cmp(self, other: str) -> Ordering {
+        let c = str_cmp(self, other);
+        if c < 0 { return Ordering::Less; }
+        if c > 0 { return Ordering::Greater; }
+        Ordering::Equal
+    }
+}
+
+impl Hash for str {
+    const fn hash<H: Hasher>(self, ref h: H) { h.write_str(self) }
+}
+
+// Iterators.
+
+/// What `s.bytes()` returns: the bytes of the `as_bytes` view.
+pub type Bytes = SliceIter<u8>;
+
+/// What `s.chars()` returns: the Unicode scalar values, in order.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Chars {
+    s: str;
+    pos: usize;
+}
+
+impl Debug for Chars {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Chars") }
+}
+
+impl Chars {
+    /// The char at `pos` whose first byte, `b`, is not ASCII.
+    const fn next_wide(ref self, b: u32) -> char {
+        let n = 1usize;
+        let c = b;
+        if b >= 0xF0u32 {
+            n = 4usize;
+            c = b & 0x07u32;
+        } else if b >= 0xE0u32 {
+            n = 3usize;
+            c = b & 0x0Fu32;
+        } else if b >= 0xC0u32 {
+            n = 2usize;
+            c = b & 0x1Fu32;
+        }
+        for i in 1..n {
+            let cont = unsafe { nabi_str_byte(self.s, self.pos + i) } as u32;
+            c = (c << 6u32) | (cont & 0x3Fu32);
+        }
+        self.pos += n;
+        unsafe { char::from_u32_unchecked(c) }
+    }
+}
+
+impl Iterator for Chars {
+    type Item = char;
+    // ASCII here, small enough to inline into a loop.
+    #[inline]
+    const fn next(ref self) -> char | none {
+        if self.pos >= self.s.len() { return none; }
+        let b = unsafe { nabi_str_byte(self.s, self.pos) } as u32;
+        if b < 0x80u32 {
+            self.pos += 1;
+            return unsafe { char::from_u32_unchecked(b) };
+        }
+        self.next_wide(b)
+    }
+}
+
+/// What `s.split(sep)` returns: the pieces between occurrences of `sep`,
+/// left to right.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Split {
+    rest: str;
+    sep: str;
+    done: bool;
+}
+
+impl Debug for Split {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Split") }
+}
+
+impl Iterator for Split {
+    type Item = str;
+    const fn next(ref self) -> str | none {
+        if self.done { return none; }
+        let at = search(self.rest, self.sep);
+        if at < 0 || self.sep.len() == 0 {
+            self.done = true;
+            return self.rest;
+        }
+        let i = at as usize;
+        let piece = self.rest[:i];
+        self.rest = self.rest[i + self.sep.len():];
+        piece
+    }
+}
+
+/// What `s.splitn(n, sep)` returns: at most `n` pieces, the last one the
+/// unsplit rest.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct SplitN {
+    rest: str;
+    sep: str;
+    left: usize;
+}
+
+impl Debug for SplitN {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SplitN") }
+}
+
+impl Iterator for SplitN {
+    type Item = str;
+    const fn next(ref self) -> str | none {
+        if self.left == 0 { return none; }
+        self.left -= 1;
+        let at = search(self.rest, self.sep);
+        if self.left == 0 || at < 0 || self.sep.len() == 0 {
+            self.left = 0;
+            return self.rest;
+        }
+        let i = at as usize;
+        let piece = self.rest[:i];
+        self.rest = self.rest[i + self.sep.len():];
+        piece
+    }
+}
+
+/// What `s.rsplit(sep)` returns: the pieces of `split`, last first.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct RSplit {
+    rest: str;
+    sep: str;
+    done: bool;
+}
+
+impl Debug for RSplit {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("RSplit") }
+}
+
+impl Iterator for RSplit {
+    type Item = str;
+    const fn next(ref self) -> str | none {
+        if self.done { return none; }
+        if self.sep.len() == 0 {
+            self.done = true;
+            return self.rest;
+        }
+        let at = rsearch(self.rest, self.sep);
+        if at < 0 {
+            self.done = true;
+            return self.rest;
+        }
+        let i = at as usize;
+        let piece = self.rest[i + self.sep.len():];
+        self.rest = self.rest[:i];
+        piece
+    }
+}
+
+/// What `s.rsplitn(n, sep)` returns: at most `n` pieces from the end, the
+/// last one the unsplit start.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct RSplitN {
+    rest: str;
+    sep: str;
+    left: usize;
+}
+
+impl Debug for RSplitN {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("RSplitN") }
+}
+
+impl Iterator for RSplitN {
+    type Item = str;
+    const fn next(ref self) -> str | none {
+        if self.left == 0 { return none; }
+        self.left -= 1;
+        if self.left == 0 || self.sep.len() == 0 {
+            self.left = 0;
+            return self.rest;
+        }
+        let at = rsearch(self.rest, self.sep);
+        if at < 0 {
+            self.left = 0;
+            return self.rest;
+        }
+        let i = at as usize;
+        let piece = self.rest[i + self.sep.len():];
+        self.rest = self.rest[:i];
+        piece
+    }
+}
+
+/// What `s.match_indices(pat)` returns: `(byte offset, match)` pairs, left
+/// to right.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct MatchIndices {
+    s: str;
+    pat: str;
+    pos: usize;
+}
+
+impl Debug for MatchIndices {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("MatchIndices") }
+}
+
+impl Iterator for MatchIndices {
+    type Item = (usize, str);
+    const fn next(ref self) -> (usize, str) | none {
+        let m = self.pat.len();
+        if m == 0 { return none; }
+        let at = search(self.s[self.pos:], self.pat);
+        if at < 0 { return none; }
+        let i = self.pos + at as usize;
+        self.pos = i + m;
+        (i, self.s[i:i + m])
+    }
+}
+
+/// What `s.lines()` returns: the lines without their `\n` / `\r\n`.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Lines {
+    rest: str;
+}
+
+impl Debug for Lines {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Lines") }
+}
+
+impl Iterator for Lines {
+    type Item = str;
+    const fn next(ref self) -> str | none {
+        if self.rest.len() == 0 { return none; }
+        let at = search(self.rest, "\n");
+        let line = self.rest;
+        if at < 0 {
+            self.rest = "";
+        } else {
+            let i = at as usize;
+            line = self.rest[:i];
+            self.rest = self.rest[i + 1:];
+        }
+        if line.ends_with("\r") { return line[:line.len() - 1]; }
+        line
+    }
+}
+
+/// What `s.char_indices()` returns: `(byte offset, char)` pairs, in order.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct CharIndices {
+    chars: Chars;
+}
+
+impl Debug for CharIndices {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("CharIndices") }
+}
+
+impl Iterator for CharIndices {
+    type Item = (usize, char);
+    const fn next(ref self) -> (usize, char) | none {
+        let at = self.chars.pos;
+        let c = self.chars.next()?;
+        (at, c)
+    }
+}
+
+/// Length of the maximal subpart at `buf[i]`, an ill-formed sequence
+/// ending before `end`: the lead byte and the continuation bytes that
+/// still fit a well-formed sequence (Unicode Table 3-7), at least 1.
+const fn bad_run(buf: GcBuf<u8>, i: usize, end: usize) -> usize {
+    unsafe {
+        let b = buf[i];
+        let (lo, hi, more) = if b >= 0xC2u8 && b <= 0xDFu8 {
+            (0x80u8, 0xBFu8, 1usize)
+        } else if b == 0xE0u8 {
+            (0xA0u8, 0xBFu8, 2usize)
+        } else if b == 0xEDu8 {
+            (0x80u8, 0x9Fu8, 2usize)
+        } else if b >= 0xE1u8 && b <= 0xEFu8 {
+            (0x80u8, 0xBFu8, 2usize)
+        } else if b == 0xF0u8 {
+            (0x90u8, 0xBFu8, 3usize)
+        } else if b >= 0xF1u8 && b <= 0xF3u8 {
+            (0x80u8, 0xBFu8, 3usize)
+        } else if b == 0xF4u8 {
+            (0x80u8, 0x8Fu8, 3usize)
+        } else {
+            return 1;
+        };
+        if i + 1 >= end || buf[i + 1] < lo || buf[i + 1] > hi {
+            return 1;
+        }
+        let k: usize = 2;
+        while k <= more && i + k < end && buf[i + k] >= 0x80u8 && buf[i + k] <= 0xBFu8 {
+            k += 1;
+        }
+        k
+    }
+}
+
+/// Byte length of the `White_Space` char starting at byte `pos`, 0 when
+/// it is not one (a continuation byte is not).
+const fn space_at(s: str, pos: usize) -> usize {
+    let b = unsafe { nabi_str_byte(s, pos) };
+    if b < 0x80u8 {
+        return if b == 32u8 || (b >= 9u8 && b <= 13u8) { 1usize } else { 0usize };
+    }
+    space_at_wide(s, pos, b)
+}
+
+// Out of line: inlined, it makes `space_at` too big to inline into the
+// iterators' loops.
+#[inline(never)]
+const fn space_at_wide(s: str, pos: usize, b: u8) -> usize {
+    if b < 0xC0u8 { return 0usize; }
+    let it = Chars { s: s, pos: pos };
+    let c: char = it.next() else { return 0usize; };
+    if c.is_whitespace() { it.pos - pos } else { 0usize }
+}
+
+/// What `s.split_whitespace()` returns: the non-empty pieces between runs
+/// of whitespace, left to right.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct SplitWhitespace {
+    s: str;
+    pos: usize;
+}
+
+impl Debug for SplitWhitespace {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SplitWhitespace") }
+}
+
+impl SplitWhitespace {
+    /// `next` from byte `pos`, any text.
+    const fn next_from(ref self, pos: usize) -> str | none {
+        let s = self.s;
+        let n = s.len();
+        loop {
+            if pos >= n {
+                self.pos = pos;
+                return none;
+            }
+            let w = space_at(s, pos);
+            if w == 0usize { break; }
+            pos += w;
+        }
+        self.word_from(pos, pos + 1usize)
+    }
+
+    /// The word starting at byte `start`, its end looked for from `pos`.
+    const fn word_from(ref self, start: usize, pos: usize) -> str {
+        let s = self.s;
+        let n = s.len();
+        while pos < n && space_at(s, pos) == 0usize {
+            pos += 1usize;
+        }
+        self.pos = pos;
+        s[start:pos]
+    }
+}
+
+impl Iterator for SplitWhitespace {
+    type Item = str;
+    // ASCII here, small enough to inline into a loop; any other byte
+    // goes on out of line.
+    #[inline]
+    const fn next(ref self) -> str | none {
+        let s = self.s;
+        let n = s.len();
+        let pos = self.pos;
+        while pos < n {
+            let b = unsafe { nabi_str_byte(s, pos) };
+            if b >= 0x80u8 { return self.next_from(pos); }
+            if !(b == 32u8 || (b >= 9u8 && b <= 13u8)) { break; }
+            pos += 1usize;
+        }
+        if pos >= n {
+            self.pos = pos;
+            return none;
+        }
+        let start = pos;
+        pos += 1usize;
+        while pos < n {
+            let b = unsafe { nabi_str_byte(s, pos) };
+            if b >= 0x80u8 { return self.word_from(start, pos); }
+            if b == 32u8 || (b >= 9u8 && b <= 13u8) { break; }
+            pos += 1usize;
+        }
+        self.pos = pos;
+        s[start:pos]
+    }
+}
+
+// `char`.
+//
+// The Unicode properties and case maps are runtime tables generated
+// from the UCD (`runtime/nabir_abi/unicode.py`).
+
+const fn char_props(c: char) -> u32 { unsafe { nabi_char_props(c as u32) } }
+
+/// The bits of a `char` (`char::from_u32_unchecked`).
+union CharBits {
+    n: u32;
+    c: char;
+}
+
+impl char {
+    /// `n` as a char; `none` for a surrogate or a value past U+10FFFF.
+    /// (`as char` takes only a `u8`.)
+    pub const fn from_u32(n: u32) -> char | none {
+        if (n >= 0xD800u32 && n <= 0xDFFFu32) || n > 0x10FFFFu32 {
+            return none;
+        }
+        unsafe { char::from_u32_unchecked(n) }
+    }
+
+    /// `n` as a char, unchecked: `n` must be a Unicode scalar value.
+    pub const unsafe fn from_u32_unchecked(n: u32) -> char {
+        let b = CharBits { n: n };
+        unsafe { b.c }
+    }
+
+    /// Digit `d` in base `radix` (lowercase letters past `9`); `none`
+    /// if `d` is not a digit of that base. Panics unless `radix` is in
+    /// 2..=36.
+    #[track_caller]
+    pub const fn from_digit(d: u32, radix: u32) -> char | none {
+        if radix < 2u32 || radix > 36u32 { panic(f"char::from_digit: radix {radix} is not in 2..=36"); }
+        if d >= radix { return none; }
+        if d < 10u32 { return (0x30u8 + d as u8) as char; }
+        (0x61u8 + d as u8 - 10u8) as char
+    }
+
+    /// The value of this digit in base `radix` (either letter case);
+    /// `none` if it is not one. Panics unless `radix` is in 2..=36.
+    #[track_caller]
+    pub const fn to_digit(self, radix: u32) -> u32 | none {
+        if radix < 2u32 || radix > 36u32 { panic(f"char::to_digit: radix {radix} is not in 2..=36"); }
+        let c = self as u32;
+        let d = 99u32;
+        if c >= 0x30u32 && c <= 0x39u32 {
+            d = c - 0x30u32;
+        } else if c >= 0x61u32 && c <= 0x7Au32 {
+            d = c - 0x61u32 + 10u32;
+        } else if c >= 0x41u32 && c <= 0x5Au32 {
+            d = c - 0x41u32 + 10u32;
+        }
+        if d >= radix { return none; }
+        d
+    }
+
+    /// Panics unless `radix` is in 2..=36.
+    #[track_caller]
+    pub const fn is_digit(self, radix: u32) -> bool { !(self.to_digit(radix) is none) }
+
+    /// Bytes in UTF-8.
+    pub const fn len_utf8(self) -> usize {
+        let c = self as u32;
+        if c < 0x80u32 { return 1; }
+        if c < 0x800u32 { return 2; }
+        if c < 0x10000u32 { return 3; }
+        4
+    }
+
+    /// 16-bit units in UTF-16.
+    pub const fn len_utf16(self) -> usize {
+        if (self as u32) < 0x10000u32 { return 1; }
+        2
+    }
+
+    /// Unicode `Alphabetic`.
+    pub const fn is_alphabetic(self) -> bool { char_props(self) & 1u32 != 0u32 }
+    /// Unicode `Lowercase`.
+    pub const fn is_lowercase(self) -> bool { char_props(self) & 2u32 != 0u32 }
+    /// Unicode `Uppercase`.
+    pub const fn is_uppercase(self) -> bool { char_props(self) & 4u32 != 0u32 }
+    /// Unicode `White_Space`.
+    pub const fn is_whitespace(self) -> bool { char_props(self) & 8u32 != 0u32 }
+    /// General category `Nd`, `Nl` or `No`.
+    pub const fn is_numeric(self) -> bool { char_props(self) & 16u32 != 0u32 }
+    /// `is_alphabetic` or `is_numeric`.
+    pub const fn is_alphanumeric(self) -> bool { char_props(self) & 17u32 != 0u32 }
+    /// General category `Cc`.
+    pub const fn is_control(self) -> bool {
+        let c = self as u32;
+        c < 0x20u32 || (c >= 0x7Fu32 && c < 0xA0u32)
+    }
+
+    /// The full lowercase mapping, which may be several chars
+    /// (`'\u{130}'` -> `"i\u{307}"`); locale-independent.
+    pub const fn to_lowercase(self) -> str { unsafe { nabi_str_case(nabi_str_from_char(self as u32), 0) } }
+    /// The full uppercase mapping, which may be several chars (`'ß'` ->
+    /// `"SS"`).
+    pub const fn to_uppercase(self) -> str { unsafe { nabi_str_case(nabi_str_from_char(self as u32), 1) } }
+    /// The full titlecase mapping, which may be several chars (`'ß'` ->
+    /// `"Ss"`, `'ǆ'` -> `"ǅ"`). Capitalize a word with
+    /// `c.to_titlecase() + rest.to_lowercase()`.
+    pub const fn to_titlecase(self) -> str { unsafe { nabi_str_case(nabi_str_from_char(self as u32), 2) } }
+    /// The simple (one-char) lowercase mapping (UCD `slc`); `self` if
+    /// none.
+    pub const fn to_simple_lowercase(self) -> char {
+        unsafe { char::from_u32_unchecked(nabi_char_to_case(self as u32, 0)) }
+    }
+    /// The simple (one-char) uppercase mapping (UCD `suc`; `'ß'` stays
+    /// `'ß'`); `self` if none.
+    pub const fn to_simple_uppercase(self) -> char {
+        unsafe { char::from_u32_unchecked(nabi_char_to_case(self as u32, 1)) }
+    }
+    /// The simple (one-char) titlecase mapping (UCD `stc`; `'ǆ'` ->
+    /// `'ǅ'`); `self` if none.
+    pub const fn to_simple_titlecase(self) -> char {
+        unsafe { char::from_u32_unchecked(nabi_char_to_case(self as u32, 2)) }
+    }
+
+    /// `true` for U+0000 ..= U+007F.
+    pub const fn is_ascii(self) -> bool { (self as u32) < 0x80u32 }
+    /// `A` ..= `Z`.
+    pub const fn is_ascii_uppercase(self) -> bool { self >= 'A' && self <= 'Z' }
+    /// `a` ..= `z`.
+    pub const fn is_ascii_lowercase(self) -> bool { self >= 'a' && self <= 'z' }
+    /// An ASCII letter.
+    pub const fn is_ascii_alphabetic(self) -> bool { self.is_ascii_uppercase() || self.is_ascii_lowercase() }
+    /// `0` ..= `9`.
+    pub const fn is_ascii_digit(self) -> bool { self >= '0' && self <= '9' }
+    /// An ASCII letter or digit.
+    pub const fn is_ascii_alphanumeric(self) -> bool { self.is_ascii_alphabetic() || self.is_ascii_digit() }
+    /// `0` ..= `9`, `a` ..= `f` or `A` ..= `F`.
+    pub const fn is_ascii_hexdigit(self) -> bool {
+        self.is_ascii_digit() || (self >= 'a' && self <= 'f') || (self >= 'A' && self <= 'F')
+    }
+    /// Space, `\t`, `\n`, form feed, `\r`.
+    pub const fn is_ascii_whitespace(self) -> bool {
+        self == ' ' || self == '\t' || self == '\n' || self == '\x0C' || self == '\r'
+    }
+    /// U+0000 ..= U+001F or U+007F.
+    pub const fn is_ascii_control(self) -> bool { (self as u32) < 0x20u32 || self == '\x7F' }
+    /// `!` ..= `~` (printable, not space).
+    pub const fn is_ascii_graphic(self) -> bool { self >= '!' && self <= '~' }
+    /// An ASCII graphic char that is not a letter or digit.
+    pub const fn is_ascii_punctuation(self) -> bool { self.is_ascii_graphic() && !self.is_ascii_alphanumeric() }
+
+    /// The uppercase of an ASCII letter; any other char unchanged.
+    pub const fn to_ascii_uppercase(self) -> char {
+        if self.is_ascii_lowercase() { return ((self as u8) - 32u8) as char; }
+        self
+    }
+    /// The lowercase of an ASCII letter; any other char unchanged.
+    pub const fn to_ascii_lowercase(self) -> char {
+        if self.is_ascii_uppercase() { return ((self as u8) + 32u8) as char; }
+        self
+    }
+    /// `true` when the two chars are equal up to ASCII case.
+    pub const fn eq_ignore_ascii_case(self, other: char) -> bool {
+        self.to_ascii_lowercase() == other.to_ascii_lowercase()
+    }
+}
+
+/// Code point order.
+impl PartialOrd for char {
+    #[intrinsic("nabi.lt.char")]
+    const fn lt(self, rhs: char) -> bool { (self as u32) < (rhs as u32) }
+    #[intrinsic("nabi.le.char")]
+    const fn le(self, rhs: char) -> bool { (self as u32) <= (rhs as u32) }
+    #[intrinsic("nabi.gt.char")]
+    const fn gt(self, rhs: char) -> bool { (self as u32) > (rhs as u32) }
+    #[intrinsic("nabi.ge.char")]
+    const fn ge(self, rhs: char) -> bool { (self as u32) >= (rhs as u32) }
+}
+
+impl Ord for char {
+    const fn cmp(self, other: char) -> Ordering { (self as u32).cmp(other as u32) }
+}
+
+/// `char::try_from(n)`: throws for a surrogate or a value past
+/// U+10FFFF (`OverflowError`).
+impl TryFrom<u32> for char {
+    type Error = OverflowError;
+    const fn try_from(value: u32) throws (OverflowError) -> char {
+        let c = char::from_u32(value);
+        if c is char { return c; }
+        throw OverflowError::new("try_from", "char");
+    }
+}
+
+// `StrBuf`.
+
+/// A growable UTF-8 buffer. A handle like the collections: copies
+/// share the buffer, one object holding the length, the capacity and
+/// the bytes.
+pub struct StrBuf {
+    h: GcBuf<StrBufHead>;
+}
+
+impl Debug for StrBuf {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try Debug::fmt(self.to_str(), ref f) }
+}
+
+struct StrBufHead {
+    len: usize;
+    cap: usize;
+    bytes: GcBuf<u8>;
+}
+
+// Shares its buffer like `List`.
+impl !Sync for StrBuf {}
+
+/// `pin(b)` keeps the bytes in place (none while the buffer has no room).
+/// A pinned `StrBuf` cannot grow: `reserve` first.
+impl Pinnable for StrBuf {
+    #[internal("write `pin(x)` to keep a value in place")]
+    fn gc_object(self) -> GcBuf<u8> | none {
+        if self.capacity() == 0 {
+            return none;
+        }
+        unsafe { self.h[0].bytes }
+    }
+}
+
+impl Pinned<StrBuf> {
+    /// The first byte (no NUL promised); dangling while there is no room.
+    pub fn as_bytes_ptr(self) -> Ptr<u8> {
+        let b = self.obj();
+        if b.capacity() == 0 {
+            return Ptr::<u8>::dangling();
+        }
+        let at: usize = unsafe { transmute_unchecked(b.h[0].bytes) };
+        // The payload follows the 16-byte object header.
+        Ptr::<u8>::dangling().with_addr(at + 16)
+    }
+}
+
+impl StrBuf {
+    /// An empty buffer with room for 16 bytes.
+    pub const fn new() -> StrBuf { StrBuf::with_capacity(16) }
+
+    /// An empty buffer with room for `cap` bytes.
+    #[track_caller]
+    pub const fn with_capacity(cap: usize) -> StrBuf {
+        unsafe {
+            let h: GcBuf<StrBufHead> = buf_new(1);
+            h[0] = StrBufHead { len: 0, cap, bytes: buf_new(buf_len(cap, 1)) };
+            StrBuf { h }
+        }
+    }
+
+    /// Byte length.
+    pub const fn len(self) -> usize {
+        unsafe {
+            self.h[0].len
+        }
+    }
+    /// `true` when the buffer holds no bytes.
+    pub const fn is_empty(self) -> bool { self.len() == 0 }
+    /// Bytes the buffer holds before it grows.
+    pub const fn capacity(self) -> usize {
+        unsafe {
+            self.h[0].cap
+        }
+    }
+    /// Empty the buffer; its capacity stays.
+    pub const fn clear(self) {
+        unsafe {
+            self.h[0].len = 0;
+        }
+    }
+
+    /// Room for `additional` more bytes (doubling).
+    #[track_caller]
+    pub const fn reserve(self, additional: usize) {
+        unsafe {
+            let n = self.len();
+            let cap = self.capacity();
+            let need = cap_add(n, additional);
+            if need <= cap { return; }
+            // C may hold the pinned buffer's address: it must stay.
+            if cap > 0 && nabi_gc_pinned(self.h[0].bytes) != 0 {
+                panic("cannot grow a `StrBuf` while it is pinned (C may hold its address): call `b.reserve(n)` before `gc::pin(b)`");
+            }
+            let new_cap = cap.saturating_mul(2).max(need);
+            let store: GcBuf<u8> = buf_new(buf_len(new_cap, 1));
+            buf_copy(store, 0, self.h[0].bytes, 0, n);
+            self.h[0].bytes = store;
+            self.h[0].cap = new_cap;
+        }
+    }
+
+    // The appends grow the buffer out of line (`*_grown`): an append
+    // that fits reaches no safepoint, so it keeps no frame.
+
+    /// Append `c`, UTF-8 encoded.
+    pub const fn push(self, c: char) {
+        unsafe {
+            let n = self.len();
+            if self.capacity() - n < 4 {
+                return self.push_grown(c);
+            }
+            self.h[0].len = n + nabi_buf_put_char(self.h[0].bytes, n, c as u32);
+        }
+    }
+
+    #[cold]
+    const fn push_grown(self, c: char) {
+        unsafe {
+            self.reserve(4);
+            let n = self.len();
+            self.h[0].len = n + nabi_buf_put_char(self.h[0].bytes, n, c as u32);
+        }
+    }
+
+    /// Append `s`, growing the buffer as needed.
+    pub const fn push_str(self, s: str) {
+        unsafe {
+            let m = s.len();
+            let n = self.len();
+            if self.capacity() - n < m {
+                return self.push_str_grown(s);
+            }
+            put_str(self.h[0].bytes, n, s);
+            self.h[0].len = n + m;
+        }
+    }
+
+    #[cold]
+    const fn push_str_grown(self, s: str) {
+        unsafe {
+            let m = s.len();
+            self.reserve(m);
+            let n = self.len();
+            put_str(self.h[0].bytes, n, s);
+            self.h[0].len = n + m;
+        }
+    }
+
+    /// Append one byte. `unsafe`: `to_str` hands out the bytes as a
+    /// `str`, which must be UTF-8; the caller keeps them so by
+    /// the time it is called. Bytes of unknown encoding go through
+    /// `str::from_utf8`.
+    pub const unsafe fn push_byte(self, b: u8) {
+        let n = self.len();
+        if n == self.capacity() {
+            return self.push_byte_grown(b);
+        }
+        self.h[0].bytes[n] = b;
+        self.h[0].len = n + 1;
+    }
+
+    #[cold]
+    const unsafe fn push_byte_grown(self, b: u8) {
+        let n = self.len();
+        self.reserve(1);
+        self.h[0].bytes[n] = b;
+        self.h[0].len = n + 1;
+    }
+
+    /// The current contents as an immutable `str` (a copy).
+    pub const fn to_str(self) -> str {
+        unsafe { nabi_str_from_buf(self.h[0].bytes, 0, self.len()) }
+    }
+}
+
+/// `b[a:b]`: the bytes `a..b` of the current contents as a new `str`,
+/// checked like `str` slicing (clamped). O(b - a): only the range is
+/// copied, so later edits of the buffer never show through.
+impl Sliceable<Range<usize>> for StrBuf {
+    type Output = str;
+    #[track_caller]
+    const fn slice(self, r: Range<usize>) -> str {
+        let n = self.len();
+        let r = clamp_range(r, n);
+        unsafe { nabi_buf_slice_str(self.h[0].bytes, n, r.start, r.end) }
+    }
+}
+
+/// `chars.collect::<str>()`.
+impl FromIterator<char> for str {
+    const fn from_iter<I: IntoIterator<Item = char>>(it: I) -> str {
+        let b = StrBuf::new();
+        for c in it { b.push(c); }
+        b.to_str()
+    }
+}
+
+/// `parts.collect::<str>()`: the pieces concatenated.
+impl FromIterator<str> for str {
+    const fn from_iter<I: IntoIterator<Item = str>>(it: I) -> str {
+        let b = StrBuf::new();
+        for s in it { b.push_str(s); }
+        b.to_str()
+    }
+}
+
+impl Display for StrBuf {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.to_str()) }
+}
+
+/// Empty.
+impl Default for StrBuf {
+    const fn default() -> StrBuf { StrBuf::new() }
+}
+
+/// Bytes that are not UTF-8 (`str::from_utf8`, `RawStr::to_str`,
+/// `RawPath::to_path`; Windows paths: not UTF-16).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Utf8Error {
+    valid_up_to: usize;
+}
+
+impl Utf8Error {
+    /// Length of the valid prefix, in bytes (a Windows path's: UTF-16
+    /// units).
+    pub const fn valid_up_to(self) -> usize { self.valid_up_to }
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { f"invalid UTF-8 at byte {self.valid_up_to}" }
+}
+
+impl Display for Utf8Error {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for Utf8Error {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"Utf8Error({self})") }
+}
+
+impl Error for Utf8Error {}
+
+/// `units` decoded, or the index of the first unpaired surrogate;
+/// `lossy` puts U+FFFD there instead.
+const fn utf16_decode<U: IntoIterator<Item = u16>>(units: U, lossy: bool) -> str | usize {
+    let out = StrBuf::new();
+    let i: usize = 0;
+    // A high surrogate at `i - 1` waiting for its low half; 0 for none.
+    let high = 0u32;
+    for u in units {
+        let n = u as u32;
+        if high != 0u32 {
+            if n >= 0xDC00u32 && n <= 0xDFFFu32 {
+                out.push(unsafe { char::from_u32_unchecked(0x10000u32 + ((high - 0xD800u32) << 10) + (n - 0xDC00u32)) });
+                high = 0u32;
+                i += 1;
+                continue;
+            }
+            if !lossy {
+                return i - 1;
+            }
+            out.push('\u{FFFD}');
+            high = 0u32;
+        }
+        if n >= 0xD800u32 && n <= 0xDBFFu32 {
+            high = n;
+        } else if n >= 0xDC00u32 && n <= 0xDFFFu32 {
+            if !lossy {
+                return i;
+            }
+            out.push('\u{FFFD}');
+        } else {
+            out.push(unsafe { char::from_u32_unchecked(n) });
+        }
+        i += 1;
+    }
+    if high != 0u32 {
+        if !lossy {
+            return i - 1;
+        }
+        out.push('\u{FFFD}');
+    }
+    out.to_str()
+}
+
+/// UTF-16 with an unpaired surrogate (`str::from_utf16`,
+/// `bare::ffi::WideCStr::to_str`).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Utf16Error {
+    valid_up_to: usize;
+}
+
+impl Utf16Error {
+    /// Length of the valid prefix, in units.
+    pub const fn valid_up_to(self) -> usize { self.valid_up_to }
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { f"unpaired surrogate at unit {self.valid_up_to}" }
+}
+
+impl Display for Utf16Error {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for Utf16Error {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"Utf16Error({self})") }
+}
+
+impl Error for Utf16Error {}
+
+// `FromStr`.
+
+/// `str.parse::<T>()` dispatch.
+pub trait FromStr {
+    type Err;
+    fn from_str(s: str) throws (Err) -> Self;
+}
+
+/// `s` as a decimal integer of `bits` bits (its bits as `i64`).
+const fn int_of(s: str, signed: i32, bits: u32) throws (ParseError) -> i64 {
+    unsafe {
+        let out: GcBuf<i64> = buf_new(1);
+        let st = nabi_str_parse_int(s, 10u32, signed, bits, out);
+        if st == 1 { throw ParseError::new(s, 0, "empty string"); }
+        if st == 2 { throw ParseError::new(s, 0, "invalid digit"); }
+        if st == 3 { throw ParseError::new(s, 0, "number out of range"); }
+        out[0]
+    }
+}
+
+const fn signed_of(s: str, bits: u32) throws (ParseError) -> i64 { try int_of(s, 1, bits) }
+
+const fn unsigned_of(s: str, bits: u32) throws (ParseError) -> u64 { (try int_of(s, 0, bits)) as u64 }
+
+const fn float_of(s: str) throws (ParseError) -> f64 {
+    unsafe {
+        let out: GcBuf<f64> = buf_new(1);
+        let st = nabi_str_parse_float(s, out);
+        if st == 2 { throw ParseError::new(s, 0, "invalid float literal"); }
+        if st == 3 { throw ParseError::new(s, 0, "number out of range"); }
+        out[0]
+    }
+}
+
+/// `s` rounded once to a narrower float, its bits: `kind` 0 `f32`, 1
+/// `f16`, 2 `bf16`.
+pub(pkg) const fn narrow_of(s: str, kind: u32) throws (ParseError) -> u32 {
+    unsafe {
+        let out: GcBuf<u32> = buf_new(1);
+        let st = nabi_str_parse_narrow(s, kind, out);
+        if st == 2 { throw ParseError::new(s, 0, "invalid float literal"); }
+        if st == 3 { throw ParseError::new(s, 0, "number out of range"); }
+        out[0]
+    }
+}
+
+impl FromStr for i8 {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> i8 { (try signed_of(s, 8)) as i8 }
+}
+impl FromStr for i16 {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> i16 { (try signed_of(s, 16)) as i16 }
+}
+impl FromStr for i32 {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> i32 { (try signed_of(s, 32)) as i32 }
+}
+impl FromStr for i64 {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> i64 { try signed_of(s, 64) }
+}
+impl FromStr for isize {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> isize { (try signed_of(s, isize::BITS)) as isize }
+}
+impl FromStr for u8 {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> u8 { (try unsigned_of(s, 8)) as u8 }
+}
+impl FromStr for u16 {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> u16 { (try unsigned_of(s, 16)) as u16 }
+}
+impl FromStr for u32 {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> u32 { (try unsigned_of(s, 32)) as u32 }
+}
+impl FromStr for u64 {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> u64 { try unsigned_of(s, 64) }
+}
+impl FromStr for usize {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> usize { (try unsigned_of(s, usize::BITS)) as usize }
+}
+impl FromStr for f64 {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> f64 { try float_of(s) }
+}
+impl FromStr for f32 {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> f32 { f32::from_bits(try narrow_of(s, 0u32)) }
+}
+impl FromStr for bool {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> bool {
+        if s == "true" { return true; }
+        if s == "false" { return false; }
+        throw ParseError::new(s, 0, "expected `true` or `false`");
+    }
+}
+impl FromStr for char {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> char {
+        let it = s.chars();
+        let first = it.next();
+        if s.len() == 0 { throw ParseError::new(s, 0, "empty string"); }
+        if it.next() is char { throw ParseError::new(s, 0, "too many characters"); }
+        first ?? ' '
+    }
+}
+impl FromStr for str {
+    type Err = ParseError;
+    const fn from_str(s: str) throws (ParseError) -> str { s }
+}
+
+/// A hand-off's copy: a new head and byte buffer.
+impl Transfer for StrBuf {
+    const fn transfer_copy(self, m: Memo) -> StrBuf {
+        if buf_is_null(self.h) {
+            return self;
+        }
+        if let got: GcBuf<StrBufHead> = m.find(self.h) {
+            return StrBuf { h: got };
+        }
+        unsafe {
+            let s = self.h[0];
+            let h: GcBuf<StrBufHead> = buf_new(1);
+            m.note(self.h, h);
+            let bytes: GcBuf<u8> = buf_new(buf_len(s.cap, 1));
+            buf_copy(bytes, 0, s.bytes, 0, s.len);
+            h[0] = StrBufHead { len: s.len, cap: s.cap, bytes };
+            StrBuf { h }
+        }
+    }
+
+    const fn transfer_keep(self, m: Memo) -> StrBuf {
+        if !buf_is_null(self.h) {
+            m.keep(self.h);
+        }
+        self
+    }
+
+    const fn transfer_visit(self, m: Memo) -> StrBuf {
+        if !buf_is_null(self.h) {
+            let _ = m.visit(self.h);
+        }
+        self
+    }
+}
+
+// The first `PARKED` bytes of a search are looked at in place, the
+// rest parked: a collection on another thread need not wait for a long
+// one. Most searches end in the first stretch (`lines`, `split`).
+const fn search(s: str, pat: str) -> isize {
+    let at = unsafe { nabi_str_find_near(s, pat, PARKED) };
+    if at != -2 { return at; }
+    search_parked(s, pat)
+}
+
+#[cold]
+const fn search_parked(s: str, pat: str) -> isize { unsafe { nabi_str_find_parked(s, pat, PARKED) } }
+
+/// As `search`, from the end.
+const fn rsearch(s: str, pat: str) -> isize {
+    let at = unsafe { nabi_str_rfind_near(s, pat, PARKED) };
+    if at != -2 { return at; }
+    rsearch_parked(s, pat)
+}
+
+#[cold]
+const fn rsearch_parked(s: str, pat: str) -> isize { unsafe { nabi_str_rfind_parked(s, pat, PARKED) } }
+
+#[cold]
+const fn char_count_parked(s: str) -> usize { unsafe { nabi_str_char_count_parked(s) } }
+
+// Comparisons of two long strings run parked, as searches do: a short
+// one ends within its own length.
+const fn str_eq(a: str, b: str) -> bool {
+    if a.len() < PARKED { unsafe { nabi_str_eq(a, b) } != 0 } else { str_eq_parked(a, b) }
+}
+
+#[cold]
+const fn str_eq_parked(a: str, b: str) -> bool { unsafe { nabi_str_eq_parked(a, b) } != 0 }
+
+const fn str_cmp(a: str, b: str) -> i32 {
+    if a.len() < PARKED || b.len() < PARKED { unsafe { nabi_str_cmp(a, b) } } else { str_cmp_parked(a, b) }
+}
+
+#[cold]
+const fn str_cmp_parked(a: str, b: str) -> i32 { unsafe { nabi_str_cmp_parked(a, b) } }
+
+/// Whether `s[at:at + pat.len()]` is `pat`.
+const fn eq_at(s: str, at: usize, pat: str) -> bool {
+    if pat.len() < PARKED { unsafe { nabi_str_eq_at(s, at, pat) } != 0 } else { eq_at_parked(s, at, pat) }
+}
+
+#[cold]
+const fn eq_at_parked(s: str, at: usize, pat: str) -> bool { unsafe { nabi_str_eq_at_parked(s, at, pat) } != 0 }
+
+/// Offset of the first invalid UTF-8 byte of `buf[at:at + n]`, or -1.
+const fn utf8_error(buf: GcBuf<u8>, at: usize, n: usize) -> isize {
+    if n < PARKED { unsafe { nabi_buf_utf8_error(buf, at, n) } } else { utf8_error_parked(buf, at, n) }
+}
+
+#[cold]
+const fn utf8_error_parked(buf: GcBuf<u8>, at: usize, n: usize) -> isize {
+    unsafe { nabi_buf_utf8_error_parked(buf, at, n) }
+}
+
+/// Copy `s` into `buf` at `off`.
+const fn put_str(buf: GcBuf<u8>, off: usize, s: str) {
+    if s.len() < PARKED { unsafe { nabi_buf_put_str(buf, off, s) }; } else { put_str_parked(buf, off, s); }
+}
+
+#[cold]
+const fn put_str_parked(buf: GcBuf<u8>, off: usize, s: str) { unsafe { nabi_buf_put_str_parked(buf, off, s) }; }

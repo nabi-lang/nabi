@@ -1,0 +1,51 @@
+// expect-exit: 0
+// expect-stdout:
+// try_recv empty: empty
+// 1 2 3
+// after close: none closed
+// send after close: Closed(9)
+// bounded full: Full(8)
+// mpsc total 30
+
+// Closing a channel: buffered values drain, then `recv` returns none.
+use core::marker::share;
+fn show(v: i32 | none) -> str {
+    match v { x: i32 => f"{x}", none => "none" }
+}
+fn show_try(v: i32 | channel::Empty | channel::Closed) -> str {
+    match v { x: i32 => f"{x}", _: channel::Empty => "empty", _: channel::Closed => "closed" }
+}
+
+fn main() {
+    let (tx_own, rx) = channel::<i32>();
+    let tx = unsafe { share(tx_own) };
+    println(f"try_recv empty: {show_try(rx.try_recv())}");
+    try! tx.send(1);
+    try! tx.send(2);
+    try! tx.send(3);
+    tx.close();
+    println(f"{show(rx.recv())} {show(rx.recv())} {show(rx.recv())}");
+    println(f"after close: {show(rx.recv())} {show_try(rx.try_recv())}");
+    try tx.send(9) catch e {
+        match e { channel::SendError::Closed(v) => println(f"send after close: Closed({v})") };
+    };
+
+    let (btx, brx) = channel_bounded::<i32>(1);
+    try! btx.send(7);
+    try btx.try_send(8) catch e {
+        match e {
+            channel::TrySendError::Full(v) => println(f"bounded full: Full({v})"),
+            channel::TrySendError::Closed(v) => println(f"bounded closed: {v}"),
+        };
+    };
+
+    let (a, r) = channel::<i32>();
+    let b = a.clone();
+    try! a.send(10);
+    try! b.send(20);
+    a.close();
+    b.close();
+    let total = 0;
+    for v in r { total += v; }
+    println(f"mpsc total {total}");
+}

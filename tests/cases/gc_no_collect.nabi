@@ -1,0 +1,28 @@
+// needs: os
+// expect-exit: 0
+// gc-stress: 50
+// run-env: NABIR_GC_YOUNG=1048576
+// expect-stdout:
+// inside 0 collections, 40000 strings
+// grown true
+// after true
+
+// Inside `bare::gc::no_collect` allocation never collects: past the
+// young budget the heap grows (counted in `grown_bytes`), and the
+// collection comes after the region.
+use bare::gc;
+
+fn main() {
+    let before = gc::stats();
+    let (n, during) = gc::no_collect(|| {
+        let l: List<str> = [];
+        for i in 0..40000 { l.push(f"region string {i}"); }
+        let s = gc::stats();
+        (l.len(), s.collections - before.collections)
+    });
+    println(f"inside {during} collections, {n} strings");
+    let s = gc::stats();
+    println(f"grown {s.grown_bytes > before.grown_bytes}");
+    for i in 0..40000 { let _junk = f"after {i}"; }
+    println(f"after {gc::stats().collections > s.collections}");
+}

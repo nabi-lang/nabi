@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout:
+
+// Well-formed `#[lang("slot_name")]` on trait / struct / enum /
+// fn / const / static is accepted.
+// A slot binds once per program, so this uses slots core leaves
+// unbound (core binds `panic_fn` / `oom_fn` / `unreachable_fn`).
+#[lang("char_type")]
+struct C {
+    c: i32;
+}
+
+#[lang("none_type")]
+struct S {
+    n: i32;
+}
+
+fn main() -> i32 {
+    return 0;
+}

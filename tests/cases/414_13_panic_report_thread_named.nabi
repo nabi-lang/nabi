@@ -1,0 +1,13 @@
+// needs: threads
+// expect-exit: 101
+// expect-stderr: thread 'worker-1' panicked at tests/cases/414_13_panic_report_thread_named.nabi:11:65:
+// expect-stderr: boom
+// expect-stdout:
+
+// A panic report names the thread with the name
+// given to `thread::Builder::name`.
+use std::thread;
+
+let t = try! thread::Builder::new().name("worker-1").spawn(|| { panic("boom"); });
+let r = try? t.join();
+println("not reached");

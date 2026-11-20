@@ -1,0 +1,9 @@
+// expect-error: 6:46: mismatched types: the return value expects `T`, found `f64`
+// expect-error: help: only the `if T is ..` branch knows `T`; return a `T` here, or add a bound (`T: num::One`) and write `T::one()`
+
+// The branch knows `T`; the `else` does not.
+fn f<T>(_x: T) -> T {
+    if T is f32 { return 1.0 } else { return 1.0 }
+}
+
+fn main() { println(f"{f(1.0f32)}"); }

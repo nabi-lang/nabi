@@ -1,0 +1,31 @@
+// expect-exit: 0
+// expect-stdout:
+// enter
+// critical 3
+// leave
+// twice 10
+// thrice 15
+
+// `#[keyword("name")]` registers `name` in this package; a use
+// is the handler's call (here with a trailing closure), whichever module
+// the handler lives in (an inline `mod` too).
+mod dsl;
+
+mod inner {
+    #[keyword("thrice")]
+    pub fn thrice_handler(x: i32) -> i32 { x * 3 }
+}
+
+#[keyword("twice")]
+fn twice_handler(x: i32) -> i32 {
+    return x * 2;
+}
+
+fn main() -> i32 {
+    guarded(3) |n: i32| {
+        println(f"critical {n}");
+    };
+    println(f"twice {twice(5)}");
+    println(f"thrice {thrice(5)}");
+    return 0;
+}

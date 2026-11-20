@@ -1,0 +1,78 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/std_209_sorted.nabi:78:1:
+// expect-stderr: SortedDict changed while it was walked; collect what to change first, e.g. `d.keys().collect::<List<_>>()`, then change it
+// expect-stdout:
+// {"apple": 1, "fig": 2, "pear": 3} 3 2 none 0 true
+// ("apple", 1) ("pear", 3) ("apple", 1) ("fig", 2) ("apple", 1) ("pear", 3)
+// ["apple", "fig", "pear"] [1, 2, 3] [("pear", 3), ("fig", 2), ("apple", 1)]
+// [20, 30] [20, 30, 40] [30, 40] [10, 20] [10, 20, 30] [10, 20, 30, 40]
+// [30, 20] [40, 30, 20] [] []
+// (10, 1) (40, 4)
+// {20: 2, 30: 3}
+// 2 none 1
+// true none none []
+// true true true
+// true true
+// 0 0
+// {1, 3, 4, 5} false false true 1 5 1 3
+// [3, 4] [5, 4, 3, 1] 1 5 [3, 4]
+// {3, 4, 6} {3, 4} {} {6} true true true
+// true false 2 3 {0, 1, 2, 3, 4}
+// {1: "a", 2: "b"} true true
+
+// SortedDict / SortedSet: order, lookups, floor / ceil, ranges of every
+// form, reverse walks, pops, a shuffled stress run against a Dict, the
+// trait impls, and a change while walking panics.
+use core::collections::{SortedDict, SortedSet};
+use std::random::{Rng, Xoshiro256PlusPlus};
+
+let d: SortedDict<str, i64> = SortedDict::new();
+d["pear"] = 3;
+d["apple"] = 1;
+d["fig"] = 2;
+println(f"{d:?} {d.len()} {d["fig"]} {d.get("kiwi"):?} {d.get_or("kiwi", 0)} {d.contains_key("pear")}");
+println(f"{d.first():?} {d.last():?} {d.floor("b"):?} {d.ceil("b"):?} {d.lower("fig"):?} {d.higher("fig"):?}");
+println(f"{d.keys().collect::<List<str>>():?} {d.values().collect::<List<i64>>():?} {d.iter_rev().collect::<List<(str, i64)>>():?}");
+let n: SortedDict<i64, i64> = SortedDict::from([(10, 1), (20, 2), (30, 3), (40, 4)]);
+let ks = |it: core::collections::SortedIter<i64, i64>| -> List<i64> { it.map(|(k, _)| k).collect() };
+println(f"{ks(n.range(15..35)):?} {ks(n.range(20..=40)):?} {ks(n.range(25..)):?} {ks(n.range((..30))):?} {ks(n.range((..=30))):?} {ks(n.range((..))):?}");
+println(f"{ks(n.range_rev(15..35)):?} {ks(n.range_rev(20..=40)):?} {ks(n.range(30..20)):?} {ks(n.range(31..39)):?}");
+println(f"{n.pop_first():?} {n.pop_last():?}");
+println(f"{n:?}");
+println(f"{n.remove(20):?} {n.remove(20):?} {n.len()}");
+n.clear();
+println(f"{n.is_empty()} {n.first():?} {n.floor(5):?} {ks(n.range(0..9)):?}");
+
+let g = Xoshiro256PlusPlus::seed(11);
+let t: SortedDict<i64, i64> = SortedDict::new();
+let r: Dict<i64, i64> = Dict::new();
+let ok = true;
+for step in 0..60000 {
+    let k = g.range(0..3000);
+    if g.below(5) < 2 {
+        ok = ok && t.remove(k) == r.remove(k);
+    } else {
+        ok = ok && t.insert(k, step) == r.insert(k, step);
+    }
+}
+let want: List<i64> = r.keys().collect();
+want.sort();
+println(f"{ok} {t.len() == r.len()} {t.keys().collect::<List<i64>>() == want}");
+let back: List<i64> = t.iter_rev().map(|(k, _)| k).collect();
+back.reverse();
+println(f"{back == want} {ks(t.range(1000..1010)) == want.iter().filter(|k| k >= 1000 && k < 1010).collect::<List<i64>>()}");
+while let (k, _): (i64, i64) = t.pop_first() { _ = r.remove(k); }
+println(f"{t.len()} {r.len()}");
+
+let s: SortedSet<i64> = SortedSet::from([5, 1, 3, 1]);
+s += 4;
+println(f"{s:?} {s.insert(3)} {s.remove(9)} {s.contains(4)} {s.first():?} {s.last():?} {s.floor(2):?} {s.ceil(2):?}");
+println(f"{s.range(2..5).collect::<List<i64>>():?} {s.iter_rev().collect::<List<i64>>():?} {s.pop_first():?} {s.pop_last():?} {s.to_list():?}");
+let u: SortedSet<i64> = SortedSet::from([3, 4, 6]);
+println(f"{s.union(u):?} {s.intersection(u):?} {s.difference(u):?} {s.symmetric_difference(u):?} {s.is_subset(u)} {s.intersection(u).is_subset(u)} {s.is_disjoint(SortedSet::from([9]))}");
+let c = s.clone();
+c += 100;
+println(f"{s == SortedSet::from([3, 4])} {c == s} {s.len()} {c.len()} {(0..5).collect::<SortedSet<i64>>():?}");
+let dd: SortedDict<i64, str> = [(2, "b"), (1, "a")].into_iter().collect();
+println(f"{dd:?} {dd == SortedDict::from([(1, "a"), (2, "b")])} {dd.clone() == dd}");
+for (k, _) in dd { dd[k + 10] = "x"; }

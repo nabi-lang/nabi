@@ -1,0 +1,40 @@
+// needs: threads
+
+// `ThreadLocal::with` lends this thread's value to its closure: the value
+// can't be returned, stored past the call, sent, or kept by a callee, and
+// the closure can't be `async` (its future could resume on another
+// thread).
+use std::thread;
+
+static TL: thread::ThreadLocal<List<i32>> = thread::local(|| -> List<i32> { [] });
+
+struct W { l: List<i32>; }
+
+fn keep(c: Cell<List<i32>>, xs: List<i32>) { c.set(xs); }
+
+fn main() {
+    let a = TL.with(|l| l);
+    let saved: List<List<i32>> = [];
+    TL.with(|l| { saved.push(l); });
+    let kept: List<i32> = [];
+    TL.with([ref kept] |l| { kept = l; });
+    let w = TL.with(|l| W { l: l });
+    let c: Cell<List<i32>> = Cell::new([]);
+    TL.with(|l| keep(c, l));
+    let (tx, rx) = channel::<List<i32>>();
+    TL.with(|l| { try! tx.send(l); });
+    let f = TL.with(async |l| { l.len() });
+    // Fine: what is computed from the value, a copy, a change in place.
+    let n = TL.with(|l| l.len());
+    let d = TL.with(|l| l.clone());
+    TL.with(|l| { l.push(1); });
+}
+
+// expect-error: 16:25: this returns the value `with` lends out of its closure: the value is only lent to it
+// expect-error: help: return a copy (`.clone()`) or what you computed from it, or take a `ThreadLocal`'s value out with `replace` / `take`
+// expect-error: 18:13: this closure keeps `l`, the value `with` lends, past `with`
+// expect-error: 20:13: this closure keeps `l`, the value `with` lends, past `with`: the value is only lent to the closure
+// expect-error: 21:25: this returns the value `with` lends out of its closure
+// expect-error: 23:25: `l` is the value `with` lends to its closure, and `keep` keeps it past the call
+// expect-error: 25:32: `l` can't be sent through a channel: it is the value `with` lends to its closure (a `ThreadLocal`'s, a locked `Mutex`'s)
+// expect-error: 26:21: an `async` closure can't be given to `with`: its future would keep the value `with` lends (a `ThreadLocal`'s, a locked `Mutex`'s) past the call

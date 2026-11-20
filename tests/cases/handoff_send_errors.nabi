@@ -1,0 +1,94 @@
+// expect-error: error[E0105]: `xs` was sent through a channel at line 26
+// expect-error: handoff_send_errors.nabi:27:5: `xs` was sent through a channel at line 26
+// expect-error: help: the receiver owns it now; hand over `xs.clone()` to keep a separate copy, or give `xs` a new value before using it again
+// expect-error: handoff_send_errors.nabi:33:5: `ys` was sent through a channel at line 32
+// expect-error: handoff_send_errors.nabi:45:13: `xs` was handed to a task at line 44
+// expect-error: handoff_send_errors.nabi:48:13: `ys` was moved into a closure at line 47
+// expect-error: handoff_send_errors.nabi:39:5: `zs` was sent through a channel at line 38
+// needs: threads
+
+// A value sent through a channel, handed to a task or moved into a
+// closure for another thread belongs to the receiver: using the sender's
+// handle afterwards is a compile error.
+use std::thread;
+
+fn main() {
+    let (tx, rx) = channel::<List<i32>>();
+    let a = sent(tx) + tried(tx) + task::block_on(sent_async(tx)) + handed() + flagged(tx);
+    for _ in 0..3 {
+        let _ = rx.recv();
+    }
+    println(f"{a}");
+}
+
+fn sent(tx: Sender<List<i32>>) -> i64 {
+    let xs: List<i32> = [1];
+    try! tx.send(xs);
+    xs.len() as i64
+}
+
+fn tried(tx: Sender<List<i32>>) -> i64 {
+    let ys: List<i32> = [1, 2];
+    try! tx.try_send(ys);
+    ys.len() as i64
+}
+
+async fn sent_async(tx: Sender<List<i32>>) -> i64 {
+    let zs: List<i32> = [1, 2];
+    try! await tx.send_async(zs);
+    zs.len() as i64
+}
+
+fn handed() -> i64 {
+    let xs: List<i32> = [1, 2];
+    let t = task::spawn_blocking_with_arg(xs, |v: List<i32>| v.len());
+    let k = xs.len();
+    let ys: List<i32> = [3];
+    let h = thread::spawn([move ys] || ys.len());
+    let j = ys.len();
+    (task::block_on(t) + try! h.join() + k + j) as i64
+}
+
+// Also where a flag says it was sent, where the flag got a value the
+// check cannot see, and on a loop's next pass.
+fn flagged(tx: Sender<List<i32>>) -> i64 {
+    flag_set(tx, true) + flag_lost(tx, true, false) + next_pass(tx)
+}
+
+fn flag_set(tx: Sender<List<i32>>, c: bool) -> i64 {
+    let xs: List<i32> = [1];
+    let sent = false;
+    if c {
+        try! tx.send(xs);
+        sent = true;
+    }
+    if sent { return xs.len() as i64; }
+    0
+}
+
+fn flag_lost(tx: Sender<List<i32>>, c: bool, d: bool) -> i64 {
+    let xs: List<i32> = [1];
+    let sent = false;
+    if c {
+        try! tx.send(xs);
+        sent = true;
+    }
+    sent = d;
+    if !sent { return xs.len() as i64; }
+    0
+}
+
+fn next_pass(tx: Sender<List<i32>>) -> i64 {
+    let xs: List<i32> = [1];
+    let n = 0i64;
+    loop {
+        n += 1;
+        if n == 2 { try! tx.send(xs); }
+        if n > 3 { break; }
+    }
+    n
+}
+
+// expect-error: handoff_send_errors.nabi:65:22: `xs` was sent through a channel at line 62
+// expect-error: handoff_send_errors.nabi:77:23: `xs` was sent through a channel at line 73
+// expect-error: handoff_send_errors.nabi:86:34: `xs` was already sent through a channel by this call, on an earlier pass of the loop

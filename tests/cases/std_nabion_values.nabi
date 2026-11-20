@@ -1,0 +1,148 @@
+// expect-exit: 0
+// expect-stdout:
+// none: none
+// bool: true
+// bool: false
+// integer: 42
+// integer: -7
+// integer: 255
+// integer: 10
+// integer: 15
+// integer: 1000000
+// integer: 123456789012345678901234567890
+// integer: -9223372036854775809
+// float: 3.14
+// float: -0.0015
+// float: 20000000000.0
+// float: 1.0
+// float: 1.0e300
+// float: 0.1
+// float: -0.0
+// char: 'a'
+// char: '\n'
+// char: '\''
+// char: '가'
+// char: '\u{7}'
+// char: '"'
+// string: "text"
+// string: "tab\tquote\"back\\slash A 😀"
+// string: "raw \\n"
+// string: "has \"quotes\""
+// string: "two\nlines"
+// string: "joined here"
+// list: []
+// list: [1, 2, 3]
+// list: [[1], [], ["x"]]
+// dict: {}
+// dict: { "k": 1, 2: [true], 'c': none }
+// tuple: ()
+// tuple: (1,)
+// tuple: (1, "two", 3.0)
+// integer: 5
+// struct: Point { x: 1, y: 2 }
+// struct: { x: 1, y: -2 }
+// struct: Empty {}
+// variant `geom::Point`: geom::Point { x: 1 }
+// variant `Mode::Fast`: Mode::Fast
+// variant `Shape::Circle`: Shape::Circle(1.0, at: (0, 0))
+// variant `Shape::Rect`: Shape::Rect { w: 2, h: 3 }
+// variant `a::b::E::V`: a::b::E::V
+// variant `Pair`: Pair(7, "seven")
+// list: [1, 2]
+// equal: true false
+// unordered: true true false
+// floats: true true false false
+// empty: true true
+// { "k": 1, (1, true): none }
+
+// Every NABION value kind, read with `nabion::parse` and
+// written back in canonical form (`Value::to_str`).
+
+use std::nabion;
+use std::nabion::Value;
+
+use core::hash::{BuildHasher, Hasher, RandomState};
+
+/// `x`'s hash under the process key.
+fn hash_of<T: Hash>(x: T) -> u64 {
+    let h = RandomState::new().build_hasher();
+    x.hash(ref h);
+    h.finish()
+}
+
+fn show(s: str) {
+    let v = try nabion::parse(s) catch e { println(f"error: {e}"); return; };
+    println(f"{v.kind_name()}: {v}");
+}
+
+fn main() {
+    show("none");
+    show("true");
+    show("false");
+    show("42");
+    show("-7");
+    show("0xff");
+    show("0b1010");
+    show("0o17");
+    show("1_000_000");
+    show("123456789012345678901234567890");
+    show("-0x8000_0000_0000_0001");
+    show("3.14");
+    show("-1.5e-3");
+    show("2E10");
+    show("1.");
+    show("1e300");
+    show("0.1");
+    show("-0.0");
+    show("'a'");
+    show("'\\n'");
+    show("'\\''");
+    show("'\\u{AC00}'");
+    show("'\\u{7}'");
+    show("'\"'");
+    show("\"text\"");
+    show("\"tab\\tquote\\\"back\\\\slash \\x41 \\u{1F600}\"");
+    show("r\"raw \\n\"");
+    show("r#\"has \"quotes\"\"#");
+    show("\"two\nlines\"");
+    show("\"joined \\\n      here\"");
+    show("[]");
+    show("[1, 2, 3,]");
+    show("[[1], [], [\"x\"]]");
+    show("{}");
+    show("{ \"k\": 1, 2: [true], 'c': none, }");
+    show("()");
+    show("(1,)");
+    show("(1, \"two\", 3.0)");
+    show("(5)");
+    show("Point { x: 1, y: 2 }");
+    show("{ x: 1, y: -2, }");
+    show("Empty {}");
+    show("geom::Point { x: 1 }");
+    show("Mode::Fast");
+    show("Shape::Circle(1.0, at: (0, 0))");
+    show("Shape::Rect { w: 2, h: 3 }");
+    show("a::b::E::V");
+    show("Pair(7, \"seven\")");
+    show("/* lead */ [1, // one\n 2 /* two /* nested */ */]");
+
+    let a = try! nabion::parse("{ \"k\": [1, 2.5, 'c'] }");
+    let b = try! nabion::parse("{\"k\":[1,2.5,'c',],}");
+    println(f"equal: {a == b} {a == Value::None}");
+    let p = try! nabion::parse("P { x: 1, y: { \"a\": 1, \"b\": 2 } }");
+    let q = try! nabion::parse("P { y: { \"b\": 2, \"a\": 1 }, x: 1 }");
+    let r = try! nabion::parse("Q { y: { \"b\": 2, \"a\": 1 }, x: 1 }");
+    println(f"unordered: {p == q} {hash_of(p) == hash_of(q)} {p == r}");
+    let nan = Value::Float(Float::from_f64(f64::NAN));
+    let z = Value::Float(Float::from_f64(0.0));
+    let nz = Value::Float(Float::from_f64(-0.0));
+    println(f"floats: {nan == nan} {hash_of(nan) == hash_of(nan)} {z == nz} {Value::Int(Int::from(1)) == Value::Float(Float::from_f64(1.0))}");
+    let e = Value::Struct { name: none, fields: Dict::new() };
+    let ed = Value::Dict(Dict::new());
+    println(f"empty: {e == ed} {hash_of(e) == hash_of(ed)}");
+    let d: Dict<Value, Value> = Dict::new();
+    d.insert(Value::Str("k"), Value::Int(1));
+    d.insert(Value::Tuple([Value::Int(1), Value::Bool(true)]), Value::None);
+    println(try! Value::Dict(d).to_str());
+}
+

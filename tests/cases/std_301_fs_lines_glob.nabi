@@ -1,0 +1,48 @@
+// needs: fs
+// expect-exit: 0
+// expect-stdout:
+// [one]
+// [two]
+// [three]
+// ["/a.nabi"]
+// ["/a.nabi", "/sub/c.nabi", "/sub/deep/d.nabi"]
+// ["/a.nabi", "/b.txt"]
+// ["/b.txt"]
+// ["/.hidden.nabi"]
+// []
+
+// fs::lines reads a file line by line and closes it; fs::glob matches *, ?,
+// [..] and ** components, sorted, skipping dot files unless asked.
+use std::env;
+use std::fs;
+use std::path::Path;
+
+// The paths below the base (a temp dir may end in a separator).
+fn show(ps: List<Path>) -> List<str> {
+    ps.map(|p| match p.as_str().split_once("nabi_w2_glob") {
+        t: (str, str) => t.1,
+        none => "?",
+    }).to_list()
+}
+
+fn main() throws {
+    let base = f"{env::temp_dir()}/nabi_w2_glob";
+    if fs::exists(base) {
+        try fs::remove_dir_all(base);
+    }
+    try fs::create_dir_all(f"{base}/sub/deep");
+    try fs::write(f"{base}/lines.txt", "one\ntwo\r\nthree");
+    try for line in fs::lines(f"{base}/lines.txt") {
+        println(f"[{line}]");
+    }
+    for name in ["a.nabi", "b.txt", "sub/c.nabi", "sub/deep/d.nabi", ".hidden.nabi"] {
+        try fs::write(f"{base}/{name}", "");
+    }
+    println(f"{show(try fs::glob(f"{base}/*.nabi")):?}");
+    println(f"{show(try fs::glob(f"{base}/**/*.nabi")):?}");
+    println(f"{show(try fs::glob(f"{base}/[ab].*")):?}");
+    println(f"{show(try fs::glob(f"{base}/?.t*")):?}");
+    println(f"{show(try fs::glob(f"{base}/.*")):?}");
+    println(f"{show(try fs::glob(f"{base}/nothing/*")):?}");
+    try fs::remove_dir_all(base);
+}

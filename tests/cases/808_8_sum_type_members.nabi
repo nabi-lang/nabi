@@ -1,0 +1,25 @@
+// expect-exit: 0
+// expect-stdout:
+// int 5
+// text hi
+// float 1.5
+// nothing
+
+// A sum `A | B | ..` carries a tag naming the
+// member it holds; matching on the member type branches on that tag.
+fn show(v: i32 | str | f64 | none) -> str {
+    match v {
+        n: i32 => f"int {n}",
+        s: str => f"text {s}",
+        x: f64 => f"float {x}",
+        none => "nothing",
+    }
+}
+
+fn main() -> i32 {
+    println(show(5));
+    println(show("hi"));
+    println(show(1.5));
+    println(show(none));
+    return 0;
+}

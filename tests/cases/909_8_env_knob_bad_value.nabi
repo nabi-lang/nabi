@@ -1,0 +1,51 @@
+// needs: threads
+// run-env: NABIR_GC_STRESS=often
+// run-env: NABIR_GC_EVAC=never
+// run-env: NABIR_GC_CONCURRENT=never
+// run-env: NABIR_GC_STATS=yes
+// run-env: NABIR_GC_LOG=2
+// run-env: NABIR_HEAP_DUMP=always
+// run-env: NABIR_WORKERS=0
+// run-env: NABIR_THREAD_PER_CORE=on
+// run-env: NABIR_DYNAMIC_WORKERS=true
+// expect-exit: 0
+// expect-stderr: nabi: warning: ignoring NABIR_GC_STRESS=often (expected a number)
+// expect-stderr: nabi: warning: ignoring NABIR_GC_EVAC=never (expected always)
+// expect-stderr: nabi: warning: ignoring NABIR_GC_CONCURRENT=never (expected auto|always|off)
+// expect-stderr: nabi: warning: ignoring NABIR_GC_STATS=yes (expected 0|1)
+// expect-stderr: nabi: warning: ignoring NABIR_GC_LOG=2 (expected 0|1)
+// expect-stderr: nabi: warning: ignoring NABIR_HEAP_DUMP=always (expected on_oom)
+// expect-stderr: nabi: warning: ignoring NABIR_THREAD_PER_CORE=on (expected 0|1)
+// expect-stderr: nabi: warning: ignoring NABIR_DYNAMIC_WORKERS=true (expected 0|1)
+// expect-stderr: nabi: warning: ignoring NABIR_WORKERS=0 (expected a positive number)
+// expect-stdout:
+// workers true
+// sum 5050
+
+// A runtime knob set to a value outside its accepted ones warns once on
+// stderr and keeps its default: no stress, no evacuation forced, auto
+// concurrent marking, no stats, no log, no heap dump, the online CPUs as
+// workers, stealing, a fixed pool.
+use bare::gc;
+
+async fn run() -> i64 {
+    println(f"workers {task::worker_count() > 0}");
+    let tasks: List<Task<i64>> = List::new();
+    for i in 1..101 {
+        tasks.push(task::spawn(async { i as i64 }));
+    }
+    let sum = 0i64;
+    for t in tasks {
+        sum = sum + await t;
+    }
+    sum
+}
+
+fn main() {
+    let words: List<str> = [];
+    for i in 0..1000 {
+        words.push(f"w{i}");
+    }
+    gc::collect();
+    println(f"sum {task::block_on(run())}");
+}

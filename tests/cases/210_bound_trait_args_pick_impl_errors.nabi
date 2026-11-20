@@ -1,0 +1,15 @@
+// expect-error: 14:13: method `conv` on `List<i64>` is ambiguous: several `Conv` impls provide it - give the argument the type of one impl (annotate it, or add a suffix or `as`), or name the trait's arguments of one: `Conv::<T>::conv(x)`
+
+// Without the trait's arguments two impls fit.
+trait Conv<T> { fn conv(self) -> List<T>; }
+impl<T> Conv<T> for List<T> {
+    fn conv(self) -> List<T> { self }
+}
+impl Conv<f64> for List<i64> {
+    fn conv(self) -> List<f64> { self.iter().map(|x| x as f64).collect() }
+}
+
+fn main() {
+    let b: List<i64> = [7];
+    let c = Conv::conv(b);
+}

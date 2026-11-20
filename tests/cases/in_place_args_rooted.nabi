@@ -1,0 +1,60 @@
+// nabic-arg: -O2
+// gc-stress: 1
+// expect-exit: 0
+// expect-stdout:
+// end [1, 2, 3, 7] [4, 5] [1, 2, 3, 7]
+
+// A function that never returns reads its wide arguments where the
+// caller has them only if the caller keeps them rooted there. Here the
+// caller is a closure with no safepoint of its own, its copy of `w`
+// nowhere else on the stack: `finish` must take a copy the collector
+// sees, or the lists move under it.
+use bare::gc::GcPtr;
+use std::process;
+
+struct W {
+    a: List<i32>;
+    b: List<i32>;
+    // Past the size passed in registers.
+    pad: [i64; 8];
+}
+
+fn churn(n: i32) -> i32 {
+    let all: List<List<i32>> = [];
+    for i in 0..n {
+        let l: List<i32> = [];
+        for j in 0..100 {
+            l.push(i + j);
+        }
+        all.push(l);
+    }
+    let s = 0;
+    for l in all {
+        s += l[1];
+    }
+    s
+}
+
+// `keep` holds the same lists through the heap, where they move.
+#[inline(never)]
+fn finish(w: W, keep: GcPtr<W>) -> ! {
+    _ = churn(2000);
+    w.a.push(7);
+    println(f"end {w.a:?} {w.b:?} {keep.get().a:?}");
+    process::exit(0);
+}
+
+#[inline(never)]
+fn make() -> GcPtr<W> {
+    GcPtr::new(W { a: [1, 2, 3], b: [4, 5], pad: [0i64; 8] })
+}
+
+#[inline(never)]
+fn run(f: fn()) {
+    f();
+}
+
+fn main() {
+    let keep = make();
+    run(|| { finish(keep.get(), keep); });
+}

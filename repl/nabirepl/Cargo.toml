@@ -1,0 +1,25 @@
+[package]
+name = "nabirepl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# build.rs: the REPL host's `main` (host.rs) as an object.
+build = "build.rs"
+
+# The REPL; `nabi repl` hosts it.
+[dependencies]
+nabic_core = { workspace = true }
+nabic_diagnostic = { workspace = true }
+nabic_hir = { workspace = true }
+nabic_interface = { workspace = true }
+nabic_ir_common = { workspace = true }
+nabic_lexer = { workspace = true }
+nabic_parser = { workspace = true }
+nabic_tools = { workspace = true }
+nabic_typeck = { workspace = true }
+nabirepl_lineedit = { workspace = true }
+
+[lints]
+workspace = true

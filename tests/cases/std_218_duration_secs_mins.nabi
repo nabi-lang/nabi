@@ -1,0 +1,12 @@
+// expect-exit: 0
+// expect-stdout:
+// 2s 180s 2s true
+
+// `secs` and `mins` are the constructors; `min` on two Durations is
+// `Ord::min`.
+fn main() {
+    let a = Duration::secs(2);
+    let b = Duration::mins(3);
+    let c = a.min(b);
+    println(f"{a} {b} {c} {a == c}");
+}

@@ -1,0 +1,21 @@
+// operator trait methods are declared without `throws`; an impl can't add one.
+// expect-error: operators don't throw
+
+enum Overflow { Big }
+struct M { v: i32; }
+
+impl ops::Add<M> for M {
+    type Output = M;
+    fn add(self, rhs: M) throws (Overflow) -> M {
+        if self.v + rhs.v > 100 { throw Overflow::Big; }
+        M { v: self.v + rhs.v }
+    }
+}
+
+fn main() -> i32 {
+    let c = M { v: 1 } + M { v: 2 };
+    return c.v;
+}
+// expect-error-extra: allow
+// (the `+` still calls the throwing `add`, so `c.v` also reports
+// a field access on `throws (Overflow) -> M`)

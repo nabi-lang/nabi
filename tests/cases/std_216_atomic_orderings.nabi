@@ -1,0 +1,132 @@
+// needs: threads
+// expect-exit: 0
+// expect-stdout:
+// message passing: ok
+// store buffering: ok
+// spin lock: 40000
+// relaxed counter: 40000
+// sizes: 3 300 70000 5000000000 1
+// cas: 7 9 9
+
+// Each ordering keeps what the memory model promises: data written
+// relaxed before a release store is seen after the acquire load that
+// reads it; two seq_cst stores each followed by a load of the other's
+// cell cannot both read the old value; a lock taken by an acquire
+// compare-exchange and freed by a release store keeps its relaxed
+// counter exact; relaxed read-modify-writes lose no update.
+use core::sync::{LoadOrdering, StoreOrdering, UpdateOrdering};
+use std::thread;
+
+fn message_passing() -> bool {
+    let data = Atomic::new(0i64);
+    let seq = Atomic::new(0i64);
+    let ack = Atomic::new(0i64);
+    let rounds = 20000;
+    let reader = thread::spawn(|| {
+        let bad = 0;
+        let r = 1;
+        while r <= rounds {
+            while seq.load(LoadOrdering::Acquire) != r {}
+            if data.load(LoadOrdering::Relaxed) != r * 7 { bad += 1; }
+            ack.store(r, StoreOrdering::Release);
+            r += 1;
+        }
+        bad
+    });
+    let r = 1;
+    while r <= rounds {
+        data.store(r * 7, StoreOrdering::Relaxed);
+        seq.store(r, StoreOrdering::Release);
+        while ack.load(LoadOrdering::Acquire) != r {}
+        r += 1;
+    }
+    return try! reader.join() == 0;
+}
+
+fn store_buffering() -> bool {
+    let x = Atomic::new(0i64);
+    let y = Atomic::new(0i64);
+    let go = Atomic::new(0i64);
+    let done = Atomic::new(0i64);
+    let seen = Atomic::new(0i64);
+    let rounds = 5000;
+    let other = thread::spawn(|| {
+        let r = 1;
+        while r <= rounds {
+            while go.load(LoadOrdering::Acquire) != r {}
+            y.store(r, StoreOrdering::SeqCst);
+            seen.store(x.load(LoadOrdering::SeqCst), StoreOrdering::Relaxed);
+            done.store(r, StoreOrdering::Release);
+            r += 1;
+        }
+    });
+    let both = 0;
+    let r = 1;
+    while r <= rounds {
+        go.store(r, StoreOrdering::Release);
+        x.store(r, StoreOrdering::SeqCst);
+        let a = y.load(LoadOrdering::SeqCst);
+        while done.load(LoadOrdering::Acquire) != r {}
+        if a < r && seen.load(LoadOrdering::Relaxed) < r { both += 1; }
+        r += 1;
+    }
+    try! other.join();
+    return both == 0;
+}
+
+fn spin_lock() -> i64 {
+    let lock = Atomic::new(0i32);
+    let count = Atomic::new(0i64);
+    let hs: List<thread::JoinHandle<i64>> = [];
+    for _ in 0..4 {
+        hs.push(thread::spawn(|| {
+            for _ in 0..10000 {
+                while lock.compare_exchange(0, 1, UpdateOrdering::Acquire, LoadOrdering::Relaxed).is_err() {}
+                count.store(count.load(LoadOrdering::Relaxed) + 1, StoreOrdering::Relaxed);
+                lock.store(0, StoreOrdering::Release);
+            }
+            0
+        }));
+    }
+    for h in hs { try! h.join(); }
+    count.load(LoadOrdering::Acquire)
+}
+
+fn relaxed_counter() -> i64 {
+    let c = Atomic::new(0i64);
+    let hs: List<thread::JoinHandle<i64>> = [];
+    for _ in 0..4 {
+        hs.push(thread::spawn(|| {
+            for _ in 0..10000 { c.fetch_add(1, UpdateOrdering::Relaxed); }
+            0
+        }));
+    }
+    for h in hs { try! h.join(); }
+    c.load(LoadOrdering::Relaxed)
+}
+
+fn main() -> i32 {
+    println(f"message passing: {if message_passing() { "ok" } else { "broken" }}");
+    println(f"store buffering: {if store_buffering() { "ok" } else { "broken" }}");
+    println(f"spin lock: {spin_lock()}");
+    println(f"relaxed counter: {relaxed_counter()}");
+    let b = Atomic::new(1u8);
+    b.fetch_add(2, UpdateOrdering::Relaxed);
+    let h = Atomic::new(100u16);
+    h.fetch_add(200, UpdateOrdering::Acquire);
+    let w = Atomic::new(80000u32);
+    w.fetch_sub(10000, UpdateOrdering::Release);
+    let d = Atomic::new(1u64);
+    d.swap(5000000000, UpdateOrdering::AcqRel);
+    let f = Atomic::new(false);
+    f.fetch_or(true, UpdateOrdering::Release);
+    f.fetch_and(true, UpdateOrdering::Acquire);
+    f.fetch_xor(false, UpdateOrdering::Relaxed);
+    println(f"sizes: {b.load(LoadOrdering::Relaxed)} {h.load(LoadOrdering::Acquire)} {w.load()} {d.load(LoadOrdering::Relaxed)} {if f.load(LoadOrdering::Relaxed) { 1 } else { 0 }}");
+    let c = Atomic::new(7i64);
+    let a = match c.compare_exchange(3, 9, UpdateOrdering::Release, LoadOrdering::Relaxed) { Ok(v) => v, Err(v) => v };
+    let e = match c.compare_exchange(7, 9, UpdateOrdering::AcqRel, LoadOrdering::Acquire) { Ok(v) => v, Err(v) => v };
+    let _ = e;
+    println(f"cas: {a} {c.load(LoadOrdering::Relaxed)} {c.load(LoadOrdering::SeqCst)}");
+    return 0;
+}

@@ -1,0 +1,14 @@
+//! bare - raw pointers, transmute, raw allocation, pinning and
+//! volatile access, over the runtime's `extern "nabi"` symbols only. Never
+//! in the prelude: code that needs it says `use bare::..`. The named
+//! casts live at the tier root.
+
+pub mod alloc;
+pub mod ffi;
+pub mod gc;
+pub mod mem;
+pub mod ptr;
+pub mod volatile;
+
+pub use mem::{Pod, reinterpret, transmute_unchecked};
+pub use ptr::{align_cast, align_cast_unchecked, const_cast, ptr_cast};

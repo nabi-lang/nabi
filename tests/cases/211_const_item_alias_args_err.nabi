@@ -1,0 +1,13 @@
+// expect-error: 12:15: mismatched types: argument `x` of `b` expects `G<-1>`, found `G<1>`
+
+// A `const` alias argument still fixes the type.
+pub struct G<const L: i32> { pub v: f64; }
+pub const M1: i32 = -1;
+pub type Bare = G<M1>;
+
+fn b(x: Bare) -> f64 { x.v }
+
+fn main() {
+    let g: G<1> = G { v: 1.0 };
+    println(b(g));
+}

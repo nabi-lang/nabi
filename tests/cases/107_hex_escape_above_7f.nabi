@@ -1,0 +1,7 @@
+// expect-error: `\x80` is out of range (max `\x7F`)
+
+// `\x` escapes above 0x7F are rejected in string literals.
+fn main() -> i32 {
+    println("\x80");
+    return 0;
+}

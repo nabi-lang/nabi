@@ -1,0 +1,21 @@
+// expect-exit: 0
+// expect-stdout:
+// false true true false
+// 7 10 7 13 14
+// 세 none none none 세계!
+// 세계 hello  세계!
+// 0 1 1
+
+// Char boundaries and the slices that never panic: `get` gives `none`
+// off a boundary or out of range, `char_slice` counts chars and clamps.
+fn show(s: str | none) -> str { s ?? "none" }
+
+fn main() {
+    let s = "hello, 세계!";
+    println(s.is_char_boundary(8), s.is_char_boundary(7), s.is_char_boundary(14), s.is_char_boundary(15));
+    println(s.floor_char_boundary(8), s.ceil_char_boundary(8), s.floor_char_boundary(7), s.ceil_char_boundary(13), s.floor_char_boundary(99));
+    println(show(s.get(7..10)), show(s.get(8..10)), show(s.get(7..100)), show(s.get(10..7)), show(s.get(7..14)));
+    println(s.char_slice(7, 9), s.char_slice(0, 5), s.char_slice(9, 3), s.char_slice(7, 100));
+    let empty = "";
+    println(empty.floor_char_boundary(3), "x".char_slice(0, 1).len(), "😀".ceil_char_boundary(1) / 4);
+}

@@ -1,0 +1,25 @@
+// expect-error: 11:9: `a.n` is set on a copy of the argument, so the change is lost when `bump` returns
+// expect-error: help: take `ref a` to change the caller's value
+
+// A use of another field (`a.xs.push`) does not read the field set
+// (`a.n`): the write is still lost, in a loop too.
+struct Acc { xs: List<i64>; n: usize; }
+
+fn bump(a: Acc) {
+    for i in 0..4 {
+        a.xs.push(1);
+        a.n += 1;
+    }
+}
+
+fn keep(a: Acc) -> usize {
+    a.n += 1;
+    a.xs.push(1);
+    a.n
+}
+
+fn main() {
+    let a = Acc { xs: [], n: 0 };
+    bump(a);
+    println(f"{keep(a)}");
+}

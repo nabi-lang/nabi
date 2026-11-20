@@ -1,0 +1,25 @@
+// expect-exit: 0
+// expect-stdout:
+// 1.23+2.50i|1500.00 m|     1.0 m|hel|  ab|
+// 2.2 m|abc|
+
+// A value's own `Display` takes the precision (a wrapper of numbers hands
+// it to them; `f.pad` cuts text by it); the width pads the whole text.
+use core::num::Complex;
+
+struct P { v: f64; }
+impl Display for P {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try Display::fmt(self.v, ref f);
+        try f.write_str(" m");
+    }
+}
+struct W { s: str; }
+impl Display for W { fn fmt(self, ref f: Formatter) throws (FmtError) { try f.pad(self.s) } }
+
+fn main() {
+    let z = Complex { re: 1.23456, im: 2.5 };
+    println(f"{z:.2}|{P { v: 1500.0 }:.2}|{P { v: 1.0 }:>10.1}|{W { s: "hello" }:.3}|{W { s: "ab" }:>4}|");
+    let sp = ".1";
+    println(f"{P { v: 2.25 }:${sp}}|{"abcd":.3}|");
+}

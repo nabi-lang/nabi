@@ -1,0 +1,26 @@
+// expect-exit: 0
+// expect-stdout:
+// 0 1 1 1 0
+
+// An empty `[]` branch takes the type of the other branches, in a
+// `match` and an `if`, before or after them.
+fn check(xs: List<f64> | none) -> usize {
+    let te = match xs {
+        v: List<f64> => v,
+        none => [],
+    };
+    te.len()
+}
+fn first(xs: List<f64> | none) -> usize {
+    let te = match xs {
+        none => [],
+        v: List<f64> => v,
+    };
+    te.len()
+}
+fn pick(xs: List<f64>, c: bool) -> usize {
+    let a = if c { xs } else { [] };
+    let b = if c { [] } else { xs };
+    a.len() + b.len()
+}
+fn main() { println(f"{check(none)} {check([1.0])} {first([2.0])} {pick([1.0], true)} {first(none)}"); }

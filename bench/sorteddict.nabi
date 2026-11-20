@@ -1,0 +1,30 @@
+// `SortedDict<i64, i64>` (B-tree): inserts in a scattered order, point
+// lookups, range walks, ordered iteration and removals.
+use core::collections::SortedDict;
+
+fn main() -> i32 {
+    let n: i64 = 200000;
+    let d: SortedDict<i64, i64> = SortedDict::new();
+    for i in 0..n {
+        d[(i * 7919) % 200003] = i;
+    }
+    let s: i64 = 0;
+    for r in 0..3 {
+        for i in 0..n {
+            s += d.get_or((i * 31 + r) % 200003, 0);
+        }
+    }
+    for i in 0..2000 {
+        for (k, v) in d.range(i * 100..i * 100 + 50) {
+            s += k ^ v;
+        }
+    }
+    for (k, _) in d {
+        s += k;
+    }
+    for i in 0..n / 2 {
+        _ = d.remove((i * 7919) % 200003);
+    }
+    println(f"{s} {d.len()}");
+    0
+}

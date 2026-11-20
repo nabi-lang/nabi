@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout:
+// 3 1.5 true
+
+// `GcBuf<T>` clones as its handle (the clone shares the buffer), so a
+// struct holding one derives `Clone`.
+use bare::mem::{GcBuf, buf_same};
+
+#[derive(Clone)]
+struct Pts { b: GcBuf<f64>; n: usize; }
+
+let p = Pts { b: unsafe { GcBuf::new(3) }, n: 3 };
+unsafe { p.b.set(1, 1.5); }
+let q = p.clone();
+println(f"{q.n} {unsafe { q.b.get(1) }} {buf_same(p.b, q.b)}");

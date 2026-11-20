@@ -1,0 +1,9 @@
+// Parentheses end an optional chain: the link after them applies to
+// the `T | none` value.
+// expect-error: this value is a `str | none`, and only a `str` has the method `len`
+
+fn get(b: bool) -> str | none { if b { "hi" } else { none } }
+
+fn main() {
+    let n = (get(true)?.trim()).len();
+}

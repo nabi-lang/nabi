@@ -1,0 +1,17 @@
+// expect-exit: 0
+// expect-stdout:
+// 1.5 0.75 true 7
+
+// `try!` / `try?` cover the pipes after their operand; only `??` ends it.
+fn half(x: f64, d: f64) throws -> f64 {
+    if d == 0.0 { throw "zero"; }
+    x / d
+}
+
+fn main() {
+    let a = try! 3.0 |> half(2.0);
+    let b = try! 3.0 |> half(2.0) |> half(2.0);
+    let c = try? 3.0 |> half(0.0);
+    let d = try? 3.0 |> half(0.0) ?? 7.0;
+    println(f"{a} {b} {c == none} {d}");
+}

@@ -1,0 +1,7 @@
+// expect-error: float literal out of range for `f16`
+// A literal that rounds to infinity in its 16-bit type; the help names
+// the largest value and a wider type.
+fn main() {
+    let h: f16 = 70000.0;
+    println(f"{h}");
+}

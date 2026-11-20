@@ -1,0 +1,41 @@
+// expect-exit: 0
+// A throwing `-> !` function: its carrier has no ok slot, and a
+// `catch` of a call to it takes the handler's type.
+// expect-stdout:
+// 3 3 5 7
+
+#[derive(Debug)]
+struct E {
+    code: i32;
+}
+
+impl Error for E {}
+impl Display for E {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("E") }
+}
+
+fn fail(msg: str) throws -> ! {
+    throw ValueError::new(msg);
+}
+
+fn fail_typed(code: i32) throws (E) -> ! {
+    throw E { code: code };
+}
+
+fn pick(k: i32) throws -> i32 {
+    if k > 0 { return k; }
+    try fail("neg")
+}
+
+fn main() -> i32 {
+    let a = try pick(3) catch _ { -1 };
+    if a != 3 { return 1; }
+    let b = try pick(-1) catch e: ValueError { e.message().len() as i32 } catch _ { -1 };
+    if b != 3 { return 2; }
+    let c = try fail("x") catch _ { 5 };
+    if c != 5 { return 3; }
+    let d = try fail_typed(7) catch e { e.code };
+    if d != 7 { return 4; }
+    println(f"{a} {b} {c} {d}");
+    0
+}

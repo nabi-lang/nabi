@@ -1,0 +1,24 @@
+// A checked sum that overflows panics where the scalar loop does, also
+// when its loop is vectorized (`-O2`): the vector loop leaves the sum to
+// the scalar one.
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/cg_vector_sum_overflow.nabi:12:9:
+// expect-stderr: attempt to add with overflow
+// expect-stdout: 2147483647
+
+fn sum(xs: List<i32>, n: usize) -> i32 {
+    let s: i32 = 0;
+    for i in 0..n {
+        s += xs[i];
+    }
+    s
+}
+
+fn main() -> i32 {
+    let xs: List<i32> = List::filled(3000, 0);
+    xs[3] = 2147483647;
+    xs[2037] = 1;
+    println(f"{sum(xs, 2037)}");
+    println(f"{sum(xs, 3000)}");
+    return 0;
+}

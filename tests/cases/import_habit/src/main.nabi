@@ -1,0 +1,7 @@
+// expect-error: 5:8: expected `;` after top-level expression, found identifier `geom`
+// expect-error: = help: to load geom.nabi, write `mod geom;` then call `geom::f()` or `use geom::f;`
+// `import x` of another language, with x.nabi beside the file: the help
+// is the `mod` that loads it.
+import geom
+
+println(f"{geom::area()}");

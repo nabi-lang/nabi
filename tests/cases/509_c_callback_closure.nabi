@@ -1,0 +1,14 @@
+// expect-error: a `fn` argument must name a function
+// expect-error: help: a C callback cannot capture: keep the state in `Handle::new(..)`
+
+// A C function takes a plain function pointer: a capturing closure (a
+// `{code, env}` value) can't be passed to it.
+extern "C" {
+    fn nabi_par_for(start: i64, end: i64, step: i64, callback: fn(i64));
+}
+
+fn main() -> i32 {
+    let k = 2i64;
+    unsafe { nabi_par_for(0i64, 3i64, 1i64, |i| { println(f"{i * k}"); }) };
+    return 0;
+}

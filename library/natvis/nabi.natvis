@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Visual Studio / WinDbg / cdb visualizers for Nabi programs built with -g:
+  str as its text, and List, Dict, Set, SortedDict, SortedSet, Slice and
+  Array as their size (an array's shape) with the elements, in iteration
+  order. A SortedDict / SortedSet lists its entries while the tree is at
+  most two levels deep (up to 1023 entries); a bigger one shows its size.
+
+  cdb / WinDbg: .nvload <sysroot>\lib\nabi\natvis\nabi.natvis
+  Visual Studio: copy it to %USERPROFILE%\Documents\Visual Studio 2022\Visualizers
+  (nabic prints the path with the `natvis` print option.)
+-->
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+  <Type Name="str">
+    <DisplayString Condition="len == 0">""</DisplayString>
+    <DisplayString>{ptr,[len]s8}</DisplayString>
+    <StringView>ptr,[len]s8</StringView>
+    <Expand>
+      <Item Name="[len]">len</Item>
+    </Expand>
+  </Type>
+
+  <Type Name="core::collections::list::List&lt;*&gt;">
+    <DisplayString Condition="h == 0">size=0</DisplayString>
+    <DisplayString>size={h->items[0].len,d}</DisplayString>
+    <Expand>
+      <Item Name="[capacity]" Condition="h != 0">h->items[0].cap,d</Item>
+      <ArrayItems Condition="h != 0">
+        <Size>h->items[0].len</Size>
+        <ValuePointer>h->items[0].buf->items</ValuePointer>
+      </ArrayItems>
+    </Expand>
+  </Type>
+
+  <Type Name="core::collections::slice::Slice&lt;*&gt;">
+    <DisplayString>size={len,d}</DisplayString>
+    <Expand>
+      <IndexListItems>
+        <Size>len</Size>
+        <ValueNode>buf->items[start + $i * stride]</ValueNode>
+      </IndexListItems>
+    </Expand>
+  </Type>
+
+  <Type Name="core::array::Array&lt;*,1&gt;">
+    <DisplayString>shape=[{shape[0],d}]</DisplayString>
+    <Expand>
+      <IndexListItems>
+        <Size>shape[0]</Size>
+        <ValueNode>buf->items[off + $i * strides[0]]</ValueNode>
+      </IndexListItems>
+    </Expand>
+  </Type>
+  <Type Name="core::array::Array&lt;*,2&gt;">
+    <DisplayString>shape=[{shape[0],d}, {shape[1],d}]</DisplayString>
+    <Expand>
+      <IndexListItems>
+        <Size>shape[0] * shape[1]</Size>
+        <ValueNode>buf->items[off + ($i / shape[1]) * strides[0] + ($i % shape[1]) * strides[1]]</ValueNode>
+      </IndexListItems>
+    </Expand>
+  </Type>
+  <Type Name="core::array::Array&lt;*,*&gt;">
+    <DisplayString>shape={shape}</DisplayString>
+    <Expand>
+      <Item Name="shape">shape</Item>
+      <Item Name="strides">strides</Item>
+      <Item Name="buf">buf</Item>
+    </Expand>
+  </Type>
+
+  <Type Name="core::collections::dict::Dict&lt;*,*,*&gt;">
+    <DisplayString Condition="h == 0">size=0</DisplayString>
+    <DisplayString>size={h->items[0].len,d}</DisplayString>
+    <Expand>
+      <CustomListItems MaxItemsPerView="5000" Condition="h != 0">
+        <Variable Name="i" InitialValue="0" />
+        <Variable Name="n" InitialValue="h->items[0].n" />
+        <Loop>
+          <Break Condition="i == n" />
+          <If Condition="h->items[0].meta->items[i] != 0">
+            <Item Name="{h->items[0].keys->items[i]}">h->items[0].vals->items[i]</Item>
+          </If>
+          <Exec>i++</Exec>
+        </Loop>
+      </CustomListItems>
+    </Expand>
+  </Type>
+
+  <Type Name="core::collections::set::Set&lt;*,*&gt;">
+    <DisplayString Condition="d.h == 0">size=0</DisplayString>
+    <DisplayString>size={d.h->items[0].len,d}</DisplayString>
+    <Expand>
+      <CustomListItems MaxItemsPerView="5000" Condition="d.h != 0">
+        <Variable Name="i" InitialValue="0" />
+        <Variable Name="n" InitialValue="d.h->items[0].n" />
+        <Loop>
+          <Break Condition="i == n" />
+          <If Condition="d.h->items[0].meta->items[i] != 0">
+            <Item>d.h->items[0].keys->items[i]</Item>
+          </If>
+          <Exec>i++</Exec>
+        </Loop>
+      </CustomListItems>
+    </Expand>
+  </Type>
+
+  <!-- Node n: keys and values at n * 31, children at n * 32, lens[n] keys. -->
+  <Type Name="core::collections::sorted::SortedDict&lt;*,*&gt;">
+    <DisplayString>size={meta.h->items[0].buf->items[1],d}</DisplayString>
+    <Expand>
+      <CustomListItems MaxItemsPerView="5000">
+        <Variable Name="root" InitialValue="meta.h->items[0].buf->items[0]" />
+        <Variable Name="i" InitialValue="0" />
+        <Variable Name="j" InitialValue="0" />
+        <Variable Name="c" InitialValue="0" />
+        <If Condition="leaf.h->items[0].buf->items[root]">
+          <Loop>
+            <Break Condition="i == lens.h->items[0].buf->items[root]" />
+            <Item Name="{keys.h->items[0].buf->items[root * 31 + i]}">vals.h->items[0].buf->items[root * 31 + i]</Item>
+            <Exec>i++</Exec>
+          </Loop>
+        </If>
+        <Elseif Condition="leaf.h->items[0].buf->items[kids.h->items[0].buf->items[root * 32]]">
+          <Loop>
+            <Break Condition="i &gt; lens.h->items[0].buf->items[root]" />
+            <Exec>c = kids.h->items[0].buf->items[root * 32 + i]</Exec>
+            <Exec>j = 0</Exec>
+            <Loop>
+              <Break Condition="j == lens.h->items[0].buf->items[c]" />
+              <Item Name="{keys.h->items[0].buf->items[c * 31 + j]}">vals.h->items[0].buf->items[c * 31 + j]</Item>
+              <Exec>j++</Exec>
+            </Loop>
+            <If Condition="i &lt; lens.h->items[0].buf->items[root]">
+              <Item Name="{keys.h->items[0].buf->items[root * 31 + i]}">vals.h->items[0].buf->items[root * 31 + i]</Item>
+            </If>
+            <Exec>i++</Exec>
+          </Loop>
+        </Elseif>
+      </CustomListItems>
+    </Expand>
+  </Type>
+
+  <Type Name="core::collections::sorted::SortedSet&lt;*&gt;">
+    <DisplayString>size={d.meta.h->items[0].buf->items[1],d}</DisplayString>
+    <Expand>
+      <CustomListItems MaxItemsPerView="5000">
+        <Variable Name="root" InitialValue="d.meta.h->items[0].buf->items[0]" />
+        <Variable Name="i" InitialValue="0" />
+        <Variable Name="j" InitialValue="0" />
+        <Variable Name="c" InitialValue="0" />
+        <If Condition="d.leaf.h->items[0].buf->items[root]">
+          <Loop>
+            <Break Condition="i == d.lens.h->items[0].buf->items[root]" />
+            <Item>d.keys.h->items[0].buf->items[root * 31 + i]</Item>
+            <Exec>i++</Exec>
+          </Loop>
+        </If>
+        <Elseif Condition="d.leaf.h->items[0].buf->items[d.kids.h->items[0].buf->items[root * 32]]">
+          <Loop>
+            <Break Condition="i &gt; d.lens.h->items[0].buf->items[root]" />
+            <Exec>c = d.kids.h->items[0].buf->items[root * 32 + i]</Exec>
+            <Exec>j = 0</Exec>
+            <Loop>
+              <Break Condition="j == d.lens.h->items[0].buf->items[c]" />
+              <Item>d.keys.h->items[0].buf->items[c * 31 + j]</Item>
+              <Exec>j++</Exec>
+            </Loop>
+            <If Condition="i &lt; d.lens.h->items[0].buf->items[root]">
+              <Item>d.keys.h->items[0].buf->items[root * 31 + i]</Item>
+            </If>
+            <Exec>i++</Exec>
+          </Loop>
+        </Elseif>
+      </CustomListItems>
+    </Expand>
+  </Type>
+</AutoVisualizer>

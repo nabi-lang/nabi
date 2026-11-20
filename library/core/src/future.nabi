@@ -1,0 +1,303 @@
+//! core::future - `Future` / `Poll` / `Context` / `Waker` /
+//! `IntoFuture`.
+//!
+//! `await e` (inside an `async` body) polls `e` - or `e.into_future()` when
+//! `e` has no `poll` - until `Ready`, suspending the coroutine with
+//! `Pending` in between (`nabic_typeck::lower::coro`).
+
+use core::collections::raw::{GcBuf, buf_erase, buf_new};
+use core::marker::{HAND_CELL, HAND_FINISHED, HAND_STARTED, Memo, Transfer, transfer};
+
+/// The state of a future after one `poll`: `Ready` with its output, or
+/// `Pending` until its waker fires.
+#[derive(Debug)]
+pub enum Poll<T> {
+    Ready(T),
+    Pending,
+}
+
+impl<T> Poll<T> {
+    /// `true` for `Ready`.
+    pub const fn is_ready(self) -> bool {
+        match self {
+            Poll::Ready(_) => true,
+            Poll::Pending => false,
+        }
+    }
+
+    /// `true` for `Pending`.
+    pub const fn is_pending(self) -> bool {
+        !self.is_ready()
+    }
+}
+
+/// Asks the executor to poll a task again: a handle to the task
+/// (`core::task`), usable from any thread.
+pub struct Waker {
+    pub(pkg) task: core::task::TaskRef;
+}
+
+impl Debug for Waker {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Waker") }
+}
+
+impl Waker {
+    /// Schedule the task again.
+    pub fn wake(self) {
+        core::task::wake_task(self.task);
+    }
+}
+
+/// A copy wakes the same task.
+impl Clone for Waker {
+    const fn clone(self) -> Waker { self }
+}
+
+/// What a `poll` gets from the executor.
+pub struct Context {
+    pub(pkg) waker: Waker;
+    /// A hand-off's poll (`Transfer` of a coroutine future, `pdata`): a
+    /// coroutine that has not started takes copies of what it captured,
+    /// one that has reports it, and neither runs any of its body.
+    pub(pkg) prime: bool = false;
+    pub(pkg) pdata: GcBuf<Prime> | none = none;
+}
+
+impl Debug for Context {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Context") }
+}
+
+impl Context {
+    /// A context that wakes through `waker`.
+    pub const fn from_waker(waker: Waker) -> Context {
+        Context { waker: waker }
+    }
+
+    /// The waker of the task being polled.
+    pub const fn waker(self) -> Waker {
+        self.waker
+    }
+}
+
+/// A hand-off's poll of one coroutine frame: the hand-off's memo, and what
+/// the frame answers (`COPIED`, `STARTED`, `CELL`; none: it finished).
+pub(pkg) struct Prime {
+    m: Memo;
+    reply: u8;
+}
+
+// Lives for one poll, on one thread.
+unsafe impl Send for Prime {}
+
+const COPIED: u8 = 1;
+const STARTED: u8 = 2;
+const CELL: u8 = 3;
+
+/// A frame that has not started, on a hand-off's poll: its captures,
+/// copied through the hand-off's memo (one copy of an object they share,
+/// with what else the hand-off copies). `cells`: it has a `[ref x]`
+/// capture, which no copy may have.
+#[track_caller]
+pub(pkg) const fn prime_frame<T>(captures: T, ctx: Context, cells: bool) -> T {
+    if let p: GcBuf<Prime> = ctx.pdata {
+        unsafe {
+            if cells {
+                p[0].reply = CELL;
+                return captures;
+            }
+            p[0].reply = COPIED;
+            return transfer::<T>(captures, p[0].m);
+        }
+    }
+    captures
+}
+
+/// A frame parked at an `await`, on a hand-off's poll.
+pub(pkg) const fn prime_started<T>(x: T, ctx: Context) -> T {
+    if let p: GcBuf<Prime> = ctx.pdata {
+        unsafe { p[0].reply = STARTED };
+    }
+    x
+}
+
+extern "nabi" {
+    /// The env of the `fn` value `cell[0]` (a coroutine's frame).
+    fn nabi_fn_env(cell: GcBuf<u8>) -> GcBuf<u8>;
+    fn nabi_fn_set_env(cell: GcBuf<u8>, env: GcBuf<u8>);
+    /// The payload words of `obj`, and the copy of `src` (type and words)
+    /// into a fresh word buffer of that many.
+    fn nabi_obj_words(obj: GcBuf<u8>) -> usize;
+    fn nabi_obj_copy(dst: GcBuf<usize>, src: GcBuf<u8>);
+    /// Coroutine frame `frame` has not started and holds no reference.
+    fn nabi_frame_plain(frame: GcBuf<u8>) -> bool;
+}
+
+/// A hand-off of coroutine future `resume`: a frame of its own
+/// for the new owner, which takes copies of what it captured. Two owners
+/// never run one frame. Only a frame that has not started can be handed
+/// over: a started one holds what it made and read so far, as it is.
+#[track_caller]
+const fn hand_frame<S>(resume: S, m: Memo, poll: fn(S, Context) -> bool) -> S {
+    unsafe {
+        let cell: GcBuf<S> = buf_new(1);
+        cell[0] = resume;
+        let frame = nabi_fn_env(buf_erase(cell));
+        if let got: GcBuf<u8> = m.find(frame) {
+            nabi_fn_set_env(buf_erase(cell), got);
+            return cell[0];
+        }
+        // Not started, and no reference in it (no captures, or plain
+        // ones): its words are all there is to copy.
+        let plain = nabi_frame_plain(frame);
+        let words: GcBuf<usize> = buf_new(nabi_obj_words(frame));
+        // The allocation may have moved the frame: read it again.
+        frame = nabi_fn_env(buf_erase(cell));
+        nabi_obj_copy(words, frame);
+        let copy = buf_erase(words);
+        m.note(frame, copy);
+        nabi_fn_set_env(buf_erase(cell), copy);
+        if plain {
+            return cell[0];
+        }
+        // The captures go through one memo for the whole hand-off: what
+        // they share stays shared.
+        let own = m.own();
+        let p: GcBuf<Prime> = buf_new(1);
+        p[0] = Prime { m: own ?? m, reply: 0 };
+        let w: GcBuf<Waker> = buf_new(1);
+        let done = poll(cell[0], Context { waker: w[0], prime: true, pdata: p });
+        if let o: Memo = own {
+            o.finish();
+        }
+        let r = p[0].reply;
+        let why = if r == STARTED {
+            HAND_STARTED
+        } else if r == CELL {
+            HAND_CELL
+        } else if r != COPIED || done {
+            HAND_FINISHED
+        } else {
+            return cell[0];
+        };
+        // Queued work reaches here through a `fn` value, which drops the
+        // caller's position: let `drain` report it.
+        m.fail(copy, why);
+        cell[0]
+    }
+}
+
+/// A `par` visit of coroutine future `resume`: its frame is one object,
+/// and two items holding it would run it on two workers.
+const fn visit_frame<S>(resume: S, m: Memo) {
+    unsafe {
+        let cell: GcBuf<S> = buf_new(1);
+        cell[0] = resume;
+        let _ = m.visit(nabi_fn_env(buf_erase(cell)));
+    }
+}
+
+/// An asynchronous computation.
+#[lang("future_trait")]
+pub trait Future {
+    type Output;
+    /// `Ready(output)` once done, else `Pending`; the waker in `ctx` is
+    /// woken when it may progress.
+    fn poll(ref self, ref ctx: Context) -> Poll<Output>;
+}
+
+/// What `await` accepts besides a `Future`.
+pub trait IntoFuture {
+    type Output;
+    type IntoFuture: Future<Output = Output>;
+    /// A future for the value.
+    fn into_future(self) -> IntoFuture;
+}
+
+/// Every future is its own `IntoFuture`.
+impl<F: Future> IntoFuture for F {
+    type Output = F::Output;
+    type IntoFuture = F;
+    const fn into_future(self) -> F { self }
+}
+
+/// The value of an `async fn` call / `async { .. }` block: `resume` runs
+/// the body to its next pending `await` (its env is the coroutine frame).
+// One library type per coroutine kind, not a fresh anonymous type per
+// coroutine.
+#[must_use("future is never awaited, so its body never runs: write `await {}`")]
+pub struct AsyncFuture<T> {
+    resume: fn(Context) -> Poll<T>;
+}
+
+impl<T> Debug for AsyncFuture<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("AsyncFuture") }
+}
+
+// `Send` follows the output (and error) type; `task::spawn` checks the
+// frame's captures and locals held across `await` separately
+// (`nabic_hir_check::send`), and copies the captures (`Transfer`).
+unsafe impl<T: Send> Send for AsyncFuture<T> {}
+unsafe impl<T: Send, E: Send> Send for TryAsyncFuture<T, E> {}
+
+impl<T> Future for AsyncFuture<T> {
+    type Output = T;
+    const fn poll(ref self, ref ctx: Context) -> Poll<T> {
+        (self.resume)(ctx)
+    }
+}
+
+// A hand-off (`task::spawn`, a channel send) gives the frame copies of
+// what it captured: the sender keeps the originals.
+impl<T> Transfer for AsyncFuture<T> {
+    #[track_caller]
+    const fn transfer_copy(self, m: Memo) -> AsyncFuture<T> {
+        let poll = |f: fn(Context) -> Poll<T>, ctx: Context| -> bool { f(ctx) is Poll::Ready };
+        AsyncFuture { resume: hand_frame(self.resume, m, poll) }
+    }
+
+    const fn transfer_keep(self, m: Memo) -> AsyncFuture<T> { self }
+
+    const fn transfer_visit(self, m: Memo) -> AsyncFuture<T> {
+        visit_frame(self.resume, m);
+        self
+    }
+}
+
+/// A throwing `async` body (`async fn f() throws (E) -> T`): the error
+/// comes out of `poll`, so `try await f()`. Not a
+/// `Future` (whose `poll` cannot throw); `await` and `task::try_block_on`
+/// take it.
+#[must_use("future is never awaited, so its body never runs: write `await {}`")]
+pub struct TryAsyncFuture<T, E> {
+    resume: fn(Context) throws (E) -> Poll<T>;
+}
+
+impl<T, E> Debug for TryAsyncFuture<T, E> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("TryAsyncFuture") }
+}
+
+impl<T, E> TryAsyncFuture<T, E> {
+    /// Resume the body: `Ready` with its value, or `Pending`; throws what the
+    /// body throws.
+    pub const fn poll(ref self, ref ctx: Context) throws (E) -> Poll<T> {
+        try (self.resume)(ctx)
+    }
+}
+
+impl<T, E> Transfer for TryAsyncFuture<T, E> {
+    #[track_caller]
+    const fn transfer_copy(self, m: Memo) -> TryAsyncFuture<T, E> {
+        let poll = |f: fn(Context) throws (E) -> Poll<T>, ctx: Context| -> bool {
+            let r = try f(ctx) catch _ { return true; };
+            r is Poll::Ready
+        };
+        TryAsyncFuture { resume: hand_frame(self.resume, m, poll) }
+    }
+
+    const fn transfer_keep(self, m: Memo) -> TryAsyncFuture<T, E> { self }
+
+    const fn transfer_visit(self, m: Memo) -> TryAsyncFuture<T, E> {
+        visit_frame(self.resume, m);
+        self
+    }
+}

@@ -1,0 +1,14 @@
+// needs: threads
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/std_219_scope_after_return.nabi:12:13:
+// expect-stderr: Scope::spawn: the scope has ended; call `spawn` inside the closure passed to `par::scope`
+// expect-stdout:
+
+// A `Scope` kept past its `par::scope` cannot spawn: the panic names the
+// scope.
+fn main() {
+    let keep: List<par::Scope> = [];
+    par::scope(|s| { keep.push(s); });
+    let h = keep[0].spawn(|| 1);
+    println(f"{h.join()}");
+}

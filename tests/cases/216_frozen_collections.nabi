@@ -1,0 +1,90 @@
+// needs: threads
+// gc-stress: 5
+// `freeze` makes a collection no one can change: every thread reads it
+// with no lock and no copy, a `par` closure or a thread captures it, a
+// `static` holds it, and a hand-off leaves it shared.
+// expect-exit: 0
+// expect-stdout:
+// list 5 [1, 2, 3, 4, 5] true 2 none
+// view [2, 3] [[1, 2], [3, 4], [5]]
+// thaw [1, 2, 3, 4, 5, 6] 5
+// par 15 15
+// threads 4000
+// dict 3 2 true -1 ["a", "b", "c"] [1, 2, 3]
+// set 3 true false {10, 20, 30}
+// static 2 7
+// hist 250 250 250 250
+// eq true true
+// sent 3 true
+// unsafe alias 0
+
+use std::thread;
+
+struct Table { name: str; rows: FrozenList<i64>; }
+
+static PRIMES: FrozenList<i64> = [2i64, 3, 5, 7].freeze();
+static NAMES: FrozenDict<str, i64> = {"two": 2, "seven": 7}.freeze();
+
+fn main() {
+    let xs: List<i32> = [1, 2, 3, 4, 5];
+    let f = xs.freeze();
+    println(f"list {f.len()} {f:?} {f.contains(3)} {f.binary_search(3) ?? 9} {f.get(9):?}");
+    println(f"view {f[1:3]:?} {f.chunks(2).map(|c| c.to_list()).collect::<List<List<i32>>>():?}");
+    let more = f.to_list();
+    more.push(6);
+    println(f"thaw {more:?} {f.len()}");
+
+    let total = par::fold(0..5usize, 0, |a, b| a + b);
+    let sums = par::map(0..5usize, |i| f[i]);
+    let s = 0;
+    for x in sums { s += x; }
+    println(f"par {s} {total + 5}");
+
+    let rows: List<i64> = [];
+    for i in 0..1000i64 { rows.push(i); }
+    let t = Table { name: "t", rows: rows.freeze() };
+    let hs: List<thread::JoinHandle<i64>> = [];
+    for _ in 0..4 {
+        hs.push(thread::spawn(|| { let n = 0i64; for _ in t.rows { n += 1; } n }));
+    }
+    let n = 0i64;
+    for h in hs { n += try! h.join(); }
+    println(f"threads {n}");
+
+    let d: Dict<str, i32> = {"a": 1, "b": 2, "c": 3};
+    let fd = d.freeze();
+    let ks: List<str> = fd.keys().collect();
+    let vs: List<i32> = fd.values().collect();
+    println(f"dict {fd.len()} {fd["b"]} {fd.contains_key("c")} {fd.get_or("z", -1)} {ks:?} {vs:?}");
+
+    let st: Set<i32> = {10, 20, 30};
+    let fs = st.freeze();
+    println(f"set {fs.len()} {fs.contains(20)} {fs.contains(5)} {fs:?}");
+
+    println(f"static {PRIMES[0]} {NAMES["seven"]}");
+
+    // Atomics in a frozen list: a histogram many workers count into.
+    let hist = List::from_fn(4, |_| Atomic::new(0i64)).freeze();
+    par::for_each(0..1000usize, |i| { hist[i % 4].fetch_add(1, Relaxed); });
+    println(f"hist {hist[0].load()} {hist[1].load()} {hist[2].load()} {hist[3].load()}");
+
+    let g = f.clone();
+    println(f"eq {g == f} {fd.clone() == fd}");
+
+    // A hand-off leaves a frozen collection shared: the receiver reads it.
+    let (tx, rx) = channel::<FrozenList<i32>>();
+    let h = thread::spawn([move rx] || { let got = rx.recv() ?? FrozenList::new(); got.len() });
+    try! tx.send(f[0:3].to_list().freeze());
+    let got = try! h.join();
+    println(f"sent {got} {f.len() == 5}");
+
+    // A handle the checker does not follow sees an empty list, never the
+    // frozen elements.
+    unsafe {
+        let ys: List<i32> = [1, 2, 3];
+        let alias = ys;
+        let fy = ys.freeze();
+        alias.push(4);
+        println(f"unsafe alias {fy.len() - 3}");
+    }
+}

@@ -1,0 +1,6 @@
+// expect-error: integer literal `2049` is not exactly representable as `f16`
+// An integer literal must be exact in an `f16` slot, as in an `f32` one.
+fn main() {
+    let h: f16 = 2049;
+    println(f"{h}");
+}

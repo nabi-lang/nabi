@@ -1,0 +1,38 @@
+// needs: os
+// expect-exit: 1
+// expect-stderr: usage: tool <input>
+// expect-stdout:
+// log level: info debug
+// config: myapp.toml true
+// PATH dirs: true
+
+// A CLI's env handling: a missing variable falls back with
+// `try?`, `home_dir` / `/` build a config path, `split_paths` walks PATH,
+// and with no input argument the tool prints its usage to stderr and
+// exits 1. `set_var` is called first thing.
+use std::env;
+use std::path::Path;
+use std::process;
+
+fn main() {
+    unsafe { try! env::set_var("NABI_ENV_EXAMPLE_LEVEL", "debug"); }
+    let log_level = (try? env::var("NABI_ENV_EXAMPLE_UNSET")) ?? "info";
+    let set_level = (try? env::var("NABI_ENV_EXAMPLE_LEVEL")) ?? "info";
+    println(f"log level: {log_level} {set_level}");
+
+    let home = env::home_dir() ?? Path::new("nohome");
+    let config = home / ".config" / "myapp.toml";
+    println(f"config: {config.file_name() ?? "?"} {config.starts_with(home)}");
+
+    let path_str = (try? env::var("PATH")) ?? "";
+    let n = 0;
+    for dir in env::split_paths(path_str) { n += 1; }
+    println(f"PATH dirs: {n >= 0}");
+
+    let args = env::args();
+    if args.len() < 2 {
+        eprintln("usage: tool <input>");
+        process::exit(1);
+    }
+    println(f"input: {args[1]}");
+}

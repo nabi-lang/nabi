@@ -1,0 +1,16 @@
+// expect-exit: 0
+// expect-stdout: 7
+// forbid-warning: this `try` covers no throwing call
+
+// A `rethrows` body called only with non-throwing functions: its `try`
+// covers a throwing call in the throwing instances, so no warning.
+fn apply(f: fn(i32) throws -> i32, x: i32) rethrows -> i32 {
+    try f(x) + 1
+}
+
+fn inc(x: i32) -> i32 { x + 1 }
+
+fn main() {
+    println(f"{apply(inc, 5)}");
+}
+

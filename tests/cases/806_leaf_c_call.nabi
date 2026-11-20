@@ -1,0 +1,21 @@
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// 7 5000050000
+
+// `#[leaf]`: a short C call that neither blocks nor calls back skips the
+// park around it (a debug nabic checks it never stops for a collection).
+#[leaf]
+extern "C" {
+    fn abs(x: c_int) -> c_int;
+    fn labs(x: c_long) -> c_long;
+}
+
+fn main() {
+    let t: i64 = 0;
+    for i in 1..100001 {
+        let xs: List<i64> = [i];
+        t += unsafe { labs(0 - xs[0] as c_long) } as i64;
+    }
+    println(f"{unsafe { abs(-7) }} {t}");
+}

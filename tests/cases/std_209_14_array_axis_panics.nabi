@@ -1,0 +1,10 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/std_209_14_array_axis_panics.nabi:10:5:
+// expect-stderr: sum_along: axis 2 is past the last axis of a rank-2 array; pass an axis in 0..2
+// expect-stdout: [6.0, 15.0]
+
+use core::array::Matrix;
+
+let m: Matrix<f64> = [[1, 2, 3], [4, 5, 6]];
+println(f"{m.sum_along(1):?}");
+_ = m.sum_along(2);

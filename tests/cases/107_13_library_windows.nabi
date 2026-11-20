@@ -1,0 +1,20 @@
+// only-os: windows
+// expect-exit: 0
+// expect-stdout:
+// ticks: true
+// missing: true
+// Library("kernel32.dll")
+
+// `LoadLibraryW` / `GetProcAddress` under `Library`: `extern "system"`
+// function pointers, and the system's message for a missing one.
+use bare::ffi::{Library, SymbolError};
+
+fn main() throws (bare::ffi::LoadError | SymbolError) {
+    let k = try Library::open("kernel32.dll");
+    let ticks = try unsafe { k.symbol::<extern "system" fn() -> u32>("GetTickCount") };
+    println(f"ticks: {unsafe { ticks() } > 0u32}");
+    try k.raw_symbol("NabiNoSuchFunction") catch e: SymbolError {
+        println(f"missing: {e.message().contains("(os error 127)")}");
+    };
+    println(f"{k:?}");
+}

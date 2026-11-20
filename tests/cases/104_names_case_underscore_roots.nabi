@@ -1,0 +1,39 @@
+// expect-exit: 0
+// expect-stdout:
+// 1 2
+// 3
+// 42 7 9
+// 5 err
+
+struct Token { type: i32; for: str; nabi: i32; }
+
+trait Sub { fn sub(self, rhs: Self) -> Self; }
+
+impl Sub for i32 {
+    fn sub(self, rhs: i32) -> i32 { self - rhs }
+}
+
+pub(sub) fn helper() -> i32 { 7 }
+
+fn sup() -> i32 { 9 }
+
+fn catch(e: str) -> str { e }
+
+fn make(type: i32, where: bool) -> i32 { if where { type } else { 0 } }
+
+fn main() {
+    // Identifiers are case-sensitive.
+    let count = 1;
+    let Count = 2;
+    println(f"{count} {Count}");
+    // `_` discards.
+    let _ = count;
+    let (_, b) = (10, 3);
+    println(f"{b}");
+    // `nabi` / `sup` / `pkg` name variables and functions.
+    let nabi = 42;
+    println(f"{nabi} {helper()} {sup()}");
+    // Keywords as field names, after `.`, and as argument labels.
+    let t = Token { type: 5, for: "err", nabi: 0 };
+    println(f"{make(type: t.type, where: true).sub(t.nabi)} {catch(t.for)}");
+}

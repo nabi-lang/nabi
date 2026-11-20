@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout: 8
+
+// A `union` declaration parses as an item; an unused one does not
+// affect the program.
+use bare::mem::size_of;
+union Repr {
+    bits: i64;
+    parts: i32;
+}
+
+fn main() {
+    println(f"{size_of::<Repr>()}");
+}
+

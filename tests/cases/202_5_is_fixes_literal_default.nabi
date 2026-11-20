@@ -1,0 +1,11 @@
+// expect-error: 9:18: conflicting uses of `v`: `i32` here, but `i64` fixed at 7:13
+
+// `is` needs the type at once, so the literal takes its default there;
+// a later use that wants another type is a conflict, as after storing
+// the literal into `any`.
+fn main() {
+    let v = 3;
+    println(f"{v is i64}");
+    let y: i32 = v;
+    println(f"{y}");
+}

@@ -1,0 +1,127 @@
+// needs: os
+// expect-exit: 0
+// expect-stdout:
+// EST5EDT,M3.2.0,M11.1.0 2024-03-10T01:59:00: one earlier 2024-03-10T01:59:00-05:00 EST later 2024-03-10T01:59:00-05:00 EST compatible 2024-03-10T01:59:00-05:00
+//   reject 2024-03-10T01:59:00-05:00
+// EST5EDT,M3.2.0,M11.1.0 2024-03-10T02:30:00: two earlier 2024-03-10T01:30:00-05:00 EST later 2024-03-10T03:30:00-04:00 EDT compatible 2024-03-10T03:30:00-04:00
+//   reject: 2024-03-10T02:30:00 does not exist in EST5EDT,M3.2.0,M11.1.0: the clocks skip it (-05:00 to -04:00); pass Disambiguation::Earlier or Disambiguation::Later
+// EST5EDT,M3.2.0,M11.1.0 2024-03-10T03:00:00: one earlier 2024-03-10T03:00:00-04:00 EDT later 2024-03-10T03:00:00-04:00 EDT compatible 2024-03-10T03:00:00-04:00
+//   reject 2024-03-10T03:00:00-04:00
+// EST5EDT,M3.2.0,M11.1.0 2024-11-03T00:59:00: one earlier 2024-11-03T00:59:00-04:00 EDT later 2024-11-03T00:59:00-04:00 EDT compatible 2024-11-03T00:59:00-04:00
+//   reject 2024-11-03T00:59:00-04:00
+// EST5EDT,M3.2.0,M11.1.0 2024-11-03T01:30:00: two earlier 2024-11-03T01:30:00-04:00 EDT later 2024-11-03T01:30:00-05:00 EST compatible 2024-11-03T01:30:00-04:00
+//   reject: 2024-11-03T01:30:00 happens twice in EST5EDT,M3.2.0,M11.1.0 (at -04:00 and at -05:00); pass Disambiguation::Earlier or Disambiguation::Later
+// EST5EDT,M3.2.0,M11.1.0 2024-11-03T02:00:00: one earlier 2024-11-03T02:00:00-05:00 EST later 2024-11-03T02:00:00-05:00 EST compatible 2024-11-03T02:00:00-05:00
+//   reject 2024-11-03T02:00:00-05:00
+// EST5EDT,M3.2.0,M11.1.0 1900-03-11T02:30:00: two earlier 1900-03-11T01:30:00-05:00 EST later 1900-03-11T03:30:00-04:00 EDT compatible 1900-03-11T03:30:00-04:00
+//   reject: 1900-03-11T02:30:00 does not exist in EST5EDT,M3.2.0,M11.1.0: the clocks skip it (-05:00 to -04:00); pass Disambiguation::Earlier or Disambiguation::Later
+// EST5EDT,M3.2.0,M11.1.0 2400-11-05T01:30:00: two earlier 2400-11-05T01:30:00-04:00 EDT later 2400-11-05T01:30:00-05:00 EST compatible 2400-11-05T01:30:00-04:00
+//   reject: 2400-11-05T01:30:00 happens twice in EST5EDT,M3.2.0,M11.1.0 (at -04:00 and at -05:00); pass Disambiguation::Earlier or Disambiguation::Later
+// AEST-10AEDT,M10.1.0,M4.1.0/3 2024-04-07T02:30:00: two earlier 2024-04-07T02:30:00+11:00 AEDT later 2024-04-07T02:30:00+10:00 AEST compatible 2024-04-07T02:30:00+11:00
+//   reject: 2024-04-07T02:30:00 happens twice in AEST-10AEDT,M10.1.0,M4.1.0/3 (at +11:00 and at +10:00); pass Disambiguation::Earlier or Disambiguation::Later
+// AEST-10AEDT,M10.1.0,M4.1.0/3 2024-10-06T02:30:00: two earlier 2024-10-06T01:30:00+10:00 AEST later 2024-10-06T03:30:00+11:00 AEDT compatible 2024-10-06T03:30:00+11:00
+//   reject: 2024-10-06T02:30:00 does not exist in AEST-10AEDT,M10.1.0,M4.1.0/3: the clocks skip it (+10:00 to +11:00); pass Disambiguation::Earlier or Disambiguation::Later
+// AEST-10AEDT,M10.1.0,M4.1.0/3 2024-07-01T12:00:00: one earlier 2024-07-01T12:00:00+10:00 AEST later 2024-07-01T12:00:00+10:00 AEST compatible 2024-07-01T12:00:00+10:00
+//   reject 2024-07-01T12:00:00+10:00
+// IST-1GMT0,M10.5.0,M3.5.0/1 2024-03-31T01:30:00: two earlier 2024-03-31T00:30:00Z GMT later 2024-03-31T02:30:00+01:00 IST compatible 2024-03-31T02:30:00+01:00
+//   reject: 2024-03-31T01:30:00 does not exist in IST-1GMT0,M10.5.0,M3.5.0/1: the clocks skip it (+00:00 to +01:00); pass Disambiguation::Earlier or Disambiguation::Later
+// IST-1GMT0,M10.5.0,M3.5.0/1 2024-10-27T01:30:00: two earlier 2024-10-27T01:30:00+01:00 IST later 2024-10-27T01:30:00Z GMT compatible 2024-10-27T01:30:00+01:00
+//   reject: 2024-10-27T01:30:00 happens twice in IST-1GMT0,M10.5.0,M3.5.0/1 (at +01:00 and at +00:00); pass Disambiguation::Earlier or Disambiguation::Later
+// dublin summer +01:00 IST false winter +00:00 GMT true
+// <+1030>-10:30<+11>-11,M10.1.0,M4.1.0 2024-10-06T02:15:00: two earlier 2024-10-06T01:45:00+10:30 +1030 later 2024-10-06T02:45:00+11:00 +11 compatible 2024-10-06T02:45:00+11:00
+//   reject: 2024-10-06T02:15:00 does not exist in <+1030>-10:30<+11>-11,M10.1.0,M4.1.0: the clocks skip it (+10:30 to +11:00); pass Disambiguation::Earlier or Disambiguation::Later
+// <+1030>-10:30<+11>-11,M10.1.0,M4.1.0 2024-04-07T01:45:00: two earlier 2024-04-07T01:45:00+11:00 +11 later 2024-04-07T01:45:00+10:30 +1030 compatible 2024-04-07T01:45:00+11:00
+//   reject: 2024-04-07T01:45:00 happens twice in <+1030>-10:30<+11>-11,M10.1.0,M4.1.0 (at +11:00 and at +10:30); pass Disambiguation::Earlier or Disambiguation::Later
+// add 2024-11-03T12:00:00-05:00 2024-11-03T11:00:00-05:00 86400s 90000s
+// months 2025-03-02T12:00:00-05:00 2023-11-02T12:00:00-04:00 EST
+// utc 2024-11-02T16:00:00Z true +00:00 UTC 2024-11-03T03:00:00+11:00 true
+// offsets +09:00 -03:30 -00:30 +05:30:15 +00:00 20700
+// parse +00:00 +05:30 -08:00 +05:30:15
+// error: offset 3h -30min mixes signs; give both the same sign
+// error: offset 93600s is out of range (-93599..=93599)
+// fixed +09:00 TimeZone(+09:00) true +09:00 +09:00 UTC true
+// get UTC +09:00 -05:30 false
+// zoned 1970-01-01T09:00:00+09:00 1970-01-01T08:59:59.999999999+09:00[+09:00] 2024-07-03T05:46:40-04:00
+// error: bad TZ rule "" at byte 0: expected a zone name of at least 3 letters
+// error: bad TZ rule "E5" at byte 0: expected a zone name of at least 3 letters
+// error: bad TZ rule "EST" at byte 3: expected an offset after the zone name (`EST5`)
+// error: bad TZ rule "EST5EDT,M3.2.0" at byte 14: expected `,` before the end rule
+// error: bad TZ rule "EST5EDT,M13.1.0,M11.1.0" at byte 11: expected a month 1..=12 after `M`
+// error: bad TZ rule "EST5EDT,M3.6.0,M11.1.0" at byte 12: expected a week 1..=5
+// error: bad TZ rule "EST5EDT,J366,J100" at byte 12: expected a day 1..=365 after `J`
+// error: bad TZ rule "EST25" at byte 3: expected hours of at most 24
+// error: bad TZ rule "<A1>5" at byte 0: expected a name of at least 3 characters
+// error: bad TZ rule "EST5EDT,M3.2.0/200,M11.1.0" at byte 15: expected hours of at most 167
+// error: bad TZ rule "EST5EDT,M3.2.0,M11.1.0x" at byte 22: expected the end of the rule
+// error: bad time zone name `../etc/passwd`; use a tz database name such as `Europe/Paris`
+// error: bad offset zone `+25:00:00x`; write it as `+09:00` or `-05:30`
+
+// Zones from POSIX `TZ` rules, which need no tz database: DST in both
+// hemispheres, a negative DST rule (Dublin's), a 30-minute shift, gaps
+// and overlaps with every `Disambiguation`, `Offset` limits, fixed
+// zones, and the rule errors.
+use std::time::{DateTime, Disambiguation, Offset, SystemTime, TimeZone, Zoned};
+
+fn show(r: str) { println(r); }
+
+fn at(tz: TimeZone, y: i32, mo: i32, d: i32, h: i32, mi: i32) throws {
+    let dt = try DateTime::new(y, mo, d, h, mi, 0);
+    let e = try dt.in_zone_with(tz, Disambiguation::Earlier);
+    let l = try dt.in_zone_with(tz, Disambiguation::Later);
+    let c = dt.in_zone(tz);
+    let kind = if e == l { "one" } else { "two" };
+    println(f"{tz.name()} {dt}: {kind} earlier {e} {e.abbreviation()} later {l} {l.abbreviation()} compatible {c}");
+    try { show(f"  reject {try dt.in_zone_with(tz, Disambiguation::Reject)}"); } catch e { show(f"  reject: {e}"); }
+}
+
+fn main() throws {
+    let us = try TimeZone::from_posix("EST5EDT,M3.2.0,M11.1.0");
+    try at(us, 2024, 3, 10, 1, 59);
+    try at(us, 2024, 3, 10, 2, 30);
+    try at(us, 2024, 3, 10, 3, 0);
+    try at(us, 2024, 11, 3, 0, 59);
+    try at(us, 2024, 11, 3, 1, 30);
+    try at(us, 2024, 11, 3, 2, 0);
+    // Far past and future: the rule repeats every year.
+    try at(us, 1900, 3, 11, 2, 30);
+    try at(us, 2400, 11, 5, 1, 30);
+
+    let syd = try TimeZone::from_posix("AEST-10AEDT,M10.1.0,M4.1.0/3");
+    try at(syd, 2024, 4, 7, 2, 30);
+    try at(syd, 2024, 10, 6, 2, 30);
+    try at(syd, 2024, 7, 1, 12, 0);
+
+    let dublin = try TimeZone::from_posix("IST-1GMT0,M10.5.0,M3.5.0/1");
+    try at(dublin, 2024, 3, 31, 1, 30);
+    try at(dublin, 2024, 10, 27, 1, 30);
+    let t = SystemTime::from_unix(1720000000, 0);
+    let w = SystemTime::from_unix(1700000000, 0);
+    println(f"dublin summer {dublin.offset_at(t)} {dublin.abbreviation_at(t)} {dublin.is_dst_at(t)} winter {dublin.offset_at(w)} {dublin.abbreviation_at(w)} {dublin.is_dst_at(w)}");
+
+    let lh = try TimeZone::from_posix("<+1030>-10:30<+11>-11,M10.1.0,M4.1.0");
+    try at(lh, 2024, 10, 6, 2, 15);
+    try at(lh, 2024, 4, 7, 1, 45);
+
+    // `Zoned` arithmetic across a transition.
+    let before = (try DateTime::new(2024, 11, 2, 12, 0, 0)).in_zone(us);
+    println(f"add {before.add_days(1)} {before + Duration::hours(24)} {(before + Duration::hours(24)).duration_since(before)} {before.add_days(1).duration_since(before)}");
+    println(f"months {before.add_months(4)} {before.add_years(-1)} {(before.add_months(4)).abbreviation()}");
+    let utc = before.to_utc();
+    println(f"utc {utc} {utc == before} {utc.offset()} {utc.zone()} {before.in_zone(syd)} {before.in_zone(syd) == before}");
+
+    // Offsets and fixed zones.
+    println(f"offsets {try Offset::new(9, 0)} {try Offset::new(-3, -30)} {try Offset::new(0, -30)} {try Offset::from_secs(19815)} {Offset::UTC} {(try Offset::new(5, 45)).secs()}");
+    println(f"parse {try "Z".parse::<Offset>()} {try "+0530".parse::<Offset>()} {try "-08".parse::<Offset>()} {try "+05:30:15".parse::<Offset>()}");
+    try { show(f"{try Offset::new(3, -30)}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try Offset::from_secs(93600)}"); } catch e { show(f"error: {e}"); }
+    let k = TimeZone::fixed(try Offset::new(9, 0));
+    println(f"fixed {k} {k:?} {k.is_fixed()} {k.offset_at(t)} {k.abbreviation_at(t)} {TimeZone::fixed(Offset::UTC)} {TimeZone::utc() == TimeZone::fixed(Offset::UTC)}");
+    println(f"get {try TimeZone::get("UTC")} {try TimeZone::get("+09:00")} {try TimeZone::get("-05:30")} {us.is_fixed()}");
+    println(f"zoned {Zoned::from_unix(0, 0u32, k)} {Zoned::from_unix(-1, 999999999u32, k):?} {Zoned::from_system_time(t, us)}");
+
+    for bad in ["", "E5", "EST", "EST5EDT,M3.2.0", "EST5EDT,M13.1.0,M11.1.0", "EST5EDT,M3.6.0,M11.1.0", "EST5EDT,J366,J100", "EST25", "<A1>5", "EST5EDT,M3.2.0/200,M11.1.0", "EST5EDT,M3.2.0,M11.1.0x"] {
+        try { show(f"{try TimeZone::from_posix(bad)}"); } catch e { show(f"error: {e}"); }
+    }
+    try { show(f"{try TimeZone::get("../etc/passwd")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try TimeZone::get("+25:00:00x")}"); } catch e { show(f"error: {e}"); }
+}

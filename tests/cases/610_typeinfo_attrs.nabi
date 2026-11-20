@@ -1,0 +1,62 @@
+// expect-exit: 0
+// expect-stdout:
+// hp 0..100
+// speed 0.5..4
+// name none
+// type: Editor { label: "Enemy", hidden: false }
+// Boss: Editor { label: "big one", hidden: true }
+// 1 Range
+// renamed health <- hp
+
+// Runtime attributes: a `#[runtime_attribute(name)]` struct is written
+// as `#[name(..)]` on types, fields and variants, positionally or by
+// field name, and read back typed.
+use core::reflect::{Field, TypeInfo};
+
+#[runtime_attribute(range)]
+pub struct Range { pub min: f64; pub max: f64; }
+
+#[runtime_attribute(editor)]
+#[derive(Debug)]
+pub struct Editor { pub label: str; pub hidden: bool; }
+
+#[derive(Inspect)]
+#[editor("Enemy", false)]
+struct Enemy {
+    #[range(0, 100)] hp: i32 = 100;
+    #[range(min = 0.5, max = 4.0)] speed: f64 = 1.0;
+    name: str = "orc";
+}
+
+#[derive(Inspect)]
+enum Rank { Grunt, #[editor(label = "big one", hidden = true)] Boss }
+
+#[derive(Inspect)]
+struct Hero { #[renamed_from("hp")] health: i32; }
+
+let t = Enemy::type_info();
+for f in t.fields() {
+    match f.attr::<Range>() {
+        r: Range => println(f"{f.name()} {r.min}..{r.max}"),
+        none => println(f"{f.name()} none"),
+    }
+}
+match t.attr::<Editor>() {
+    e: Editor => println(f"type: {e:?}"),
+    none => println("type: none"),
+}
+match Rank::type_info().variant("Boss") {
+    v: core::reflect::Variant => match v.attr::<Editor>() {
+        e: Editor => println(f"Boss: {e:?}"),
+        none => println("Boss: none"),
+    },
+    none => println("no Boss"),
+}
+match t.field("hp") {
+    f: Field => println(f"{f.attrs().len()} {f.attrs()[0].type_ref().name()}"),
+    none => println("no hp"),
+}
+match Hero::type_info().field("health") {
+    f: Field => println(f"renamed {f.name()} <- {f.renamed_from()}"),
+    none => println("no health"),
+}

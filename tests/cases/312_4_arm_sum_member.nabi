@@ -1,0 +1,50 @@
+// expect-exit: 0
+// expect-stdout:
+// 1 none none 1
+// 1 2 none
+// 3 x 4 5
+
+// An arm that already is a sum counts by its members: `none` beside
+// `Resp?`, `Resp` beside `Resp?` and `str` beside `i64 | str` give that
+// sum, in either order. No new sum is made.
+struct Resp { n: i32; }
+
+fn get(c: bool) -> Resp? {
+    if c { return Resp { n: 1 }; }
+    return none;
+}
+
+fn show(r: Resp?) -> str {
+    match r {
+        none => "none",
+        p: Resp => f"{p.n}",
+    }
+}
+
+fn wide(v: i64 | str) -> str {
+    match v {
+        n: i64 => f"{n}",
+        s: str => s,
+    }
+}
+
+fn main() {
+    let r = get(true);
+    let p = Resp { n: 2 };
+    let t = true;
+    let a = match t { true => r, false => none };
+    let b = match t { false => r, true => none };
+    let c = match t { true => none, false => r };
+    let d = match t { false => none, true => r };
+    println(f"{show(a)} {show(b)} {show(c)} {show(d)}");
+    let e = match t { true => r, false => p };
+    let g = match t { true => p, false => r };
+    let h = match t { false => p, true => get(false) };
+    println(f"{show(e)} {show(g)} {show(h)}");
+    let w: i64 | str = 3;
+    let x = match t { true => w, false => "x" };
+    let y = match t { false => w, true => "x" };
+    let z = match t { true => 4, false => w };
+    let z2 = match t { false => w, true => 5 };
+    println(f"{wide(x)} {wide(y)} {wide(z)} {wide(z2)}");
+}

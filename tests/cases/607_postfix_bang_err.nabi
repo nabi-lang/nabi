@@ -1,0 +1,10 @@
+// expect-error: `!` can't be a postfix operator: after a name it starts a macro call (`name!(..)`), and before an operand it is `not` (`!a`)
+// expect-error: `factorial(n)`
+
+// No postfix `!` (factorial): it would read like a macro call.
+pub trait Factorial {
+    type Output;
+    #[postfix("!", like = "?")]
+    fn factorial(self) -> Output;
+}
+fn main() {}

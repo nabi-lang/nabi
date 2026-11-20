@@ -1,0 +1,90 @@
+// Early-exit byte scans over 8 MB, 30 times: a search from an offset
+// up to a bound passed in, one up to a length passed in, and two-list
+// tests joined by `&&` (lists and slices) and by `&`, as a tokenizer
+// or a regex prefilter writes them. Vectorized searches.
+#[inline(never)]
+fn find_from(b: List<u8>, c: u8, at: usize, end: usize) -> usize {
+    let i = at;
+    while i < end {
+        if b[i] == c {
+            return i;
+        }
+        i += 1;
+    }
+    end
+}
+
+#[inline(never)]
+fn find_n(b: List<u8>, c: u8, n: usize) -> usize {
+    let i: usize = 0;
+    while i < n {
+        if b[i] == c {
+            return i;
+        }
+        i += 1;
+    }
+    n
+}
+
+#[inline(never)]
+fn find2(s0: List<u8>, s1: List<u8>, a: u8, c: u8) -> usize {
+    let k = s0.len();
+    let i: usize = 0;
+    while i < k {
+        if s0[i] == a && s1[i] == c {
+            return i;
+        }
+        i += 1;
+    }
+    k
+}
+
+#[inline(never)]
+fn find2s(s0: Slice<u8>, s1: Slice<u8>, a: u8, c: u8) -> usize {
+    let k = s0.len();
+    let i: usize = 0;
+    while i < k {
+        if s0[i] == a && s1[i] == c {
+            return i;
+        }
+        i += 1;
+    }
+    k
+}
+
+#[inline(never)]
+fn find2b(s0: Slice<u8>, s1: Slice<u8>, a: u8, c: u8) -> usize {
+    let k = s0.len();
+    let i: usize = 0;
+    while i < k {
+        if (s0[i] == a) & (s1[i] == c) {
+            return i;
+        }
+        i += 1;
+    }
+    k
+}
+
+fn main() -> i32 {
+    let n: usize = 8 << 20;
+    let b: List<u8> = List::filled(n, 0u8);
+    let b2: List<u8> = List::filled(n, 0u8);
+    let x: u64 = 7;
+    for i in 0..n {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        b[i] = 97u8 + ((x >> 33) % 26u64) as u8;
+        b2[i] = 97u8 + ((x >> 40) % 26u64) as u8;
+    }
+    b[n - 3] = 10u8;
+    b2[n - 3] = 11u8;
+    let t: usize = 0;
+    for r in 0..30 {
+        t += find_from(b, 10u8, r, n);
+        t += find_n(b, 10u8, n);
+        t += find2(b, b2, 10u8, 11u8);
+        t += find2s(b[r:n], b2[r:n], 10u8, 11u8);
+        t += find2b(b[r:n], b2[r:n], 10u8, 11u8);
+    }
+    println(f"{t}");
+    return 0;
+}

@@ -1,0 +1,75 @@
+// expect-exit: 0
+// expect-stdout:
+// 7542668687916785700 8032179943414451550 3588683716 2085445231
+// 10002234564411261510 1469832979 17222085231038278605
+// 81985529216486895 163971058432973790 14183496552161583795 9264364801463019255 81985529216486895 163971058432973790 2541551405711093505
+// 2309737967 324508639 3302352631 2309737967 324508639
+// 8094758881813632631 12951528896300582466
+// 1839397344 1441784339
+// 3000 x2999 y 5998 true
+
+// Rotates, by constants (written as shifts too) and by variables, and
+// small structs going in and out of calls by value and `ref self`.
+
+struct Acc {
+    n: u64;
+    last: str;
+    tag: str;
+    seen: List<i64>;
+    odd: bool;
+}
+
+impl Acc {
+    fn add(ref self, i: i64) {
+        self.n += 1;
+        self.last = f"x{i}";
+        self.seen.push(i * 2);
+        self.odd = i % 2 == 1;
+    }
+}
+
+fn bump(a: Acc, i: i64) -> Acc {
+    let b = a;
+    b.add(i);
+    b
+}
+
+fn main() {
+    let x: u64 = 0x0123456789abcdef;
+    let y: u32 = 0x89abcdef;
+    println(f"{x.rotate_left(13)} {x.rotate_right(13)} {y.rotate_left(7)} {y.rotate_right(5)}");
+    println(f"{(x << 17u64) | (x >> 47u64)} {(y << 9u32) | (y >> 23u32)} {(x >> 8u64) | (x << 56u64)}");
+    let ns: List<u32> = [0, 1, 31, 63, 64, 65, 200];
+    let parts: List<str> = [];
+    for n in ns {
+        parts.push(f"{x.rotate_left(n)}");
+    }
+    println(parts.join(" "));
+    let ms: List<u32> = [0, 1, 31, 32, 33];
+    let qs: List<str> = [];
+    for n in ms {
+        qs.push(f"{y.rotate_left(n)}");
+    }
+    println(qs.join(" "));
+    let v0: u64 = 1;
+    let v1: u64 = 2;
+    for _ in 0..1000 {
+        v0 = v0.wrapping_add(v1);
+        v1 = v1.rotate_left(13u32) ^ v0;
+        v0 = v0.rotate_left(32u32);
+    }
+    println(f"{v0} {v1}");
+    let w0: u32 = 3;
+    let w1: u32 = 5;
+    for _ in 0..1000 {
+        w0 = w0.wrapping_add(w1);
+        w1 = w1.rotate_left(7u32) ^ w0;
+        w0 = w0.rotate_left(16u32);
+    }
+    println(f"{w0} {w1}");
+    let a = Acc { n: 0, last: "", tag: "y", seen: [], odd: false };
+    for i in 0..3000 {
+        a = bump(a, i);
+    }
+    println(f"{a.n} {a.last} {a.tag} {a.seen[2999]} {a.odd}");
+}

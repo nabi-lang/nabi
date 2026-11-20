@@ -1,0 +1,49 @@
+// needs: objc
+// expect-exit: 0
+// expect-stdout:
+// rc 1
+// same true rc 2
+// rc 1 after release_now
+// proxy false
+// responds true false
+// kind true
+// sel retainCount
+// class NSObject
+// lookup missing
+// released true
+
+// The root class alone (libobjc, no framework): a category on
+// `NSObject`, `objc::new`, retains, `Sel` and `Class`.
+use bare::ffi::objc;
+use bare::ffi::objc::{Class, Id, NSObject, Sel};
+
+#[objc::category(NSObject)]
+extern "objc" {
+    #[selector("self")]
+    fn same(self) -> Id<NSObject>;
+    fn isProxy(self) -> bool;
+}
+
+fn main() {
+    let o = objc::new::<NSObject>();
+    println(f"rc {o.retainCount()}");
+    let s = o.same();
+    println(f"same {s.isEqual(o)} rc {o.retainCount()}");
+    s.release_now();
+    println(f"rc {o.retainCount()} after release_now");
+    println(f"proxy {o.isProxy()}");
+    let yes = o.respondsToSelector(Sel::register("isProxy"));
+    let no = o.respondsToSelector(Sel::register("noSuchMethod:"));
+    println(f"responds {yes} {no}");
+    let c = Class::lookup("NSObject") ?? panic("no NSObject");
+    println(f"kind {o.isKindOfClass(c)}");
+    println(f"sel {Sel::register("retainCount").name()}");
+    println(f"class {o.class().name()}");
+    match Class::lookup("NoSuchNabiClass") {
+        c: Class => println(f"lookup {c.name()}"),
+        none => println("lookup missing"),
+    }
+    o.release_now();
+    o.release_now();
+    println(f"released {o.is_released()}");
+}

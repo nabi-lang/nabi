@@ -1,0 +1,16 @@
+// needs: threads
+// expect-exit: 0
+// expect-stdout:
+// 2 3
+
+// Read a field of each record after sending them: fine for Sync fields?
+use std::thread;
+struct Rec { name: str; tags: List<str>; }
+fn main() {
+    let (tx, rx) = channel::<Rec>();
+    let c = thread::spawn(|| { let n: usize = 0; while let r: Rec = rx.recv() { n += r.tags.len(); } n });
+    let recs: List<Rec> = [Rec { name: "a", tags: ["x"] }, Rec { name: "b", tags: ["y", "z"] }];
+    for r in recs { try! tx.send(r); }
+    tx.close();
+    println(f"{recs.len()} {try! c.join()}");
+}

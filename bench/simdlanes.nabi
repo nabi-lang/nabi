@@ -1,0 +1,40 @@
+// `core::simd` vectors made of scalars: a four-lane dot product of two
+// structs' fields (`from_array`, a product, `reduce_sum`), in `f32` and
+// `f64`, beside the same sum written on scalars, and an accumulator
+// vector carried through a loop and read back by lane, 2000 times over
+// 4096 points.
+use core::simd::Simd;
+
+struct P4 { x: f64; y: f64; z: f64; w: f64; }
+struct Q4 { x: f32; y: f32; z: f32; w: f32; }
+
+fn dot64(a: P4, q: Simd<f64, 4>) -> f64 {
+    (Simd::from_array([a.x, a.y, a.z, a.w]) * q).reduce_sum()
+}
+
+fn dot32(a: Q4, q: Simd<f32, 4>) -> f32 {
+    (Simd::from_array([a.x, a.y, a.z, a.w]) * q).reduce_sum()
+}
+
+fn plain(a: P4) -> f64 { 0.0 + a.x * 0.5 + a.y * 0.25 + a.z * 0.125 + a.w }
+
+fn main() -> i32 {
+    let n: usize = 4096;
+    let ps: List<P4> = List::from_fn(n, |i: usize| P4 { x: i as f64, y: 1.0 - i as f64, z: 0.5, w: i as f64 * 0.25 });
+    let qs: List<Q4> = List::from_fn(n, |i: usize| Q4 { x: (i % 64) as f32, y: 1.0, z: 0.5, w: (i % 8) as f32 * 0.25 });
+    let q = Simd::from_array([0.5, 0.25, 0.125, 1.0]);
+    let q32 = Simd::from_array([0.5f32, 0.25, 0.125, 1.0]);
+    let a: f64 = 0.0;
+    let b: f32 = 0.0;
+    let c: f64 = 0.0;
+    let acc = Simd::from_array([0.0, 0.0, 0.0, 0.0]);
+    for _ in 0..2000 {
+        for p in ps { a = a + dot64(p, q); }
+        for p in qs { b = b + dot32(p, q32); }
+        for p in ps { c = c + plain(p); }
+        for p in ps { acc = acc + Simd::from_array([p.x, p.y, p.z, p.w]) * q; }
+    }
+    let r = acc.to_array();
+    println(f"{a} {b} {c} {r[0]} {r[1]} {r[2]} {r[3]}");
+    return 0;
+}

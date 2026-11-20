@@ -1,0 +1,7 @@
+// expect-error: 5:14: `nabi_str_cstr`: a `nabi_*` symbol is the runtime's, whose `str` is `(ptr, len)`; an `extern "C"` `str` is a `char*` - give the C function another name
+
+// `nabi_*` names the runtime's functions, whose `str` is
+// `(ptr, len)`; an `extern "C"` `str` is a NUL-terminated `char*`.
+extern "C" { fn nabi_str_cstr(s: str) -> usize; }
+
+println(f"{unsafe { nabi_str_cstr("x") }}");

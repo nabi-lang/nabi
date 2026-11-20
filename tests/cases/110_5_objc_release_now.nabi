@@ -1,0 +1,19 @@
+// needs: objc
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at *
+// expect-stderr: an `Id<NSObject>` was used after `release_now()`; release an object only once nothing uses it any more
+// expect-stdout:
+// before
+
+// Copies of an `Id` share its retain: after `release_now()` on one,
+// sending to another panics instead of reaching a freed object.
+use bare::ffi::objc;
+use bare::ffi::objc::NSObject;
+
+fn main() {
+    let a = objc::new::<NSObject>();
+    let b = a;
+    println("before");
+    a.release_now();
+    println(f"{b.hash()}");
+}

@@ -1,0 +1,32 @@
+// expect-exit: 0
+// expect-stdout:
+// 3 1 true 5 2 ready
+
+// Each item has one path, its defining module; a parent module may
+// flatten its children (`collections::List`).
+use core::collections::{List, Dict};
+use core::sync::{Atomic, Mutex, RwLock, Cell};
+use core::channel::{Sender, Receiver};
+use core::future::{Poll, IntoFuture};
+use core::stream::{Stream, merge};
+use core::ops::DotAdd;
+
+fn send_one(tx: Sender<i32>) { try! tx.send(5); }
+
+fn main() {
+    let xs: List<i32> = [1, 2, 3];
+    let d: Dict<str, i32> = Dict::new();
+    d["a"] = 1;
+    let a: Atomic<i32> = Atomic::new(0);
+    let m: Mutex<i32> = Mutex::new(0);
+    let r: RwLock<i32> = RwLock::new(2);
+    let c: Cell<bool> = Cell::new(true);
+    let (tx, rx) = channel::<i32>();
+    send_one(tx);
+    let got: Receiver<i32> = rx;
+    let p: Poll<str> = Poll::Ready("ready");
+    let shown = match p { Poll::Ready(s) => s, Poll::Pending => "pending" };
+    let v = 0;
+    using g = r.read() { v = g.get(); }
+    println(f"{xs.len()} {d["a"]} {c.get()} {got.recv() ?? 0} {v} {shown}");
+}

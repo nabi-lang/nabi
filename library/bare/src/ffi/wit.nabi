@@ -1,0 +1,324 @@
+//! bare::ffi::wit - what the generated WIT bindings run on:
+//! linear-memory access at canonical ABI addresses (`i32`), the
+//! blocks strings and lists lower into, resource handles and
+//! `error-context`. The async ABI is `std::wit` (bare does not depend
+//! on core). Blocks come from the C allocator, including the ones
+//! the host fills through `cabi_realloc`; a lifted string or list frees
+//! its block once copied into GC memory.
+
+use bare::mem::reinterpret;
+use bare::ptr::{ConstPtr, Ptr, from_exposed_provenance};
+
+extern "nabi" {
+    fn nabi_alloc_raw(size: usize, align: usize, zeroed: i32) -> usize;
+    fn nabi_free(ptr: usize);
+}
+
+const fn at<T>(a: i32) -> Ptr<T> { unsafe { from_exposed_provenance::<T>(a as u32 as usize) } }
+
+/// The `u8` at canonical ABI address `a`. UB unless `a` is in linear
+/// memory.
+pub unsafe fn load_u8(a: i32) -> u8 { at::<u8>(a).read() }
+/// The `u16` at canonical ABI address `a`. UB unless `a` is in linear
+/// memory and aligned.
+pub unsafe fn load_u16(a: i32) -> u16 { at::<u16>(a).read() }
+/// The `i32` at canonical ABI address `a`. UB unless `a` is in linear
+/// memory and aligned.
+pub unsafe fn load_i32(a: i32) -> i32 { at::<i32>(a).read() }
+/// The `i64` at canonical ABI address `a`. UB unless `a` is in linear
+/// memory and aligned.
+pub unsafe fn load_i64(a: i32) -> i64 { at::<i64>(a).read() }
+/// The `f32` at canonical ABI address `a`. UB unless `a` is in linear
+/// memory and aligned.
+pub unsafe fn load_f32(a: i32) -> f32 { at::<f32>(a).read() }
+/// The `f64` at canonical ABI address `a`. UB unless `a` is in linear
+/// memory and aligned.
+pub unsafe fn load_f64(a: i32) -> f64 { at::<f64>(a).read() }
+/// Store `v` at canonical ABI address `a`. UB unless `a` is writable
+/// linear memory.
+pub unsafe fn store_u8(a: i32, v: u8) { at::<u8>(a).write(v); }
+/// Store `v` at canonical ABI address `a`. UB unless `a` is writable,
+/// aligned linear memory.
+pub unsafe fn store_u16(a: i32, v: u16) { at::<u16>(a).write(v); }
+/// Store `v` at canonical ABI address `a`. UB unless `a` is writable,
+/// aligned linear memory.
+pub unsafe fn store_i32(a: i32, v: i32) { at::<i32>(a).write(v); }
+/// Store `v` at canonical ABI address `a`. UB unless `a` is writable,
+/// aligned linear memory.
+pub unsafe fn store_i64(a: i32, v: i64) { at::<i64>(a).write(v); }
+/// Store `v` at canonical ABI address `a`. UB unless `a` is writable,
+/// aligned linear memory.
+pub unsafe fn store_f32(a: i32, v: f32) { at::<f32>(a).write(v); }
+/// Store `v` at canonical ABI address `a`. UB unless `a` is writable,
+/// aligned linear memory.
+pub unsafe fn store_f64(a: i32, v: f64) { at::<f64>(a).write(v); }
+
+// Joined flat slots of a variant (canonical ABI `join`).
+/// The bits of `x` as an `i32` flat slot (canonical ABI `join`).
+pub fn f32_bits(x: f32) -> i32 { reinterpret(x) }
+/// The `f32` whose bits are the flat slot `x`.
+pub fn f32_from(x: i32) -> f32 { reinterpret(x) }
+/// The bits of `x` as an `i64` flat slot (canonical ABI `join`).
+pub fn f64_bits(x: f64) -> i64 { reinterpret(x) }
+/// The `f64` whose bits are the flat slot `x`.
+pub fn f64_from(x: i64) -> f64 { reinterpret(x) }
+
+/// The `char` of the flat slot `x`; panics when `x` is not a Unicode
+/// scalar value.
+#[track_caller]
+pub const fn char_from(x: i32) -> char {
+    match char::from_u32(x as u32) {
+        c: char => c,
+        none => panic("wit::char_from: not a Unicode scalar value"),
+    }
+}
+
+/// A discriminant out of range.
+pub const fn bad_case() -> ! { panic("wit::bad_case: invalid variant case") }
+
+/// A copy or call that did not finish at once.
+pub const BLOCKED: i32 = -1;
+/// A copy's result: the other end was dropped.
+pub const DROPPED: i32 = 1;
+
+/// A block freed by `free`.
+pub unsafe fn free(a: i32) { nabi_free(a as u32 as usize); }
+
+/// The `n` UTF-8 bytes at `p` as a `str`; frees the block. Panics when
+/// the bytes are not UTF-8 (the block is not freed).
+pub unsafe fn str_take(p: i32, n: i32) -> str {
+    if n == 0 {
+        return "";
+    }
+    let bytes = at::<u8>(p).as_many().slice(n as u32 as usize);
+    let s = try! str::from_utf8(bytes);
+    free(p);
+    s
+}
+
+/// The `n` bytes at `p`; frees the block.
+pub unsafe fn bytes_take(p: i32, n: i32) -> List<u8> {
+    if n == 0 {
+        return List::new();
+    }
+    let l = at::<u8>(p).as_many().slice(n as u32 as usize).to_list();
+    free(p);
+    l
+}
+
+/// The blocks values were lowered into: freed together after an import
+/// call; an export's are freed by its post-return function instead.
+pub struct Blocks {
+    list: List<i32>;
+}
+
+impl Debug for Blocks {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Blocks") }
+}
+
+impl Blocks {
+    /// No blocks yet.
+    pub const fn new() -> Blocks { Blocks { list: List::new() } }
+
+    /// `size` bytes aligned to `align`; an empty block is the address
+    /// `align` (the canonical ABI checks only its alignment).
+    pub fn alloc(self, size: i32, align: i32) -> i32 {
+        if size == 0 {
+            return align;
+        }
+        let a = unsafe { nabi_alloc_raw(size as u32 as usize, align as u32 as usize, 0) };
+        if a == 0 {
+            panic("Blocks::alloc: out of memory");
+        }
+        self.list.push(a as i32);
+        a as i32
+    }
+
+    /// `s` copied into a block: `(address, length)`.
+    pub fn str(self, s: str) -> (i32, i32) {
+        let n = s.len() as i32;
+        let p = self.alloc(n, 1);
+        if n > 0 {
+            unsafe { bare::mem::copy_nonoverlapping(s.as_ptr(), at::<u8>(p), s.len()) };
+        }
+        (p, n)
+    }
+
+    /// `l` copied into a block: `(address, length)`.
+    pub fn bytes(self, l: List<u8>) -> (i32, i32) {
+        let n = l.len() as i32;
+        let p = self.alloc(n, 1);
+        for i in 0..l.len() {
+            unsafe { store_u8(p + i as i32, l[i]) };
+        }
+        (p, n)
+    }
+
+    /// Free every block and empty the list.
+    pub fn free(self) {
+        for a in self.list.iter() {
+            unsafe { free(a) };
+        }
+        self.list.clear();
+    }
+}
+
+/// The handle of an imported resource, shared by every copy of its
+/// value: passing an `own` on or dropping it empties them all.
+pub struct Handle {
+    cell: List<i32>;
+    owned: bool;
+}
+
+impl Debug for Handle {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Handle") }
+}
+
+impl Handle {
+    /// An owned handle `h`: it can be passed on as `own`.
+    pub const fn own(h: i32) -> Handle { Handle { cell: [h], owned: true } }
+    /// A borrowed handle `h`: it cannot be passed on as `own`.
+    pub const fn borrowed(h: i32) -> Handle { Handle { cell: [h], owned: false } }
+
+    /// The handle; panics once it was dropped or passed on.
+    #[track_caller]
+    pub const fn get(self) -> i32 {
+        let h = self.cell[0];
+        if h < 0 {
+            panic("Handle::get: resource used after it was dropped or passed on");
+        }
+        h
+    }
+
+    /// The handle, given away (an `own` parameter).
+    #[track_caller]
+    pub const fn take(self) -> i32 {
+        if !self.owned {
+            panic("Handle::take: a borrowed resource cannot be passed as `own`");
+        }
+        let h = self.get();
+        self.cell[0] = -1;
+        h
+    }
+
+    /// The handle to drop, if this value still owns one.
+    pub const fn release(self) -> i32 | none {
+        let h = self.cell[0];
+        if !self.owned || h < 0 {
+            return none;
+        }
+        self.cell[0] = -1;
+        h
+    }
+}
+
+/// The values of an exported resource, by representation (`rep`): a
+/// handle the host holds keeps its value alive here until the host
+/// drops it (`[dtor]`).
+pub struct Table<T> {
+    slots: List<T?>;
+    free: List<i32>;
+}
+
+impl<T> Debug for Table<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Table") }
+}
+
+// A component instance runs on one thread at a time.
+unsafe impl<T> Sync for Table<T> {}
+
+impl<T> Table<T> {
+    /// The caller guarantees one thread at a time uses the table (the
+    /// bindings make one per component instance).
+    pub unsafe fn new() -> Table<T> { Table { slots: List::new(), free: List::new() } }
+
+    /// Store `v` and return its `rep`, reusing a freed slot first.
+    pub fn insert(self, v: T) -> i32 {
+        match self.free.pop() {
+            rep: i32 => {
+                self.slots[rep as u32 as usize] = v;
+                rep
+            }
+            none => {
+                self.slots.push(v);
+                (self.slots.len() - 1) as i32
+            }
+        }
+    }
+
+    /// The value of `rep`. Panics if it was taken already.
+    #[track_caller]
+    pub fn get(self, rep: i32) -> T {
+        match self.slots[rep as u32 as usize] {
+            v: T => v,
+            none => panic("Table::get: resource used after it was dropped"),
+        }
+    }
+
+    /// The value of `rep`, its slot freed; `none` if it was taken already
+    /// (a `[dtor]` after the value came back through an owned handle).
+    pub fn take(self, rep: i32) -> T? {
+        let v = self.slots[rep as u32 as usize];
+        if v is T {
+            self.slots[rep as u32 as usize] = none;
+            self.free.push(rep);
+        }
+        v
+    }
+}
+
+#[cfg(target_os = "wasi")]
+#[link(wasm_import_module = "$root")]
+extern "C" {
+    #[link_name = "[error-context-new-utf8]"]
+    fn nabi_wit_ec_new(p: i32, n: i32) -> i32;
+    #[link_name = "[error-context-debug-message-utf8]"]
+    fn nabi_wit_ec_message(h: i32, ret: i32);
+    #[link_name = "[error-context-drop]"]
+    fn nabi_wit_ec_drop(h: i32);
+}
+
+/// The component model's `error-context`: a message for debugging,
+/// passed between components.
+pub struct ErrorContext {
+    handle: i32;
+}
+
+impl Debug for ErrorContext {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"ErrorContext {{ handle: {self.handle} }}") }
+}
+
+#[cfg(target_os = "wasi")]
+impl ErrorContext {
+    /// A new error context with the debug message `msg`.
+    pub fn new(msg: str) -> ErrorContext {
+        let b = Blocks::new();
+        let (p, n) = b.str(msg);
+        let h = unsafe { nabi_wit_ec_new(p, n) };
+        b.free();
+        ErrorContext { handle: h }
+    }
+
+    /// Its debug message (the host may give an empty one).
+    pub fn debug_message(self) -> str {
+        let b = Blocks::new();
+        let a = b.alloc(8, 4);
+        unsafe { nabi_wit_ec_message(self.handle, a) };
+        let s = unsafe { str_take(load_i32(a), load_i32(a + 4)) };
+        b.free();
+        s
+    }
+
+    /// Its handle, for the generated bindings.
+    pub fn raw(self) -> i32 { self.handle }
+
+    /// The error context of handle `h`, for the generated bindings.
+    pub fn from_raw(h: i32) -> ErrorContext { ErrorContext { handle: h } }
+}
+
+#[cfg(target_os = "wasi")]
+impl Drop for ErrorContext {
+    fn drop(ref self) {
+        unsafe { nabi_wit_ec_drop(self.handle) };
+    }
+}

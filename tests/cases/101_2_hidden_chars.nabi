@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout: 3 3
+// expect-lint: 9:15 invisible character U+200B ZERO WIDTH SPACE written directly in a literal
+// expect-lint: 10:9 invisible character U+2060 WORD JOINER in a comment
+
+// Invisible characters in strings and comments warn; emoji sequences and
+// a Persian ZWNJ are what they look like.
+fn main() {
+    let s = "a​b";
+    // c⁠d
+    let family = "👨‍👩";
+    let word = "می‌خواهم";
+    println(f"{s.chars().count()} {family.chars().count()}");
+    let _ = word;
+}

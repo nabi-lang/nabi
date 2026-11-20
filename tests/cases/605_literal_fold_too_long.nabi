@@ -1,0 +1,12 @@
+// expect-exit: 0
+// expect-stdout: 6 1999998
+
+// A list literal of calls with constant arguments folds at compile time
+// only while that is short: past the step limit, the elements are made
+// when the program runs instead of the build failing.
+const N: usize = 1000000;
+
+fn main() {
+    let xs = [List::from_fn(N, |i| i as f64), List::from_fn(N, |i| (2 * i) as f64)];
+    println(f"{xs[0][3] * 2.0} {xs[1][N - 1]}");
+}

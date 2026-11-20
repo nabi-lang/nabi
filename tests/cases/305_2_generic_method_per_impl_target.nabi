@@ -1,0 +1,23 @@
+// expect-exit: 0
+// expect-stdout: 2 1 2.5
+
+// Impls of one trait for other arguments of one type (`Range<i64>`,
+// `Range<f64>`) keep their generic methods apart: the receiver's type
+// picks the impl, and each instance is its own.
+trait Pick { fn pick<G: Clone>(self, g: G) -> f64; }
+impl Pick for Range<i64> {
+    fn pick<G: Clone>(self, g: G) -> f64 { 1.0 }
+}
+impl Pick for Range<f64> {
+    fn pick<G: Clone>(self, g: G) -> f64 { 2.0 }
+}
+impl Pick for Range<f32> {
+    fn pick<G: Clone>(self, g: G) -> f64 { 2.5 }
+}
+
+fn main() {
+    let r: Range<f64> = 0.5..1.5;
+    let q: Range<i64> = 0..2;
+    let s: Range<f32> = 0.0f32..1.0f32;
+    println(f"{r.pick(3)} {q.pick(3)} {s.pick(true)}");
+}

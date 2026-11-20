@@ -1,0 +1,23 @@
+[package]
+name = "nabic_typeck"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+nabic_ast = { workspace = true }
+nabic_consteval = { workspace = true }
+nabic_core = { workspace = true }
+nabic_diagnostic = { workspace = true }
+nabic_hir = { workspace = true }
+nabic_hir_check = { workspace = true }
+nabic_ir_common = { workspace = true }
+nabic_lexer = { workspace = true }
+nabic_parser = { workspace = true }
+# The runtime's format, `str` and `char` functions, for constants.
+nabir_abi = { workspace = true }
+
+[lints]
+workspace = true

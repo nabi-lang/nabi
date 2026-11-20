@@ -1,0 +1,139 @@
+// std::nabion::write - the canonical text of a `Value`.
+
+use std::nabion::Value;
+
+const WIDTH: usize = 100;
+
+// Neither writer checks floats: a NaN / infinite one comes out as `nan`
+// / `inf` / `-inf` (`Debug`, `Display`, error messages); `to_str` and
+// `to_str_flat` throw before writing one.
+
+/// `v` on one line.
+pub fn flat(v: Value) -> str {
+    match v {
+        Value::None => "none",
+        Value::Bool(b) => if b { "true" } else { "false" },
+        Value::Int(n) => f"{n}",
+        Value::Float(x) => float_text(x),
+        Value::Char(c) => f"{c:?}",
+        Value::Str(s) => f"{s:?}",
+        Value::List(xs) => "[" + flat_items(xs) + "]",
+        Value::Tuple(xs) => {
+            if xs.len() == 1 { return "(" + flat(xs[0]) + ",)"; }
+            "(" + flat_items(xs) + ")"
+        },
+        Value::Dict(d) => {
+            if d.is_empty() { return "{}"; }
+            let parts: List<str> = List::new();
+            for (k, x) in d.iter() { parts.push(flat(k) + ": " + flat(x)); }
+            "{ " + parts.join(", ") + " }"
+        },
+        Value::Struct { name, fields } => {
+            let head = match name {
+                n: str => n + " ",
+                none => "",
+            };
+            head + flat_fields(fields)
+        },
+        Value::Variant { path, args, named } => {
+            if args.is_empty() {
+                if named.is_empty() { return path; }
+                return path + " " + flat_fields(named);
+            }
+            let parts: List<str> = List::new();
+            for x in args { parts.push(flat(x)); }
+            for (k, x) in named.iter() { parts.push(k + ": " + flat(x)); }
+            path + "(" + parts.join(", ") + ")"
+        },
+    }
+}
+
+fn flat_items(xs: List<Value>) -> str {
+    let parts: List<str> = List::new();
+    for x in xs { parts.push(flat(x)); }
+    parts.join(", ")
+}
+
+fn flat_fields(fs: Dict<str, Value>) -> str {
+    if fs.is_empty() { return "{}"; }
+    let parts: List<str> = List::new();
+    for (k, x) in fs.iter() { parts.push(k + ": " + flat(x)); }
+    "{ " + parts.join(", ") + " }"
+}
+
+/// `v` starting at column `col` of a line indented `indent`, followed by
+/// `tail` more columns (a `,`): one line if it fits in `WIDTH`, else
+/// one item per line.
+pub fn pretty(v: Value, indent: usize, col: usize, tail: usize) -> str {
+    let one = flat(v);
+    if col + one.char_count() + tail <= WIDTH { return one; }
+    let inner = indent + 4;
+    let pad = " ".repeat(inner);
+    let b = StrBuf::new();
+    match v {
+        Value::List(xs) => {
+            b.push_str("[\n");
+            for x in xs { b.push_str(pad + pretty(x, inner, inner, 1) + ",\n"); }
+            b.push_str(" ".repeat(indent) + "]");
+        },
+        Value::Tuple(xs) => {
+            b.push_str("(\n");
+            for x in xs { b.push_str(pad + pretty(x, inner, inner, 1) + ",\n"); }
+            b.push_str(" ".repeat(indent) + ")");
+        },
+        Value::Dict(d) => {
+            b.push_str("{\n");
+            for (k, x) in d.iter() {
+                let key = flat(k) + ": ";
+                b.push_str(pad + key + pretty(x, inner, inner + key.char_count(), 1) + ",\n");
+            }
+            b.push_str(" ".repeat(indent) + "}");
+        },
+        Value::Struct { name, fields } => {
+            if let n: str = name { b.push_str(n + " "); }
+            b.push_str(pretty_fields(fields, indent));
+        },
+        Value::Variant { path, args, named } => {
+            b.push_str(path);
+            if args.is_empty() {
+                b.push_str(" " + pretty_fields(named, indent));
+            } else {
+                b.push_str("(\n");
+                for x in args { b.push_str(pad + pretty(x, inner, inner, 1) + ",\n"); }
+                for (k, x) in named.iter() {
+                    b.push_str(pad + k + ": " + pretty(x, inner, inner + k.char_count() + 2, 1) + ",\n");
+                }
+                b.push_str(" ".repeat(indent) + ")");
+            }
+        },
+        // A scalar (a long string) stays on its line.
+        _ => b.push_str(one),
+    }
+    b.to_str()
+}
+
+fn pretty_fields(fs: Dict<str, Value>, indent: usize) -> str {
+    let inner = indent + 4;
+    let b = StrBuf::new();
+    b.push_str("{\n");
+    for (k, x) in fs.iter() {
+        b.push_str(" ".repeat(inner) + k + ": " + pretty(x, inner, inner + k.char_count() + 2, 1) + ",\n");
+    }
+    b.push_str(" ".repeat(indent) + "}");
+    b.to_str()
+}
+
+/// A float that reads back as the same float: the shortest round-trip
+/// digits (Display / `{:e}`), always with a `.`, as a plain decimal for
+/// magnitudes 1e-5 up to 1e17, else `1.5e300`.
+fn float_text(x: float) -> str {
+    if !x.is_finite() {
+        if x.is_nan() { return "nan"; }
+        return if x.is_sign_negative() { "-inf" } else { "inf" };
+    }
+    let a = x.abs().to_f64();
+    let t = if a != 0.0 && (a < 1e-5 || a >= 1e17) { f"{x:e}" } else { f"{x}" };
+    if t.contains(".") { return t; }
+    let (m, e) = t.split_once("e") ?? (t, "");
+    if e.is_empty() { m + ".0" } else { m + ".0e" + e }
+}

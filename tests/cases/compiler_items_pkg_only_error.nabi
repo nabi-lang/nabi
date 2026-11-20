@@ -1,0 +1,35 @@
+// expect-error: function `core::collections::list::list_literal` is `pub(pkg)`
+// expect-error: function `core::range::range_literal` is `pub(pkg)`
+// expect-error: function `core::marker::default_of` is `pub(pkg)`
+// expect-error: function `core::collections::broadcast::check_len` is `pub(pkg)`
+// expect-error: function `core::bench::measured` is `pub(pkg)`
+// expect-error: function `std::nabion::variant_of` is `pub(pkg)`
+// expect-error: = help: it is a helper of `std`, not part of its API: use a `pub` item instead
+// expect-error: method `Int::from_literal` is internal to the Nabi toolchain
+// expect-error: = help: to make an `Int` from text, write `try s.parse::<Int>()`
+// expect-error: method `Float::from_literal` is internal to the Nabi toolchain
+// expect-error: = help: to make a `Float` from text, write `try s.parse::<Float>()`
+// forbid-error: deprecated
+
+// What the compiler writes into a package (a literal's handler, a
+// derive's helpers) is checked where it is defined, so those items are
+// `pub(pkg)`: the literals and derives work, a direct call does not. Each
+// error says what to write instead.
+#[derive(Default, Nabion)]
+struct P { x: i32; ys: List<i32>; }
+
+fn main() {
+    let xs: List<i32> = [1, 2];
+    let r = 0..3;
+    let p: P = P::default();
+    let big: int = 1_000_000_000_000_000_000_000;
+    println(f"{xs.len()} {r.len()} {p.x} {big}");
+    let _ = core::collections::list::list_literal(1, 2);
+    let _ = core::range::range_literal(0, 1);
+    let _: i32 = core::marker::default_of();
+    core::collections::broadcast::check_len(1, 1);
+    let _ = core::bench::measured();
+    let _ = try? std::nabion::variant_of(std::nabion::Value::None, "P");
+    let _ = int::from_literal("1");
+    let _ = float::from_literal("1.5");
+}

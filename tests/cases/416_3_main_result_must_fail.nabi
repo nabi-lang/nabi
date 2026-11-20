@@ -1,0 +1,5 @@
+// expect-error: cannot return `Result`
+
+// `main` returns `()` / `i32` and may `throws`; a `Result` main is not
+// an entry form.
+fn main() -> Result<(), str> { return Result::Ok(()); }

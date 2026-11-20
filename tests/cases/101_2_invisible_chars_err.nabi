@@ -1,0 +1,14 @@
+// expect-error: 9:13: invisible character U+200B ZERO WIDTH SPACE in code
+// expect-error: 10:12: U+00A0 NO-BREAK SPACE is not a space in code
+// expect-error: 11:9: identifier `ab` holds the invisible character U+200C ZERO WIDTH NON-JOINER: it reads as `ab` but is another name
+// expect-error: 12:9: this name is only the invisible character U+3164 HANGUL FILLER, so it shows nothing
+// expect-error: 13:13: U+FEFF ZERO WIDTH NO-BREAK SPACE past the start of the file
+
+// Invisible characters and odd spaces are not read as code or in names.
+fn main() {
+    let a = ​1;
+    let b = 2;
+    let a‌b = 3;
+    let ㅤ = 4;
+    let c = ﻿5;
+}

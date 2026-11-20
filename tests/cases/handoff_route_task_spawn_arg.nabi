@@ -1,0 +1,15 @@
+// needs: threads
+// expect-error: handoff_route_task_spawn_arg.nabi:13:26: `a` was spawned as a task at line 12
+// expect-error: help: the task works on its own copy
+// An async fn's argument goes to a task on another worker: the task owns
+// its copy, so the spawner's later use of the list is an error.
+async fn grow(xs: List<i32>) -> usize {
+    for i in 0..200000 { xs.push(i); }
+    xs.len()
+}
+async fn main() {
+    let a: List<i32> = [];
+    let t = task::spawn(grow(a));
+    for i in 0..200000 { a.push(i); }
+    println(f"{await t} len {a.len()}");
+}

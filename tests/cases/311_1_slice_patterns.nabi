@@ -1,0 +1,103 @@
+// expect-exit: 0
+// expect-stdout:
+// empty | one 7 | two 1 2 | first 1 last 4 middle [2, 3]
+// 10 | 6 | 0
+// head a rest ["b", "c"] | none
+// pair 3 4 | inner 9 | zero-led 5
+// arr 1 2 3 | ends 1 4 [2, 3] | v [5, 6]
+// mut [8, 9] | opt 2
+// first 1 | 7 1 [2, 3, 4]
+
+// Slice patterns on a list, a slice, a fixed array and a sum holding a
+// list: `[]`, `[a, b]`, `[first, ..rest]`, `[.., last]`, nesting,
+// literals in items and binding an item with `@`; in `if let`,
+// `let .. else` and a `const fn`.
+use core::collections::SliceMut;
+
+fn describe(xs: List<i32>) -> str {
+    match xs {
+        [] => "empty",
+        [x] => f"one {x}",
+        [a, b] => f"two {a} {b}",
+        [first, ..mid, last] => f"first {first} last {last} middle {mid.to_list():?}",
+    }
+}
+
+fn sum(xs: Slice<i32>) -> i32 {
+    match xs {
+        [] => 0,
+        [x, ..rest] => x + sum(rest),
+    }
+}
+
+fn split(xs: List<str> | none) -> str {
+    match xs {
+        [h, ..rest] => f"head {h} rest {rest.to_list():?}",
+        _ => "none",
+    }
+}
+
+fn shape(xs: List<List<i32>>) -> str {
+    match xs {
+        [[a, b]] => f"pair {a} {b}",
+        [[0, n], ..] => f"zero-led {n}",
+        [[.., x], _] => f"inner {x}",
+        _ => "other",
+    }
+}
+
+fn main() {
+    let ls: List<List<i32>> = [[], [7], [1, 2], [1, 2, 3, 4]];
+    let parts = ls.iter().map(describe).collect::<List<str>>();
+    println(parts.join(" | "));
+    let xs: List<i32> = [1, 2, 3, 4];
+    let empty: List<i32> = [];
+    println(f"{sum(xs[:])} | {sum(xs[:3])} | {sum(empty[:])}");
+    let abc: List<str> = ["a", "b", "c"];
+    println(f"{split(abc)} | {split(none_list())}");
+    let m1: List<List<i32>> = [[3, 4]];
+    let m2: List<List<i32>> = [[1, 9], [2]];
+    let m3: List<List<i32>> = [[0, 5], [6], [7]];
+    println(f"{shape(m1)} | {shape(m2)} | {shape(m3)}");
+    let arr: [i32; 4] = [1, 2, 3, 4];
+    let [a, b, c, _] = arr;
+    let [p, ..mid, q] = arr;
+    let v = match [5, 6] {
+        whole @ [5, _] => whole,
+        _ => [0, 0],
+    };
+    println(f"arr {a} {b} {c} | ends {p} {q} {mid.to_list():?} | v {v:?}");
+    let ys: List<i32> = [8, 9];
+    let got = both(ys);
+    let opt = match pick() {
+        [_, n @ 2] => n,
+        _ => 0,
+    };
+    println(f"mut {got:?} | opt {opt}");
+    let fs = if let [first, ..] = xs { f"first {first}" } else { "none" };
+    let [q, ..tail] = xs else { return; };
+    println(f"{fs} | {H} {q} {tail.to_list():?}");
+}
+
+const fn head(a: [i32; 3]) -> i32 {
+    match a {
+        [x, ..] => x,
+    }
+}
+
+const H: i32 = head([7, 8, 9]);
+
+fn none_list() -> List<str> | none {
+    none
+}
+
+fn both(v: SliceMut<i32>) -> [i32; 2] {
+    match v {
+        [x, y] => [x, y],
+        _ => [0, 0],
+    }
+}
+
+fn pick() -> [i64; 2] {
+    [1, 2]
+}

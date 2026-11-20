@@ -1,0 +1,12 @@
+// A `try_scope` body that throws nothing leaves its `E` unknown: the
+// error says how to name it.
+// expect-error: 9:24: cannot infer `E` of `par::try_scope`: it is the error type the closure throws, and this closure throws none
+// expect-error: help: name the error type: `par::try_scope::<MyError>(..)`, or annotate the parameter: `|s: par::TryScope<MyError>| ..`
+// forbid-error: #nothrow
+use core::par;
+
+fn main() throws {
+    try par::try_scope(|s| {
+        s.spawn(|| { println("hi"); 0 });
+    });
+}

@@ -1,0 +1,26 @@
+[package]
+name = "nabi_toolchain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+nabi_manifest = { workspace = true }
+nabic_core = { workspace = true }
+nabic_interface = { workspace = true }
+nabic_nabion = { workspace = true }
+nabic_target = { workspace = true }
+
+# src/child.rs.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[features]
+# sign::testing: sign release sets with a throwaway key in tests
+# (pm/nabi's dev-dependency); never on in a release build.
+test-sign = []
+
+[lints]
+workspace = true

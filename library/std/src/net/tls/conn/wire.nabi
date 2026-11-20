@@ -1,0 +1,288 @@
+// std::net::tls::conn::wire: the wire format: content, message,
+// extension and scheme numbers, and the encoders and the reader of
+// handshake messages.
+
+use std::net::tls::{TlsError, TlsErrorKind};
+
+// Content types.
+pub(pkg) const CHANGE_CIPHER_SPEC: u8 = 20u8;
+
+pub(pkg) const ALERT: u8 = 21u8;
+
+pub(pkg) const HANDSHAKE: u8 = 22u8;
+
+pub(pkg) const APPLICATION_DATA: u8 = 23u8;
+
+// Handshake message types.
+pub(pkg) const CLIENT_HELLO: u8 = 1u8;
+
+pub(pkg) const SERVER_HELLO: u8 = 2u8;
+
+pub(pkg) const NEW_SESSION_TICKET: u8 = 4u8;
+
+pub(pkg) const END_OF_EARLY_DATA: u8 = 5u8;
+
+pub(pkg) const ENCRYPTED_EXTENSIONS: u8 = 8u8;
+
+pub(pkg) const CERTIFICATE: u8 = 11u8;
+
+pub(pkg) const CERTIFICATE_REQUEST: u8 = 13u8;
+
+pub(pkg) const CERTIFICATE_VERIFY: u8 = 15u8;
+
+pub(pkg) const FINISHED: u8 = 20u8;
+
+pub(pkg) const KEY_UPDATE: u8 = 24u8;
+
+pub(pkg) const MESSAGE_HASH: u8 = 254u8;
+
+// Extensions.
+pub(pkg) const EXT_SERVER_NAME: u16 = 0u16;
+
+pub(pkg) const EXT_STATUS_REQUEST: u16 = 5u16;
+
+pub(pkg) const EXT_SUPPORTED_GROUPS: u16 = 10u16;
+
+pub(pkg) const EXT_SIGNATURE_ALGORITHMS: u16 = 13u16;
+
+pub(pkg) const EXT_ALPN: u16 = 16u16;
+
+pub(pkg) const EXT_PRE_SHARED_KEY: u16 = 41u16;
+
+pub(pkg) const EXT_EARLY_DATA: u16 = 42u16;
+
+pub(pkg) const EXT_SUPPORTED_VERSIONS: u16 = 43u16;
+
+pub(pkg) const EXT_COOKIE: u16 = 44u16;
+
+pub(pkg) const EXT_PSK_MODES: u16 = 45u16;
+
+pub(pkg) const EXT_KEY_SHARE: u16 = 51u16;
+
+// Named groups.
+pub(pkg) const X25519_GROUP: u16 = 0x001du16;
+
+pub(pkg) const HYBRID_GROUP: u16 = 0x11ecu16;
+
+// Signature schemes.
+pub(pkg) const ECDSA_P256_SHA256: u16 = 0x0403u16;
+
+pub(pkg) const ECDSA_P384_SHA384: u16 = 0x0503u16;
+
+pub(pkg) const RSA_PSS_SHA256: u16 = 0x0804u16;
+
+pub(pkg) const RSA_PSS_SHA384: u16 = 0x0805u16;
+
+pub(pkg) const RSA_PSS_SHA512: u16 = 0x0806u16;
+
+pub(pkg) const ED25519_SCHEME: u16 = 0x0807u16;
+
+pub(pkg) const RSA_PSS_PSS_SHA256: u16 = 0x0809u16;
+
+pub(pkg) const RSA_PSS_PSS_SHA384: u16 = 0x080au16;
+
+pub(pkg) const RSA_PSS_PSS_SHA512: u16 = 0x080bu16;
+
+const RSA_PKCS1_SHA256: u16 = 0x0401u16;
+
+const RSA_PKCS1_SHA384: u16 = 0x0501u16;
+
+const RSA_PKCS1_SHA512: u16 = 0x0601u16;
+
+// Alerts.
+pub(pkg) const ALERT_CLOSE_NOTIFY: u8 = 0u8;
+
+pub(pkg) const ALERT_UNEXPECTED_MESSAGE: u8 = 10u8;
+
+pub(pkg) const ALERT_BAD_RECORD_MAC: u8 = 20u8;
+
+pub(pkg) const ALERT_RECORD_OVERFLOW: u8 = 22u8;
+
+pub(pkg) const ALERT_HANDSHAKE_FAILURE: u8 = 40u8;
+
+pub(pkg) const ALERT_BAD_CERTIFICATE: u8 = 42u8;
+
+pub(pkg) const ALERT_CERTIFICATE_UNKNOWN: u8 = 46u8;
+
+pub(pkg) const ALERT_ILLEGAL_PARAMETER: u8 = 47u8;
+
+pub(pkg) const ALERT_DECODE_ERROR: u8 = 50u8;
+
+pub(pkg) const ALERT_DECRYPT_ERROR: u8 = 51u8;
+
+pub(pkg) const ALERT_PROTOCOL_VERSION: u8 = 70u8;
+
+pub(pkg) const ALERT_INTERNAL_ERROR: u8 = 80u8;
+
+pub(pkg) const ALERT_MISSING_EXTENSION: u8 = 109u8;
+
+pub(pkg) const ALERT_UNSUPPORTED_EXTENSION: u8 = 110u8;
+
+pub(pkg) const ALERT_CERTIFICATE_REQUIRED: u8 = 116u8;
+
+pub(pkg) const ALERT_NO_APPLICATION_PROTOCOL: u8 = 120u8;
+
+/// SHA-256("HelloRetryRequest"): a ServerHello random marking an HRR.
+pub(pkg) const HRR_RANDOM: [u8; 32] = [
+    0xcfu8, 0x21u8, 0xadu8, 0x74u8, 0xe5u8, 0x9au8, 0x61u8, 0x11u8, 0xbeu8, 0x1du8, 0x8cu8, 0x02u8, 0x1eu8, 0x65u8, 0xb8u8, 0x91u8,
+    0xc2u8, 0xa2u8, 0x11u8, 0x16u8, 0x7au8, 0xbbu8, 0x8cu8, 0x5eu8, 0x07u8, 0x9eu8, 0x09u8, 0xe2u8, 0xc8u8, 0xa8u8, 0x33u8, 0x9cu8,
+];
+
+pub(pkg) const MAX_PLAINTEXT: usize = 16384;
+
+/// The signature schemes accepted from a peer (PKCS #1 only in
+/// certificates).
+pub(pkg) const fn sig_schemes() -> List<u16> {
+    [ED25519_SCHEME, ECDSA_P256_SHA256, ECDSA_P384_SHA384, RSA_PSS_SHA256, RSA_PSS_SHA384, RSA_PSS_SHA512,
+        RSA_PSS_PSS_SHA256, RSA_PSS_PSS_SHA384, RSA_PSS_PSS_SHA512, RSA_PKCS1_SHA256, RSA_PKCS1_SHA384, RSA_PKCS1_SHA512]
+}
+
+/// Ticket age disagreement tolerated for 0-RTT, ms (RFC 8446 8.3).
+pub(pkg) const AGE_TOLERANCE_MS: i64 = 10000i64;
+
+/// Records written under one key before a KeyUpdate (AES-GCM's limit
+/// is 2^24.5 full records).
+pub(pkg) const UPDATE_AFTER: u64 = 0x100_0000u64;
+
+pub(pkg) const fn proto(msg: str, alert: u8) -> TlsError {
+    TlsError { kind: TlsErrorKind::Protocol, msg, alert }
+}
+
+pub(pkg) const fn decode_err(what: str) -> TlsError { proto(f"malformed {what}", ALERT_DECODE_ERROR) }
+
+pub(pkg) const fn put_u16(out: List<u8>, v: usize) {
+    out.push((v >> 8) as u8);
+    out.push(v as u8);
+}
+
+pub(pkg) const fn put_u32(out: List<u8>, v: u32) {
+    out.push((v >> 24) as u8);
+    out.push((v >> 16) as u8);
+    out.push((v >> 8) as u8);
+    out.push(v as u8);
+}
+
+pub(pkg) const fn put_u24(out: List<u8>, v: usize) {
+    out.push((v >> 16) as u8);
+    out.push((v >> 8) as u8);
+    out.push(v as u8);
+}
+
+pub(pkg) const fn put(out: List<u8>, b: Slice<u8>) {
+    for x in b { out.push(x); }
+}
+
+pub(pkg) const fn put_list(out: List<u8>, b: List<u8>) {
+    for x in b { out.push(x); }
+}
+
+pub(pkg) const fn vec8(out: List<u8>, b: List<u8>) {
+    out.push(b.len() as u8);
+    put_list(out, b);
+}
+
+pub(pkg) const fn vec16(out: List<u8>, b: List<u8>) {
+    put_u16(out, b.len());
+    put_list(out, b);
+}
+
+pub(pkg) const fn ext(out: List<u8>, kind: u16, body: List<u8>) {
+    put_u16(out, kind as usize);
+    vec16(out, body);
+}
+
+/// A handshake message: type, 24-bit length, body.
+pub(pkg) const fn message(kind: u8, body: List<u8>) -> List<u8> {
+    let m: List<u8> = List::with_capacity(body.len() + 4);
+    m.push(kind);
+    put_u24(m, body.len());
+    put_list(m, body);
+    m
+}
+
+/// A cursor over a received message.
+pub(pkg) struct Rd {
+    s: Slice<u8>;
+    pos: usize;
+    what: str;
+}
+
+impl Rd {
+    pub(pkg) const fn new(s: Slice<u8>, what: str) -> Rd { Rd { s, pos: 0, what } }
+
+    pub(pkg) const fn left(self) -> usize { self.s.len() - self.pos }
+
+    pub(pkg) const fn bytes(ref self, n: usize) throws (TlsError) -> Slice<u8> {
+        if self.left() < n { throw decode_err(self.what); }
+        let b = self.s[self.pos:self.pos + n];
+        self.pos += n;
+        b
+    }
+
+    pub(pkg) const fn u8(ref self) throws (TlsError) -> u8 { (try self.bytes(1))[0] }
+
+    pub(pkg) const fn u16(ref self) throws (TlsError) -> usize {
+        let b = try self.bytes(2);
+        ((b[0] as usize) << 8) | (b[1] as usize)
+    }
+
+    pub(pkg) const fn u32(ref self) throws (TlsError) -> u32 {
+        let b = try self.bytes(4);
+        ((b[0] as u32) << 24) | ((b[1] as u32) << 16) | ((b[2] as u32) << 8) | (b[3] as u32)
+    }
+
+    const fn u24(ref self) throws (TlsError) -> usize {
+        let b = try self.bytes(3);
+        ((b[0] as usize) << 16) | ((b[1] as usize) << 8) | (b[2] as usize)
+    }
+
+    pub(pkg) const fn vec8(ref self) throws (TlsError) -> Slice<u8> {
+        let n = try self.u8();
+        try self.bytes(n as usize)
+    }
+
+    pub(pkg) const fn vec16(ref self) throws (TlsError) -> Slice<u8> {
+        let n = try self.u16();
+        try self.bytes(n)
+    }
+
+    pub(pkg) const fn vec24(ref self) throws (TlsError) -> Slice<u8> {
+        let n = try self.u24();
+        try self.bytes(n)
+    }
+
+    pub(pkg) const fn end(self) throws (TlsError) {
+        if self.left() != 0 { throw decode_err(self.what); }
+    }
+}
+
+/// `(type, body)` pairs of an extension block; a repeated type is an
+/// error (RFC 8446 4.2).
+pub(pkg) const fn extensions(b: Slice<u8>, what: str) throws (TlsError) -> List<(usize, Slice<u8>)> {
+    let r = Rd::new(b, what);
+    let out: List<(usize, Slice<u8>)> = [];
+    while r.left() > 0 {
+        let t = try r.u16();
+        let body = try r.vec16();
+        for (u, _) in out {
+            if u == t { throw proto(f"duplicate extension {t} in {what}", ALERT_ILLEGAL_PARAMETER); }
+        }
+        out.push((t, body));
+    }
+    out
+}
+
+/// An extension the peer may not send in `what` (RFC 8446 4.2: not
+/// requested, or not allowed in that message).
+pub(pkg) const fn only_exts(exts: List<(usize, Slice<u8>)>, allowed: List<u16>, what: str) throws (TlsError) {
+    for (t, _) in exts {
+        if !allowed.contains(t as u16) { throw proto(f"unexpected extension {t} in {what}", ALERT_UNSUPPORTED_EXTENSION); }
+    }
+}
+
+pub(pkg) const fn find_ext(exts: List<(usize, Slice<u8>)>, t: u16) -> Slice<u8> | none {
+    for (u, body) in exts {
+        if u == t as usize { return body; }
+    }
+    none
+}

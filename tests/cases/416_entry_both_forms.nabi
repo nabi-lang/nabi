@@ -1,0 +1,5 @@
+// expect-error: both top-level statements and `fn main`
+
+// Top-level statements and `fn main` are mutually exclusive.
+fn main() -> i32 { return 0; }
+println(f"{1}");

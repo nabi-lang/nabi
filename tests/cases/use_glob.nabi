@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout: 5 10 15
+
+mod a {
+    pub fn x() -> i32 { 5i32 }
+    pub fn y() -> i32 { 10i32 }
+    pub fn z() -> i32 { 15i32 }
+}
+
+use a::*;
+
+fn main() {
+    println(f"{x()} {y()} {z()}");
+}
+

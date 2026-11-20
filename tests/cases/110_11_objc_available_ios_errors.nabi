@@ -1,0 +1,23 @@
+// needs: objc
+// only-os: ios
+// expect-error: `maximumConcurrentCompilationTaskCount` needs iOS 26.0, the deployment target is 13.4: wrap it in `if objc::available(ios: "26.0") { .. }`, or raise the deployment target (`deployment_target: { ios: "26.0" }` in nabi.nabion, or `IPHONEOS_DEPLOYMENT_TARGET=26.0`)
+// expect-error: `maximumConcurrentCompilationTaskCount` needs iOS 26.0, the `objc::available` around it checks for 16.0
+
+// On iOS the versions are iOS's: a macOS guard does not count, an iOS
+// one for the API's version does.
+mod mtl {
+    ffi::objc::import { "Metal/Metal.h" }
+}
+use mtl::*;
+use bare::ffi::objc;
+
+fn main() {
+    let d = MTLCreateSystemDefaultDevice() ?? panic("no Metal device");
+    println(f"{d.maximumConcurrentCompilationTaskCount()}");
+    if objc::available(macos: "13.3", ios: "16.0") {
+        println(f"{d.maximumConcurrentCompilationTaskCount()}");
+    }
+    if objc::available(macos: "13.3", ios: "26.0") {
+        println(f"{d.maximumConcurrentCompilationTaskCount()}");
+    }
+}

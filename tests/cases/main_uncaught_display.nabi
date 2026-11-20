@@ -1,0 +1,23 @@
+// expect-exit: 1
+// expect-stdout: before
+// expect-stderr: error: `main` returned an uncaught error: not found
+// expect-stderr: --> tests/cases/main_uncaught_display.nabi:21:31
+// expect-stderr: raised at tests/cases/main_uncaught_display.nabi:15:17
+
+// An error escaping a throwing `main` is printed through
+// its `Display` (here behind `any Error`), then exit status 1.
+struct NotFound { id: i32; }
+impl Display for NotFound { fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("not found") } }
+impl Debug for NotFound { fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("NotFound") } }
+impl Error for NotFound {}
+
+fn find(x: i32) throws -> i32 {
+    if x > 10 { throw NotFound { id: x }; }
+    x
+}
+
+fn main() throws {
+    println("before");
+    let v = try find(3) + try find(40);
+    println(v);
+}

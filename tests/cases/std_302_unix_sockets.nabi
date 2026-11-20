@@ -1,0 +1,79 @@
+// only-os: macos linux
+// (Unix domain sockets are unix-only)
+// needs: net
+// skip-target: aarch64-linux-android x86_64-linux-android
+// (under adb, SELinux denies the shell domain a socket file anywhere it may write)
+// only-os: macos linux
+// expect-exit: 0
+// expect-stdout:
+// pair 4 ping
+// bound true
+// peer none hello
+// recv 2 true
+// via passed fd
+// dgram
+
+// Unix domain sockets (`os::unix::net`) - socketpair, a bound listener and a
+// connecting client, SCM_RIGHTS fd passing, datagram pairs.
+use std::os::unix::net::{UnixListener, UnixStream, UnixDatagram};
+use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::fs;
+use std::env;
+use std::path::Path;
+use std::thread;
+use core::convert::AsBytes;
+use core::io::IoError;
+
+/// Any `AsBytes` value writes, not only the library's own.
+struct Msg { s: str; }
+impl AsBytes for Msg {
+    fn byte_slice(self) -> Slice<u8> { self.s.as_bytes() }
+}
+
+fn main() throws (IoError) {
+    let (a, b) = try UnixStream::pair();
+    try a.write_all(Msg { s: "ping" });
+    let buf: List<u8> = List::filled(16, 0u8);
+    let n = try b.read(buf);
+    println(f"pair {n} {try str::from_utf8(buf[0:n])}");
+
+    let dir = env::temp_dir();
+    let path = dir.join(Path::new("nabi-ux.sock"));
+    try fs::remove_file(path) catch _ {};
+    let l = try UnixListener::bind(path);
+    println(f"bound {(try l.local_addr()) == path}");
+    let t = thread::spawn(|| {
+        let c = try UnixStream::connect(path) catch _ { return; };
+        try c.write_all("hello") catch _ {};
+        try! c.close();
+    });
+    let (s, peer) = try l.accept();
+    println(f"peer {peer:?} {try str::from_utf8(try s.read_to_end())}");
+    try t.join() catch _ {};
+
+    // fd passing: send our end `b` of a pair, then talk over it.
+    let (x, y) = try UnixStream::pair();
+    let (p, q) = try UnixStream::pair();
+    try x.send_with_fd("fd", q.as_raw_fd());
+    let got: List<u8> = List::filled(8, 0u8);
+    let (k, fd) = try y.recv_with_fd(got);
+    println(f"recv {k} {fd is i32}");
+    try p.write_all("via passed fd");
+    let f = unsafe { fs::File::from_raw_fd(fd ?? -1) };
+    let back: List<u8> = List::filled(32, 0u8);
+    let m = try f.read(back);
+    try f.close();
+    println(f"{try str::from_utf8(back[0:m])}");
+
+    let (d1, d2) = try UnixDatagram::pair();
+    try d1.send("dgram");
+    let db: List<u8> = List::filled(16, 0u8);
+    let dn = try d2.recv(db);
+    println(f"{try str::from_utf8(db[0:dn])}");
+    for c in [a, b, s, x, y, p, q] { try c.close(); }
+    try d1.close();
+    try d2.close();
+    try l.close();
+    try fs::remove_file(path);
+}
+

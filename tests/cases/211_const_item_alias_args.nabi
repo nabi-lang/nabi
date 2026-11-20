@@ -1,0 +1,18 @@
+// expect-exit: 0
+// expect-stdout: 5 6 -1 -1
+
+// A `const` item as a const argument of a plain alias, bare and braced.
+pub struct G<const L: i32> { pub v: f64; }
+pub const M1: i32 = -1;
+pub type Bare = G<M1>;
+pub type Braced = G<{ M1 }>;
+
+fn b(x: Bare) -> f64 { x.v }
+fn c(x: Braced) -> f64 { x.v }
+fn level<const L: i32>(g: G<L>) -> i32 { L }
+
+fn main() {
+    let g: Bare = G { v: 5.0 };
+    let h: Braced = G { v: 6.0 };
+    println(f"{b(g)} {c(h)} {level(g)} {level(h)}");
+}

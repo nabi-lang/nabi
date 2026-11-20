@@ -1,0 +1,37 @@
+version: 2
+
+# Group minor/patch bumps into one PR per ecosystem; a major bump gets its own
+# PR for review. github-actions keeps the SHA pins of the workflows and the
+# composite actions current, cargo the workspace.
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: ci
+      include: scope
+    labels:
+      - "area: ci"
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      cargo:
+        update-types:
+          - minor
+          - patch

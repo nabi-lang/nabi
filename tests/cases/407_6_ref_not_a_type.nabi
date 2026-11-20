@@ -1,0 +1,5 @@
+// expect-error: 5:8: expected type, found keyword `ref`
+
+// `ref` is a modifier, not a type.
+let a = 1;
+let x: ref i32 = a;

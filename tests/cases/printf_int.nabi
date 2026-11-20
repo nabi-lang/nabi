@@ -1,0 +1,19 @@
+// expect-exit: 0
+// expect-stdout: 14
+
+// Passing an i32 to a fixed-arity C function. Not `printf`: C variadic
+// externs are unsupported, and calling a variadic through a
+// fixed-arity prototype is UB.
+extern "C" {
+    fn abs(value: i32) -> i32;
+}
+
+fn main() {
+    let total = 0;
+    let i = 1;
+    while i <= 3 {
+        total += i * i;
+        i += 1;
+    }
+    println(f"{unsafe { abs(-total) }}");
+}

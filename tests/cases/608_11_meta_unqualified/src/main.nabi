@@ -1,0 +1,24 @@
+// nabic-arg: --extern alog=tests/cases/608_11_meta_qualified/alog
+// expect-error: `log!` is package `alog`'s macro, which a bare name does not reach
+// expect-error: help: write `alog::log!`, or add `use alog::log!;`
+// expect-error: `#[traced]` is package `alog`'s attribute, which a bare name does not reach
+// expect-error: help: write `#[alog::traced]`, or add `use alog::traced;`
+// forbid-error: `#[derive(Named)]`
+
+// A bare meta name names this package's blocks, `use`d
+// ones and the standard library's; another package's needs its name.
+// `use alog::Named;` imports the derive along with its trait.
+use alog::Named;
+
+#[derive(Named)]
+struct S {}
+
+#[traced]
+fn f() {}
+
+fn main() {
+    log!(1);
+    println(S {}.name());
+    f();
+}
+

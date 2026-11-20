@@ -1,0 +1,10 @@
+// nabic-arg: --extern r1=tests/cases/209_same_leaf_dep_a --extern r2=tests/cases/209_same_leaf_dep_b
+// expect-error: argument `i` of `take` expects `r1::Iter`, found `r2::Iter`
+// forbid-error: r1::iter::Iter
+
+// A type of a private module prints by its public path.
+fn take(i: r1::Iter) -> usize { 0 }
+
+fn main() {
+    let n = take(r2::Regex::new("ab").find_iter("abab"));
+}

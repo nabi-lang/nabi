@@ -1,0 +1,45 @@
+// expect-exit: 0
+// expect-stdout:
+// 3 [2.0, 4.0] [[2.0], [6.0]] 2 [2.0, 6.0] [2.0, 4.0]
+// 8 [2.0, 4.0] [[4.0, 6.0]]
+
+// A concrete `Call<f64>` beside a generic `Call<Array<f64, N>>`: the
+// argument's type picks the impl, an integer literal takes the `f64`
+// impl, a list literal the `Array` of its nesting depth.
+use core::array::{Array, Matrix, Vector};
+
+struct Sp { a: f64; }
+impl ops::Call<f64> for Sp {
+    type Output = f64;
+    fn call(self, x: f64) -> f64 { self.a * x }
+}
+impl<const N: usize> ops::Call<Array<f64, N>> for Sp {
+    type Output = Array<f64, N>;
+    fn call(self, x: Array<f64, N>) -> Array<f64, N> { x.map(|v: f64| -> f64 { self.a * v }) }
+}
+
+struct Dense { a: f64; }
+impl ops::Call<f64> for Dense {
+    type Output = f64;
+    fn call(self, x: f64) -> f64 { self.a * x }
+}
+impl ops::Call<Vector<f64>> for Dense {
+    type Output = Vector<f64>;
+    fn call(self, xs: Vector<f64>) -> Vector<f64> { xs .* self.a }
+}
+impl ops::Call<Matrix<f64>> for Dense {
+    type Output = Matrix<f64>;
+    fn call(self, xs: Matrix<f64>) -> Matrix<f64> { xs .* self.a }
+}
+
+fn sum<const N: usize>(x: Array<f64, N>) -> f64 { x.sum() }
+
+fn main() {
+    let s = Sp { a: 2.0 };
+    let xs: Vector<f64> = [1.0, 2.0];
+    let m: Matrix<f64> = [[1.0], [3.0]];
+    println(f"{s(1.5)} {s(xs):?} {s(m):?} {s(1)} {s([1.0, 3.0]):?} {s.(xs):?}");
+    let d = Dense { a: 2.0 };
+    println(f"{d(4)} {d([1.0, 2.0]):?} {d([[2.0, 3.0]]):?}");
+    _ = sum([1.0]) + sum([[1.0, 2.0]]);
+}

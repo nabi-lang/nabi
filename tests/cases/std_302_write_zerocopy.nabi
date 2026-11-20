@@ -1,0 +1,40 @@
+// only-os: linux
+// needs: threads native-run
+// expect-exit: 0
+// expect-stdout:
+// sent 65536 got 65536 sum 8355840
+
+// `TcpStreamExt::write_zerocopy` (MSG_ZEROCOPY): the bytes go
+// out unchanged and the call returns once the kernel is done with them.
+use std::net::{TcpStream, tcp_listen};
+use std::thread;
+
+fn main() throws (IoError) {
+    let l = try tcp_listen("127.0.0.1:0");
+    let addr = try l.local_addr();
+    let h = thread::spawn(|| {
+        let (s, _) = try! l.accept();
+        try! l.close();
+        let all = try! s.read_to_end();
+        try! s.close();
+        all
+    });
+    let c = try TcpStream::connect(addr);
+    let buf: List<u8> = List::new();
+    for i in 0..65536 { buf.push((i % 256) as u8); }
+    let sent = 0usize;
+    while sent < buf.len() {
+        sent += try c.write_zerocopy(list_tail(buf, sent));
+    }
+    try! c.close();
+    let got = try! h.join();
+    let sum = 0u64;
+    for b in got { sum += b as u64; }
+    println(f"sent {sent} got {got.len()} sum {sum}");
+}
+
+fn list_tail(xs: List<u8>, from: usize) -> List<u8> {
+    let out: List<u8> = List::new();
+    for i in from..xs.len() { out.push(xs[i]); }
+    out
+}

@@ -1,0 +1,149 @@
+// std::time::tzif: the TZif format of the tz database (RFC 8536),
+// versions 1 to 4. Version 2+ files use the 64-bit block and the POSIX
+// footer for times past the table. Leap-second records are skipped: a
+// `right/` zone reads as its plain twin, off by the leap seconds.
+
+use std::time::posix::{Rule, parse_rule};
+
+/// A zone's transition table: at `times[i]` (unix seconds) the zone
+/// enters local time type `types[i]`; `offs` / `dsts` / `abbrs` describe
+/// each type. Before the first transition, type 0 holds; after the last,
+/// `rule` (zero or one) when the file has one. All handles, so copies
+/// are cheap and share the table.
+#[derive(Clone)]
+pub(pkg) struct Table {
+    pub(pkg) times: List<i64>;
+    pub(pkg) types: List<i32>;
+    pub(pkg) offs: List<i32>;
+    pub(pkg) dsts: List<bool>;
+    pub(pkg) abbrs: List<str>;
+    pub(pkg) rule: List<Rule>;
+}
+
+struct Reader {
+    b: Slice<u8>;
+    i: usize;
+}
+
+const fn bad(what: str) -> ValueError { ValueError::new(f"not a valid TZif file: {what}") }
+
+impl Reader {
+    const fn need(self, n: usize) throws (ValueError) {
+        if self.b.len() - self.i < n { throw bad("it ends early"); }
+    }
+    const fn u8(ref self) throws (ValueError) -> u8 {
+        try self.need(1);
+        let v = self.b[self.i];
+        self.i += 1;
+        v
+    }
+    const fn u32(ref self) throws (ValueError) -> u32 {
+        try self.need(4);
+        let v = 0u32;
+        for k in 0..4 { v = (v << 8u32) | (self.b[self.i + k] as u32); }
+        self.i += 4;
+        v
+    }
+    const fn i32(ref self) throws (ValueError) -> i32 { (try self.u32()) as i32 }
+    const fn i64(ref self) throws (ValueError) -> i64 {
+        try self.need(8);
+        let v = 0u64;
+        for k in 0..8 { v = (v << 8u64) | (self.b[self.i + k] as u64); }
+        self.i += 8;
+        v as i64
+    }
+    const fn skip(ref self, n: usize) throws (ValueError) {
+        try self.need(n);
+        self.i += n;
+    }
+}
+
+struct Header {
+    version: u8;
+    isut: usize;
+    isstd: usize;
+    leap: usize;
+    time: usize;
+    typ: usize;
+    chars: usize;
+}
+
+const fn header(ref r: Reader) throws (ValueError) -> Header {
+    try r.need(44);
+    if r.b[r.i] != b'T' || r.b[r.i + 1] != b'Z' || r.b[r.i + 2] != b'i' || r.b[r.i + 3] != b'f' {
+        throw bad("no `TZif` magic");
+    }
+    r.i += 4;
+    let version = try r.u8();
+    try r.skip(15);
+    let h = Header {
+        version,
+        isut: (try r.u32()) as usize,
+        isstd: (try r.u32()) as usize,
+        leap: (try r.u32()) as usize,
+        time: (try r.u32()) as usize,
+        typ: (try r.u32()) as usize,
+        chars: (try r.u32()) as usize,
+    };
+    if h.typ == 0 { throw bad("no local time types"); }
+    if (h.isut != 0 && h.isut != h.typ) || (h.isstd != 0 && h.isstd != h.typ) { throw bad("bad indicator counts"); }
+    h
+}
+
+/// The data block after `h`; `wide` for 64-bit transition times.
+const fn block(ref r: Reader, h: Header, wide: bool) throws (ValueError) -> Table {
+    let t = Table { times: List::new(), types: List::new(), offs: List::new(), dsts: List::new(), abbrs: List::new(), rule: List::new() };
+    for _ in 0..h.time {
+        let v = if wide { try r.i64() } else { (try r.i32()) as i64 };
+        if t.times.len() > 0 && v <= t.times[t.times.len() - 1] { throw bad("transition times out of order"); }
+        t.times.push(v);
+    }
+    for _ in 0..h.time {
+        let k = (try r.u8()) as usize;
+        if k >= h.typ { throw bad("a transition names a missing type"); }
+        t.types.push(k as i32);
+    }
+    let desig: List<usize> = List::new();
+    for _ in 0..h.typ {
+        let off = try r.i32();
+        if off == -2147483648 || off < -93599 || off > 93599 { throw bad("offset out of range"); }
+        t.offs.push(off);
+        t.dsts.push((try r.u8()) != 0u8);
+        desig.push((try r.u8()) as usize);
+    }
+    try r.need(h.chars);
+    let chars = r.b[r.i:r.i + h.chars];
+    r.i += h.chars;
+    for d in desig {
+        if d >= h.chars { throw bad("abbreviation index out of range"); }
+        let e = d;
+        while e < h.chars && chars[e] != 0u8 { e += 1; }
+        t.abbrs.push(str::from_utf8_lossy(chars[d:e]));
+    }
+    try r.skip(h.leap * (if wide { 12 } else { 8 }));
+    try r.skip(h.isstd + h.isut);
+    t
+}
+
+/// Parse a TZif file.
+pub(pkg) const fn parse_tzif(b: Slice<u8>) throws (ValueError) -> Table {
+    let r = Reader { b, i: 0 };
+    let h = try header(ref r);
+    if h.version == 0u8 { return try block(ref r, h, false); }
+    let v1 = h.time * 5 + h.typ * 6 + h.chars + h.leap * 8 + h.isstd + h.isut;
+    try r.skip(v1);
+    let h2 = try header(ref r);
+    let t = try block(ref r, h2, true);
+    if r.i < r.b.len() {
+        if r.b[r.i] != b'\n' { throw bad("no newline before the footer"); }
+        let from = r.i + 1;
+        let e = from;
+        while e < r.b.len() && r.b[e] != b'\n' { e += 1; }
+        if e == r.b.len() { throw bad("no newline after the footer"); }
+        let foot = str::from_utf8_lossy(r.b[from:e]);
+        if foot.len() > 0 {
+            t.rule.push(try parse_rule(foot) catch e: ValueError { throw bad(f"footer: {e}"); });
+        }
+    }
+    t
+}

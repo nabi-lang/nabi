@@ -1,0 +1,44 @@
+// expect-exit: 0
+// needs: threads
+// expect-stdout:
+// 0 -1 {} false true
+// 3 1 {"k": 3}
+// false 0 {}
+// {4} 6
+// 0 1 true 0 true
+// {"a": {"z": 9}}
+
+// An empty dict or set allocates its entries at the first insert:
+// reads, copies, iteration, hand-offs and `clear` on one that has
+// none, and the same during constant evaluation.
+const fn built() -> i32 {
+    let d: Dict<str, i32> = Dict::new();
+    let e: Dict<str, i32> = Dict::new();
+    d["a"] = 1;
+    d.clear();
+    d["b"] = 2;
+    d.len() as i32 + e.len() as i32 + (e.get("x") ?? 5)
+}
+const B: i32 = built();
+fn main() {
+    let d: Dict<str, i32> = Dict::new();
+    let alias = d;
+    println(f"{d.len()} {d.get("x") ?? -1} {d:?} {d.contains_key("q")} {d.remove("q") is none}");
+    alias["k"] = 3;
+    println(f"{d["k"]} {d.len()} {d:?}");
+    let s: Set<i32> = Set::new();
+    let t = s;
+    println(f"{s.contains(1)} {s.len()} {s:?}");
+    t.insert(4);
+    println(f"{s:?} {B}");
+    let e: Dict<i32, i32> = Dict::new();
+    for (k, v) in e { println(f"{k}{v}"); }
+    let f = e.clone();
+    f[1] = 1;
+    let c: Dict<i32, i32> = Dict::new();
+    let h = std::thread::spawn([move c] || c.len());
+    println(f"{e.len()} {f.len()} {e == Dict::new()} {(try! h.join())} {e.pop_first() is none}");
+    let m: Dict<str, Dict<str, i32>> = {"a": Dict::new()};
+    m["a"]["z"] = 9;
+    println(f"{m:?}");
+}

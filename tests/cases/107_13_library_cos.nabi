@@ -1,0 +1,33 @@
+// only-os: linux macos freebsd windows
+// needs: dlopen
+// expect-exit: 0
+// expect-stdout:
+// cos(0) = 1
+// cos(pi) = -1
+// raw: true
+// closed
+
+// `Library::open` loads the C math library at run time, `symbol` gives
+// `cos` as a C function pointer, `close` unloads it.
+use bare::ffi::Library;
+
+#[cfg(target_os = "linux")]
+const LIBM: str = "libm.so.6";
+#[cfg(target_os = "android")]
+const LIBM: str = "libm.so";
+#[cfg(target_os = "freebsd")]
+const LIBM: str = "libm.so.5";
+#[cfg(target_os = "macos")]
+const LIBM: str = "/usr/lib/libSystem.B.dylib";
+#[cfg(target_os = "windows")]
+const LIBM: str = "msvcrt.dll";
+
+fn main() throws (bare::ffi::LoadError | bare::ffi::SymbolError) {
+    let lib = try Library::open(LIBM);
+    let cos = try unsafe { lib.symbol::<extern "C" fn(f64) -> f64>("cos") };
+    println(f"cos(0) = {unsafe { cos(0.0) }}");
+    println(f"cos(pi) = {unsafe { cos(3.141592653589793) }}");
+    println(f"raw: {!(try lib.raw_symbol("cos")).is_null()}");
+    try unsafe { lib.close() };
+    println("closed");
+}

@@ -1,0 +1,9 @@
+// expect-error: malformed `#[doc]`: expected `#[doc = ".."]` or `#[doc(hidden)]`
+
+// `#[doc]` takes a string or the word `hidden`.
+
+#[doc(secret)]
+pub fn f() {}
+
+fn main() { f(); }
+

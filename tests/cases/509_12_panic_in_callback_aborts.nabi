@@ -1,0 +1,28 @@
+// only-os: linux macos freebsd
+// needs: process
+// expect-exit: 134
+// expect-stderr: thread 'main' panicked at *509_12_panic_in_callback_aborts.nabi:*:
+// expect-stderr: index 5 out of bounds for length 0
+// expect-stderr: panic in a function C called: aborting (`#[on_panic(return = v)]` on the `extern "C" fn` returns `v` to C instead)
+// expect-stdout:
+
+// A panic must not leave a function C called through C's frames (C has
+// no idea of it, and `exit` would run the host's handlers on broken
+// state): the process aborts.
+use bare::ptr::Ptr;
+
+extern "C" {
+    fn qsort(base: Ptr<i32>, n: usize, size: usize, cmp: extern "C" fn(Ptr<i32>, Ptr<i32>) -> c_int);
+}
+
+extern "C" fn cmp(a: Ptr<i32>, b: Ptr<i32>) -> c_int {
+    let xs: List<i32> = [];
+    xs[5]
+}
+
+fn main() {
+    let xs: List<i32> = [5, 1, 4];
+    let p = bare::gc::pin(xs);
+    unsafe { qsort(p.as_data_ptr(), 3, 4, cmp) };
+    println("not reached");
+}

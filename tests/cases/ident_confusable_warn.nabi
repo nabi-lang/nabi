@@ -1,0 +1,12 @@
+// expect-exit: 0
+// expect-stdout: 1 2 1 1
+// expect-lint: 8:9 identifier `σ2` looks like `σ²` (confusable spelling)
+// expect-lint: 10:9 identifier `pаy` mixes Cyrillic with Latin or Greek letters: `а` (U+0430 CYRILLIC SMALL LETTER A) looks like Latin `a`
+// Distinct names with one confusable skeleton warn.
+fn main() {
+    let σ² = 1;
+    let σ2 = 2;
+    let pay = 1;
+    let pаy = 1;
+    println(f"{σ²} {σ2} {pay} {pаy}");
+}

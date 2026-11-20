@@ -1,0 +1,6 @@
+// expect-error: 5:1: this block-like statement leaves a value of type `i64` without `;`
+
+// Top-level statements follow the statement rules of a function body.
+let c = true;
+if c { 1 } else { 2 }
+println("x");

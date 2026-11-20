@@ -1,0 +1,19 @@
+// expect-exit: 0
+// expect-stdout:
+// 3 2 3 2 1 0.5
+
+// A list literal for a generic struct's `[T; N]` field is an array: its
+// elements bind `T`, a float literal defaulting to `f64`.
+struct V<T> { c: [T; 3]; }
+struct M<T> { m: [[T; 2]; 2]; n: i64; }
+struct W<T> { c: [T; 2]; d: [f64; 2]; }
+
+fn half(v: V<f64>) -> f64 { v.c[0] / 2.0 }
+
+fn main() {
+    let v = V { c: [1.0, 2.0, 3.0] };
+    let u = V { c: [1, 2, 3] };
+    let m = M { m: [[1.5, 2.0], [3.0, 4.0]], n: 1 };
+    let w = W { c: [1u8, 2], d: [1.0, 2.0] };
+    println(f"{v.c[2]} {u.c[1]} {m.m[1][0]} {w.c[1]} {w.d[0]} {half(v)}");
+}

@@ -1,0 +1,21 @@
+// nabic-arg: --extern unitsdep=tests/cases/unitsdep
+// expect-exit: 0
+// expect-stdout: 2 2 2 3 0.005 0.007
+
+// A dependency's public const may call a const fn of a private module; its
+// public alias names a type through the type's public path; the slot type
+// picks between this package's and the dependency's `ms` handler.
+use unitsdep::D;
+use unitsdep::kinds::Length;
+
+pub struct Time { pub s: f64; }
+#[literal(number "ms")]
+pub const fn ms(n: f64) -> Time { Time { s: n * 1e-3 } }
+
+fn twice(x: Length<f64>) -> f64 { x.v * 2.0 }
+
+fn main() {
+    let f: f64 = 5ms;
+    let t: Time = 7ms;
+    println(f"{unitsdep::local()} {unitsdep::NEG.v} {D::ONE.y} {twice(unitsdep::Q { v: 1.5 })} {f} {t.s}");
+}

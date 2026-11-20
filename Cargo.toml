@@ -1,0 +1,162 @@
+[workspace]
+resolver = "3"
+members = [
+    "cc/*",
+    "compiler/*",
+    "link/*",
+    "lsp/*",
+    "pm/*",
+    "repl/*",
+    # Not runtime/*: runtime/build.rs is a file.
+    "runtime/nabir*",
+    "tools/*",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["Han Damin <miniex@daminstudio.net>"]
+
+[workspace.dependencies]
+nabic = { path = "compiler/nabic" }
+nabic_ast = { path = "compiler/nabic_ast" }
+nabic_codegen = { path = "compiler/nabic_codegen" }
+nabic_codegen_native = { path = "compiler/nabic_codegen_native" }
+nabic_consteval = { path = "compiler/nabic_consteval" }
+nabic_core = { path = "compiler/nabic_core" }
+nabic_diagnostic = { path = "compiler/nabic_diagnostic" }
+nabic_driver = { path = "compiler/nabic_driver" }
+nabic_harness = { path = "compiler/nabic_harness" }
+nabic_hir = { path = "compiler/nabic_hir" }
+nabic_hir_check = { path = "compiler/nabic_hir_check" }
+nabic_interface = { path = "compiler/nabic_interface" }
+nabic_ir_common = { path = "compiler/nabic_ir_common" }
+nabic_lexer = { path = "compiler/nabic_lexer" }
+nabic_mir = { path = "compiler/nabic_mir" }
+nabic_mono = { path = "compiler/nabic_mono" }
+nabic_parser = { path = "compiler/nabic_parser" }
+nabic_nabion = { path = "compiler/nabic_nabion" }
+nabic_target = { path = "compiler/nabic_target" }
+nabic_tools = { path = "compiler/nabic_tools" }
+nabic_typeck = { path = "compiler/nabic_typeck" }
+nabic_wit = { path = "compiler/nabic_wit" }
+nabicc = { path = "cc/nabicc" }
+nabicc_bindgen = { path = "cc/nabicc_bindgen" }
+nabicc_lex = { path = "cc/nabicc_lex" }
+nabicc_lower = { path = "cc/nabicc_lower" }
+nabicc_parse = { path = "cc/nabicc_parse" }
+nabicc_pp = { path = "cc/nabicc_pp" }
+nabicc_sema = { path = "cc/nabicc_sema" }
+nabicc_target = { path = "cc/nabicc_target" }
+
+nabir_abi = { path = "runtime/nabir_abi" }
+nabir_common = { path = "runtime/nabir_common" }
+nabir_gc = { path = "runtime/nabir_gc" }
+
+nabild = { path = "link/nabild" }
+
+nabi_manifest = { path = "pm/nabi_manifest" }
+nabi_resolve = { path = "pm/nabi_resolve" }
+nabi_toolchain = { path = "pm/nabi_toolchain" }
+
+nabils = { path = "lsp/nabils" }
+nabils_protocol = { path = "lsp/nabils_protocol" }
+
+nabirepl = { path = "repl/nabirepl" }
+nabirepl_jupyter = { path = "repl/nabirepl_jupyter" }
+nabirepl_lineedit = { path = "repl/nabirepl_lineedit" }
+
+# Platform sys crates only; zero external dependencies.
+libc = "0.2"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+rust_2024_compatibility = { level = "warn", priority = -1 }
+unused_must_use = "warn"
+elided_lifetimes_in_paths = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+needless_pass_by_value = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+unreadable_literal = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+cast_possible_wrap = "allow"
+struct_field_names = "allow"
+multiple_crate_versions = "allow"
+option_if_let_else = "allow"
+# `pub(crate)` stays the crate-wide visibility in private modules too.
+redundant_pub_crate = "allow"
+uninlined_format_args = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+debug = false
+strip = "debuginfo"
+# nabir is no_std + staticlib; abort panics avoid eh_personality.
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true
+panic = "abort"
+
+# Recursive descent at the nesting cap: ~150 KB of frames per level
+# unoptimized, ~20 KB at opt-level 1 (`PARSER_STACK`).
+[profile.dev.package.nabic_parser]
+opt-level = 1
+
+# The corpus runs the dev nabic: unoptimized, lowering (typeck, mono,
+# consteval) and the hand-off check (hir_check, BTreeMap and Vec heavy) make
+# a debug `nabic check` ~5x slower.
+[profile.dev.package.nabic_consteval]
+opt-level = 1
+[profile.dev.package.nabic_hir]
+opt-level = 1
+[profile.dev.package.nabic_hir_check]
+opt-level = 1
+[profile.dev.package.nabic_mono]
+opt-level = 1
+[profile.dev.package.nabic_typeck]
+opt-level = 1
+
+# The runtime is linked into every program a dev nabic builds: unoptimized,
+# its collector is ~6x slower and GC-heavy programs (tests included) crawl.
+[profile.dev.package.nabir]
+opt-level = 2
+[profile.dev.package.nabir_gc]
+opt-level = 2
+[profile.dev.package.nabir_common]
+opt-level = 2
+[profile.dev.package.nabir_abi]
+opt-level = 2
+
+# bindgen reads whole system headers (windows.h: a million tokens).
+[profile.dev.package.nabicc_lex]
+opt-level = 2
+
+[profile.dev.package.nabicc_pp]
+opt-level = 2
+
+[profile.dev.package.nabicc_parse]
+opt-level = 2
+
+# Every executable a dev nabic builds goes through the linker, which is
+# several times slower unoptimized (the runtime archive dominates).
+[profile.dev.package.nabild]
+opt-level = 2

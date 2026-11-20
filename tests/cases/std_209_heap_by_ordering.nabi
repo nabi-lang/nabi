@@ -1,0 +1,34 @@
+// expect-exit: 0
+// expect-stdout:
+// max 9 min 1
+// sent 9 1
+// [3, 5, 9]
+// ["a", "bb", "dd", "ccc"]
+
+// `BinaryHeap::by_ordering` takes a comparator that returns `Ordering`,
+// as `List::sort_by` does, and pops the greatest by it. The comparator
+// is `Send`, so a heap can be sent. `List::sort_by_key`
+// sorts by a key, stably.
+fn main() {
+    let a: BinaryHeap<i32> = BinaryHeap::by_ordering(|x: i32, y: i32| x.cmp(y));
+    let b: BinaryHeap<i32> = BinaryHeap::by_ordering(|x: i32, y: i32| y.cmp(x));
+    for v in [5, 1, 9, 3] {
+        a.push(v);
+        b.push(v);
+    }
+    println(f"max {a.pop() ?? 0} min {b.pop() ?? 0}");
+    let h: BinaryHeap<i32> = BinaryHeap::new();
+    h.push(3);
+    h.push(9);
+    let (tx, rx) = channel::<BinaryHeap<i32>>();
+    try! tx.send(h);
+    let got = rx.recv() ?? BinaryHeap::new();
+    println(f"sent {got.pop() ?? 0} {got.len()}");
+    let it: collections::HeapIter<i32> = b.iter();
+    let xs: List<i32> = it.collect();
+    xs.sort();
+    println(f"{xs:?}");
+    let ys = ["ccc", "a", "bb", "dd"];
+    ys.sort_by_key(|s: str| s.len());
+    println(f"{ys:?}");
+}

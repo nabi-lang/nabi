@@ -1,0 +1,124 @@
+// Arrays built from arrays: `concat` along an axis, `stack` on a new
+// axis, and `where`, element by element from two arrays by a mask.
+
+/// The arrays of `parts` joined along `axis`, in order; every other
+/// axis must agree. Panics for no parts or an axis past the rank.
+/// NumPy: `np.concatenate(parts, axis)`.
+///
+/// ```nabi
+/// use core::array::{Matrix, concat};
+///
+/// let a: Matrix<i64> = [[1, 2], [3, 4]];
+/// let b: Matrix<i64> = [[5, 6]];
+/// assert(concat([a, b]).shape() == [3, 2]);
+/// assert(concat([a, a], axis: 1).to_list() == [1, 2, 1, 2, 3, 4, 3, 4]);
+/// ```
+#[track_caller]
+pub const fn concat<T, const N: usize>(parts: List<Array<T, N>>, axis: usize = 0) -> Array<T, N> {
+    if parts.is_empty() {
+        panic("concat: no arrays to join; pass at least one");
+    }
+    if axis >= N {
+        panic(f"concat: axis {axis} is past the last axis of a rank-{N} array; pass an axis in 0..{N}");
+    }
+    let shape = parts[0].shape;
+    let total: usize = 0;
+    for i in 0..parts.len() {
+        let s = parts[i].shape;
+        for k in 0..N {
+            if k != axis && s[k] != shape[k] {
+                panic(f"concat: array {i} has shape {s:?} but array 0 has {shape:?}; every axis but {axis} must agree");
+            }
+        }
+        total = cap_add(total, s[axis]);
+    }
+    shape[axis] = total;
+    let out: Array<T, N> = unsafe { Array::alloc(shape) };
+    let at: usize = 0;
+    for i in 0..parts.len() {
+        let a = parts[i];
+        let s = shape;
+        s[axis] = a.shape[axis];
+        let off = (at as isize * out.strides[axis]) as usize;
+        let part = Array { buf: out.buf, off, shape: s, strides: out.strides };
+        part.assign(a);
+        at += a.shape[axis];
+    }
+    out
+}
+
+/// The arrays of `parts`, all of one shape, joined on a new axis at
+/// `axis` (0 puts them first). NumPy: `np.stack(parts, axis)`.
+///
+/// ```nabi
+/// use core::array::{Vector, stack};
+///
+/// let a: Vector<f64> = [1, 2, 3];
+/// let b: Vector<f64> = [4, 5, 6];
+/// assert(stack([a, b]).shape() == [2, 3]);
+/// assert(stack([a, b], axis: 1).to_list() == [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+/// ```
+#[track_caller]
+pub const fn stack<T, const N: usize>(parts: List<Array<T, N>>, axis: usize = 0) -> Array<T, { N + 1 }> {
+    if parts.is_empty() {
+        panic("stack: no arrays to stack; pass at least one");
+    }
+    if axis > N {
+        panic(f"stack: axis {axis} is past the new axis of a rank-{N + 1} result; pass an axis in 0..={N}");
+    }
+    let shape = parts[0].shape;
+    let ex: List<Array<T, { N + 1 }>> = List::with_capacity(parts.len());
+    for i in 0..parts.len() {
+        let a = parts[i];
+        if a.shape != shape {
+            panic(f"stack: array {i} has shape {a.shape:?} but array 0 has {shape:?}; stacked arrays must have one shape");
+        }
+        ex.push(a.insert_axis(axis));
+    }
+    concat(ex, axis)
+}
+
+impl<T, const N: usize> Array<T, N> {
+    /// A view with an axis of length 1 inserted at `axis`.
+    pub(pkg) const fn insert_axis(self, axis: usize) -> Array<T, { N + 1 }> {
+        let shape: [usize; N + 1] = [1; N + 1];
+        let strides: [isize; N + 1] = [0; N + 1];
+        let j: usize = 0;
+        for k in 0..N + 1 {
+            if k != axis {
+                shape[k] = self.shape[j];
+                strides[k] = self.strides[j];
+                j += 1;
+            }
+        }
+        Array { buf: self.buf, off: self.off, shape, strides }
+    }
+}
+
+/// `a`'s element where `mask` is true, else `b`'s, the three broadcast
+/// to one shape. NumPy: `np.where(mask, a, b)`. For a scalar on one
+/// side, `fill_masked` a copy: `x.copy().fill_masked(x .< 0.0, 0.0)`.
+///
+/// ```nabi
+/// use core::array::{Vector, where};
+///
+/// let x: Vector<f64> = [-1, 2, -3];
+/// let y: Vector<f64> = [10, 20, 30];
+/// assert(where(x .> 0.0, x, y).to_list() == [10.0, 2.0, 30.0]);
+/// ```
+#[track_caller]
+pub const fn where<T, const N: usize>(mask: Array<bool, N>, a: Array<T, N>, b: Array<T, N>) -> Array<T, N> {
+    let shape = broadcast_shape(broadcast_shape(mask.shape, a.shape), b.shape);
+    let m = mask.broadcast_to(shape);
+    let x = a.broadcast_to(shape);
+    let y = b.broadcast_to(shape);
+    let out: Array<T, N> = unsafe { Array::alloc(shape) };
+    let idx: [usize; N] = [0; N];
+    unsafe {
+        for i in 0..out.len() {
+            out.buf[i] = if m.buf[m.pos(idx)] { x.buf[x.pos(idx)] } else { y.buf[y.pos(idx)] };
+            next_index(ref idx, shape);
+        }
+    }
+    out
+}

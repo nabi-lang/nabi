@@ -1,0 +1,16 @@
+// expect-exit: 0
+// expect-stdout:
+// a�b�
+// ��
+// x� 2
+// 😀 ok
+
+// `from_utf16_lossy` puts one U+FFFD per unpaired surrogate: a high one
+// not followed by a low one, a low one alone, a high one at the end.
+fn main() {
+    println(str::from_utf16_lossy([0x61u16, 0xD800u16, 0x62u16, 0xDC00u16]));
+    println(str::from_utf16_lossy([0xD800u16, 0xD800u16]));
+    let s = str::from_utf16_lossy([0x78u16, 0xDBFFu16]);
+    println(f"{s} {s.char_count()}");
+    println(f"{str::from_utf16_lossy([0xD83Du16, 0xDE00u16])} ok");
+}

@@ -1,0 +1,8 @@
+// expect-error: unresolved import: `crate::c::a` does not exist
+// expect-error: help: this package's root is `pkg`: write `use pkg::..`
+
+// `crate::` is `pkg::` in Nabi.
+mod c { pub fn a() {} }
+use crate::c::a;
+
+fn main() {}

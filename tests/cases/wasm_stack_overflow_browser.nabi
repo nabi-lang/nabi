@@ -1,0 +1,22 @@
+// only-target: wasm32-unknown-unknown
+// expect-exit: 134
+// expect-stderr:
+// expect-stderr: thread 'main' has overflowed its stack
+// expect-stderr: fatal runtime error: stack overflow, aborting
+// expect-stdout:
+// before
+
+// Runaway recursion exhausts the engine's call stack: the JS host reports
+// it as the runtime does natively, in node and in every browser (V8 and
+// JavaScriptCore throw a RangeError, SpiderMonkey an InternalError).
+
+// Not a tail call, and no accumulator an optimizer could turn into a loop.
+fn down(n: i64) -> i64 {
+    if n == 0 { return 0; }
+    return down(n - 1) % 7 + 1;
+}
+
+fn main() {
+    println("before");
+    println(f"{down(1000000000)}");
+}

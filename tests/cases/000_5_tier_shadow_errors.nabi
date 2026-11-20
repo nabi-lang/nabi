@@ -1,0 +1,12 @@
+// expect-error: unresolved import: `std::path::Path` does not exist
+// expect-exit: 1
+
+// A module `std` at the root shadows the library's: `std::path` is the
+// module's.
+mod std { pub fn f() -> i32 { 1 } }
+
+use std::path::Path;
+
+fn main() {
+    println(f"{std::f()}");
+}

@@ -1,0 +1,14 @@
+// expect-error: cannot derive `Default` for `Cfg`: `hook` has type `NoDefault`, which does not implement `Default`
+// forbid-error: no associated function `default` on `NoDefault`
+
+// A field without a declared default still needs its type's `default()`.
+// The derive says so once; no follow-on error from its body.
+struct NoDefault { v: i32; }
+
+#[derive(Default)]
+struct Cfg {
+    level: i32 = 3;
+    hook: NoDefault;
+}
+
+println(f"{Cfg::default().level}");

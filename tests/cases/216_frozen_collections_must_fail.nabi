@@ -1,0 +1,36 @@
+// expect-error: 19:5: `xs` was frozen at line 18
+// expect-error: help: the frozen collection holds the elements now; read them through `f`, or freeze `xs.clone()` to keep `xs` as it was
+// expect-error: 24:5: `alias` shares `ys`, which was frozen at line 23
+// expect-error: 28:5: `zs` was frozen by `keep(zs)` at line 27 (inside `keep`, line 14)
+// expect-error: 31:17: type `List<i32>` does not satisfy trait bound `Sync` required by `List::freeze`
+// expect-error: help: a frozen collection never changes, and neither may what it holds, but a `List<i32>` can: freeze each element first (`FrozenList<i32>`), or share the whole collection through a `Mutex`
+// expect-error: 34:5: no method `index_set` found for type `FrozenList<i32>`
+// expect-error: help: a `FrozenList` never changes, so other threads can read it without a lock; to change the elements, make a copy that can: `let ys = fr.to_list();`
+// expect-error: 35:5: no method `insert` found for type `FrozenDict<str, i32>`
+// expect-error: help: a `FrozenDict` never changes, so other threads can read it without a lock; to change the elements, make a copy that can: `let ys = fd.to_dict();`
+
+// What can change is never frozen: the list itself after `freeze`, a
+// list of lists, a frozen collection's elements.
+fn keep(xs: List<i32>) -> FrozenList<i32> { xs.freeze() }
+
+fn main() {
+    let xs: List<i32> = [1, 2, 3];
+    let f = xs.freeze();
+    xs.push(4);
+    println(f"{f.len()}");
+    let ys: List<i32> = [1];
+    let alias = ys;
+    let fy = ys.freeze();
+    alias.push(2);
+    println(f"{fy.len()}");
+    let zs: List<i32> = [1];
+    let fz = keep(zs);
+    zs.push(2);
+    println(f"{fz.len()}");
+    let nested: List<List<i32>> = [[1]];
+    let fnest = nested.freeze();
+    let fr: FrozenList<i32> = [1, 2].freeze();
+    let fd: FrozenDict<str, i32> = {"a": 1}.freeze();
+    fr[0] = 5;
+    fd.insert("b", 2);
+}

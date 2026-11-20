@@ -1,0 +1,42 @@
+// Tolerant comparison of float arrays: `is_close` element by element,
+// `all_close` for the whole array, with the rule of `f64::is_close`.
+
+impl<T: FloatingPoint, const N: usize> Array<T, N> {
+    /// Whether each element is close to `other`'s (broadcast to one
+    /// shape): `|a - b| <= max(rel * max(|a|, |b|), abs)`, or equal.
+    /// Symmetric in `a` and `b`. `rel` defaults to the element type's
+    /// (`f64`: 1e-9, as Python's `math.isclose`; `f32`: 2^-20); pass
+    /// `abs` when values near zero must match. NaN is close to nothing
+    /// unless `equal_nan`.
+    ///
+    /// ```nabi
+    /// use core::array::Vector;
+    ///
+    /// let a: Vector<f64> = [1.0, 2.0, 0.0];
+    /// let b: Vector<f64> = [1.0 + 1e-12, 2.1, 1e-20];
+    /// assert(a.is_close(b).to_list() == [true, false, false]);
+    /// assert(a.is_close(b, abs: 1e-12).to_list() == [true, false, true]);
+    /// ```
+    #[track_caller]
+    pub const fn is_close(self, other: Array<T, N>, rel: f64 | none = none, abs: f64 = 0.0, equal_nan: bool = false) -> Array<bool, N> {
+        let r = if let x: f64 = rel { T::from_f64(x) } else { core::num::default_rel::<T>() };
+        let t = T::from_f64(abs);
+        zip_with(self, other, |a: T, b: T| -> bool { core::num::close(a, b, r, t, equal_nan) })
+    }
+
+    /// Whether every element is close to `other`'s (see `is_close`); the
+    /// shapes must broadcast. NumPy: `np.allclose`, but symmetric and
+    /// relative by default.
+    ///
+    /// ```nabi
+    /// use core::array::Matrix;
+    ///
+    /// let m: Matrix<f64> = [[0.1, 0.2], [0.3, 0.4]];
+    /// assert((m .* 3.0).all_close(m .+ m .+ m));
+    /// assert(!m.all_close(m .+ 1e-6));
+    /// ```
+    #[track_caller]
+    pub const fn all_close(self, other: Array<T, N>, rel: f64 | none = none, abs: f64 = 0.0, equal_nan: bool = false) -> bool {
+        self.is_close(other, rel, abs, equal_nan).all()
+    }
+}

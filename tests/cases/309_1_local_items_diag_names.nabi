@@ -1,0 +1,18 @@
+// expect-error: 13:19: mismatched types: `let o` expects `Only`, found `bool`
+// expect-error: 15:16: mismatched types: `let s` expects `f::S`, found `S`
+// forbid-error: f/
+
+// Diagnostics name an item in a block as written, and by the fns it is
+// declared in when another item has its name.
+struct S {}
+
+fn outer_s() -> S { S {} }
+
+fn f() {
+    struct Only { x: i32; }
+    let o: Only = true;
+    struct S { y: i32; }
+    let s: S = outer_s();
+}
+
+fn main() {}

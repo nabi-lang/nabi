@@ -1,0 +1,11 @@
+// expect-error: `#[impl_attribute(..)]` takes an `@attribute { .. }` body, not `@derive`
+// The body starter matches the meta block's kind.
+#[impl_attribute(wrap)]
+pub @derive {
+    @item
+}
+
+fn main() -> i32 {
+    return 0;
+}
+

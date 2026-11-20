@@ -1,0 +1,17 @@
+// expect-exit: 0
+// expect-stdout:
+// 1 2 3
+
+// Attributes and visibility combine in any order.
+pub #[inline] fn h() -> i32 { 1 }
+
+pub
+#[inline]
+fn g() -> i32 { 2 }
+
+struct S {}
+impl S {
+    pub #[inline] fn k() -> i32 { 3 }
+}
+
+println(f"{h()} {g()} {S::k()}");

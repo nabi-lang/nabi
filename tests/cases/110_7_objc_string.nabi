@@ -1,0 +1,27 @@
+// needs: objc
+// expect-exit: 0
+// expect-stdout:
+// héllo, 世界 🦋 length 12
+// empty true
+// lone � 1
+
+// `str` and `NSString` copy into each other; the UTF-16 an `NSString`
+// holds may have an unpaired surrogate, which `to_str` replaces.
+use bare::ffi::objc::{Id, NSString, ns};
+use bare::ptr::ConstPtr;
+
+#[link(name = "Foundation", kind = "framework")]
+#[objc::category(NSString)]
+extern "objc" {
+    fn length(self) -> usize;
+    unsafe fn stringWithCharacters_length(chars: ConstPtr<u16>, n: usize) -> Id<NSString>;
+}
+
+fn main() {
+    let s = ns("héllo, 世界 🦋");
+    println(f"{s.to_str()} length {s.length()}");
+    println(f"empty {ns("").to_str() == ""}");
+    let units: [u16; 1] = [0xD800u16];
+    let lone = unsafe { NSString::stringWithCharacters_length(bare::ptr::addr_of(units).cast::<u16>().as_const(), 1) };
+    println(f"lone {lone.to_str()} {lone.length()}");
+}

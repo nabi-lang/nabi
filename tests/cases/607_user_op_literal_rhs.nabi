@@ -1,0 +1,35 @@
+// expect-exit: 0
+// expect-stdout:
+// [2.0, 4.0] [2.0, 4.0] 1
+
+// A literal right operand of a user operator takes the impl's `Rhs`
+// type, as a call argument does; an operator trait with no parameters
+// finds a blanket impl by the method's own parameter type.
+use core::array::Vector;
+
+pub trait Advance {
+    #[infix("⊲", like = "*")]
+    fn advance(self, y: Vector<f64>) -> Vector<f64>;
+}
+struct Twice {}
+impl Advance for Twice {
+    fn advance(self, y: Vector<f64>) -> Vector<f64> { y .* 2.0 }
+}
+
+trait Fun { fn eval1(self) -> f64; }
+impl Fun for fn(Vector<f64>) -> f64 { fn eval1(self) -> f64 { self([1.0]) } }
+trait AtMost {
+    #[infix("⩽", like = "<=")]
+    fn at_most(self, b: f64) -> f64;
+}
+impl<F: Fun> AtMost for F {
+    fn at_most(self, b: f64) -> f64 { self.eval1() - b }
+}
+
+fn apply(t: Twice, y: Vector<f64>) -> Vector<f64> { t ⊲ y }
+
+fn main() {
+    let t = Twice {};
+    let c = |x: Vector<f64>| -> f64 { x[0] * 2.0 };
+    println(f"{apply(t, [1.0, 2.0]):?} {(t ⊲ [1.0, 2.0]):?} {c ⩽ 1.0}");
+}

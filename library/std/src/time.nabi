@@ -1,0 +1,190 @@
+//! std::time: the wall clock (`SystemTime`), the boot clock
+//! (`BootTime`), and the civil calendar: `Date`, `Time`, `DateTime`,
+//! `Offset`, `TimeZone` and `Zoned`, with ISO 8601 / RFC 3339 text and
+//! strftime-style `format` / `parse_with`. `Duration` / `Instant` are
+//! `core::time`. Every span is an exact signed `Duration`; the
+//! arithmetic goes through `Duration`'s, which panics on overflow and
+//! saturates only with overflow checks off.
+
+mod civil;
+mod date;
+mod format;
+mod iso;
+mod offset;
+mod posix;
+mod tzif;
+mod zone;
+mod zoned;
+
+pub use std::time::civil::{DateTime, Time};
+pub use std::time::date::{Date, MAX_YEAR, MIN_YEAR, Period, Weekday, days_in_month, is_leap_year};
+pub use std::time::offset::Offset;
+pub use std::time::zone::{Disambiguation, TimeZone};
+pub use std::time::zoned::Zoned;
+
+use core::time::Duration;
+use std::time::format::http_date;
+
+// No monotonic reading: the time did not come from `now()`.
+const NO_MONO: i64 = -9223372036854775807 - 1;
+
+/// A wall-clock (UTC) point: `i64` nanoseconds from `UNIX_EPOCH`
+/// (1678..2262). It can step backwards (NTP, the user).
+///
+/// `now()` also takes a monotonic reading, which `elapsed()` uses, so a
+/// clock step cannot change it. Comparison and hashing see the wall
+/// reading only.
+#[derive(Clone, Copy)]
+pub struct SystemTime {
+    ns: i64;
+    mono: i64;
+}
+
+/// 1970-01-01 00:00:00 UTC.
+pub const UNIX_EPOCH: SystemTime = SystemTime { ns: 0, mono: NO_MONO };
+
+impl SystemTime {
+    /// The wall clock now.
+    pub fn now() -> SystemTime {
+        let mono = unsafe { nabi_time_now_ns() };
+        SystemTime { ns: unsafe { nabi_time_realtime_ns() }, mono: mono }
+    }
+
+    /// `self - earlier` on the wall clock, negative when `earlier` is
+    /// later.
+    #[must_use]
+    pub const fn duration_since(self, earlier: SystemTime) -> Duration {
+        Duration::ns(self.ns) - Duration::ns(earlier.ns)
+    }
+
+    /// Time since `self` on the monotonic clock (the `Instant` one) when
+    /// `self` came from `now()`, else on the wall clock.
+    pub fn elapsed(self) -> Duration {
+        if self.mono == NO_MONO {
+            return SystemTime::now().duration_since(self);
+        }
+        Duration::ns(unsafe { nabi_time_now_ns() }) - Duration::ns(self.mono)
+    }
+
+    /// `self + dur`; `none` when it overflows `i64` nanoseconds.
+    #[must_use]
+    pub const fn checked_add(self, dur: Duration) -> SystemTime | none {
+        let ns = self.ns.checked_add(dur.as_ns())?;
+        SystemTime { ns: ns, mono: shift(self.mono, dur) }
+    }
+    /// `self - dur`; `none` when it overflows `i64` nanoseconds.
+    #[must_use]
+    pub const fn checked_sub(self, dur: Duration) -> SystemTime | none {
+        let ns = self.ns.checked_sub(dur.as_ns())?;
+        SystemTime { ns: ns, mono: shift(self.mono, Duration::ZERO - dur) }
+    }
+
+    /// The time `secs` seconds and `nanos` nanoseconds after the Unix epoch.
+    pub const fn from_unix(secs: i64, nanos: u32) -> SystemTime {
+        SystemTime { ns: (Duration::secs(secs) + Duration::ns(nanos as i64)).as_ns(), mono: NO_MONO }
+    }
+    /// Whole seconds since the epoch, rounded down (negative before it):
+    /// `from_unix(t.unix_secs(), ..)` gives `t` back.
+    pub const fn unix_secs(self) -> i64 {
+        let s = self.ns / 1000000000;
+        if self.ns % 1000000000 < 0 { s - 1 } else { s }
+    }
+    /// Nanoseconds since the epoch, negative before it.
+    pub const fn unix_nanos(self) -> i64 { self.ns }
+    /// The nanoseconds past `unix_secs()`, 0..=999999999.
+    pub const fn subsec_nanos(self) -> u32 { (self.ns - self.unix_secs() * 1000000000) as u32 }
+
+    /// The HTTP date (RFC 9110 IMF-fixdate): `Sun, 06 Nov 1994 08:49:37 GMT`.
+    pub const fn to_http_date(self) -> str {
+        DateTime::from_unix(self.unix_secs(), 0u32).format("%a, %d %b %Y %H:%M:%S GMT")
+    }
+    /// An HTTP date: IMF-fixdate, or the obsolete RFC 850
+    /// (`Sunday, 06-Nov-94 08:49:37 GMT`) and asctime
+    /// (`Sun Nov  6 08:49:37 1994`) forms.
+    pub fn parse_http_date(text: str) throws (ParseError) -> SystemTime {
+        let dt = try http_date(text);
+        let s = dt.unix_secs();
+        if s < -9223372036 || s > 9223372035 { throw ParseError::new(text, 0, "out of the SystemTime range (years 1678..2262)"); }
+        SystemTime::from_unix(s, 0u32)
+    }
+}
+
+// The monotonic reading moved with the wall one; dropped when it would
+// overflow.
+const fn shift(mono: i64, d: Duration) -> i64 {
+    if mono == NO_MONO { return NO_MONO; }
+    let r = mono.checked_add(d.as_ns());
+    if r is i64 { r } else { NO_MONO }
+}
+
+impl Add<Duration> for SystemTime {
+    type Output = SystemTime;
+    const fn add(self, rhs: Duration) -> SystemTime {
+        SystemTime { ns: (Duration::ns(self.ns) + rhs).as_ns(), mono: shift(self.mono, rhs) }
+    }
+}
+
+impl Sub<Duration> for SystemTime {
+    type Output = SystemTime;
+    const fn sub(self, rhs: Duration) -> SystemTime {
+        SystemTime { ns: (Duration::ns(self.ns) - rhs).as_ns(), mono: shift(self.mono, Duration::ZERO - rhs) }
+    }
+}
+
+impl PartialEq for SystemTime {
+    const fn eq(self, rhs: SystemTime) -> bool { self.ns == rhs.ns }
+}
+impl Eq for SystemTime {}
+impl PartialOrd for SystemTime {
+    const fn lt(self, rhs: SystemTime) -> bool { self.ns < rhs.ns }
+    const fn gt(self, rhs: SystemTime) -> bool { self.ns > rhs.ns }
+    const fn le(self, rhs: SystemTime) -> bool { self.ns <= rhs.ns }
+    const fn ge(self, rhs: SystemTime) -> bool { self.ns >= rhs.ns }
+}
+impl Ord for SystemTime {
+    const fn cmp(self, rhs: SystemTime) -> Ordering { self.ns.cmp(rhs.ns) }
+}
+impl Hash for SystemTime {
+    const fn hash<H: Hasher>(self, ref h: H) { self.ns.hash(ref h); }
+}
+impl Display for SystemTime {
+    /// RFC 3339 in UTC: `2023-11-14T22:13:20Z`, with the fraction in 3, 6
+    /// or 9 digits when not zero.
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"{DateTime::from_unix(self.unix_secs(), self.subsec_nanos())}Z")
+    }
+}
+
+impl FromStr for SystemTime {
+    type Err = ParseError;
+    /// RFC 3339 with any offset: `2023-11-14T22:13:20Z`,
+    /// `2023-11-15T07:13:20.5+09:00`.
+    fn from_str(s: str) throws (ParseError) -> SystemTime {
+        let z = try Zoned::from_str(s);
+        if z.unix_secs() < -9223372036 || z.unix_secs() > 9223372035 {
+            throw ParseError::new(s, 0, "out of the SystemTime range (years 1678..2262)");
+        }
+        SystemTime::from_unix(z.unix_secs(), z.nanosecond() as u32)
+    }
+}
+
+impl Debug for SystemTime {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+/// Time since boot, counting suspend: `CLOCK_BOOTTIME` on Linux;
+/// on macOS `CLOCK_MONOTONIC`, which counts sleep there.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct BootTime {
+    ns: i64;
+}
+
+impl BootTime {
+    /// The boot clock now.
+    pub fn now() -> BootTime { BootTime { ns: unsafe { nabi_time_boot_ns() } } }
+    /// Time from `self` to now.
+    pub fn elapsed(self) -> Duration { BootTime::now().duration_since(self) }
+    /// `self - earlier`, negative when `earlier` is later.
+    #[must_use]
+    pub const fn duration_since(self, earlier: BootTime) -> Duration { Duration::ns(self.ns) - Duration::ns(earlier.ns) }
+}

@@ -1,0 +1,18 @@
+// needs: threads
+// expect-exit: 0
+// forbid-warning: warning
+// expect-stdout:
+// true 0
+
+// `Atomic<Ptr<T>>` is `Send` (the cell holds an address), so a thread
+// may take it; `Atomic::wait_timeout` takes a `Duration`.
+use bare::ptr::Ptr;
+
+fn main() {
+    let p: Ptr<i32> = Ptr::dangling();
+    let a = Atomic::new(p);
+    let t = std::thread::spawn(|| a.load().addr() == 4);
+    let w = Atomic::new(0i32);
+    w.wait_timeout(1, Duration::ms(1));
+    println(f"{try! t.join()} {w.load()}");
+}

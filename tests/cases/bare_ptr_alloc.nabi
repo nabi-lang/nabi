@@ -1,0 +1,62 @@
+// only-pointer-width: 64
+// expect-exit: 0
+// expect-stdout:
+// 30
+// 7
+// 4
+// 99
+
+// `bare` raw pointers, casts, mem over raw
+// allocation: arithmetic is safe,
+// `read` / `write` need `unsafe`.
+use bare::alloc::{Layout, LayoutError, alloc, dealloc};
+use bare::mem::{copy_nonoverlapping, size_of, swap, write_bytes};
+use bare::ptr::{CPtr, ConstPtr, ManyPtr, Ptr};
+
+struct Pair { a: i64; b: i32; }
+
+// No `main` combines `throws` with `-> i32`.
+fn main() -> i32 { try! run() }
+
+fn run() throws (LayoutError) -> i32 {
+    if size_of::<i64>() != 8usize || size_of::<Pair>() != 16usize { return 1; }
+    let witness: Ptr<i64> = Ptr::dangling();
+    if witness.addr() != 8usize || !witness.is_aligned() { return 2; }
+
+    let layout = try Layout::array::<i64>(8usize);
+    let raw: CPtr<u8> = unsafe { alloc(layout) };
+    let bytes: Ptr<u8> = raw.as_ptr() ?? panic("alloc failed");
+    let p = bare::ptr_cast::<i64>(bytes);
+    unsafe {
+        p.write(10i64);
+        p.add(1usize).write(20i64);
+        p.add(2usize).write(p.read() + p.add(1usize).read());
+    }
+    println(f"{unsafe { p.add(2usize).read() }}");
+    if p.add(3usize).distance(p) != 3 { return 3; }
+
+    // A struct through a pointer.
+    let q = bytes.cast::<Pair>();
+    unsafe { q.write(Pair { a: 7i64, b: 4 }); }
+    let back = unsafe { q.read() };
+    println(f"{back.a}");
+    println(f"{back.b}");
+
+    // mem: write_bytes / copy / swap; ManyPtr indexing; volatile.
+    let m: ManyPtr<i64> = p.as_many();
+    unsafe {
+        write_bytes(p.add(4usize), 0u8, 4usize);
+        m.write(5usize, 99i64);
+        copy_nonoverlapping(p.add(5usize).as_const(), p.add(6usize), 1usize);
+        swap(p, p.add(6usize));
+        p.write_volatile(p.read_volatile());
+    }
+    let c: ConstPtr<i64> = p.as_const();
+    println(f"{unsafe { c.read() }}");
+    if unsafe { m.read(4usize) } != 0i64 { return 4; }
+
+    let fallback = try Layout::from_size_align(8usize, 3usize) catch _ { Layout::new::<u8>() };
+    if fallback.align() != 1usize { return 5; }
+    unsafe { dealloc(bytes, layout) };
+    return 0;
+}

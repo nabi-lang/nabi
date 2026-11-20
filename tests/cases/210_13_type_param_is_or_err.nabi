@@ -1,0 +1,8 @@
+// expect-error: `||` of type tests gives the branch no single type for `T`
+// expect-error: help: write one branch per type: `if T is f32 { .. } else if T is f64 { .. }`
+
+fn f<T>(x: T) {
+    if T is f32 || T is f64 { let _y: f32 = x; }
+}
+
+fn main() { f(1.0f32); }

@@ -1,0 +1,8 @@
+// expect-error: 7:8: Nabi has no `comptime` parameters
+// expect-error: help: a type parameter goes in `<..>`: `struct Vec<T> { .. }` or `fn f<T>(x: T)`
+// expect-error: 7:26: a function cannot return a type
+// expect-error: help: make it a generic type: `struct Vec<T> { .. }`
+
+// Zig's type-returning functions are generic types in Nabi.
+fn Vec(comptime T: type) type { }
+fn main() {}

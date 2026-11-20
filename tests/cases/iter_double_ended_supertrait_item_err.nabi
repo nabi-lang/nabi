@@ -1,0 +1,24 @@
+// expect-error: iter_double_ended_supertrait_item_err.nabi:21:5: `next_back` does not match its declaration in trait `DoubleEndedIterator`: it returns `i32 | none` where the trait's returns `str | none`
+// expect-error: help: write `-> str | none`, the trait's `fn next_back(ref self) -> Item | none`
+
+// The supertrait's `Item` in a DoubleEndedIterator method is the
+// type the Iterator impl gives it, and the help names that type.
+use core::iter::DoubleEndedIterator;
+
+struct Words { n: i32; }
+
+impl Iterator for Words {
+    type Item = str;
+    fn next(ref self) -> str | none {
+        if self.n <= 0 { return none; }
+        self.n -= 1;
+        "a"
+    }
+}
+
+impl DoubleEndedIterator for Words {
+    // Item is `str` here.
+    fn next_back(ref self) -> i32 | none { none }
+}
+
+fn main() {}

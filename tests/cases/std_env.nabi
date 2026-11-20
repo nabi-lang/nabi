@@ -1,0 +1,56 @@
+// needs: process
+// expect-exit: 0
+// expect-stdout:
+// args: 1 true
+// var: hello
+// vars has it: true
+// removed: NotPresent
+// cwd moved: true
+// cwd back: true
+// temp absolute: true
+// split: /a /b /c
+// pid: true
+
+// Args (argv saved by the runtime), var / vars / set_var /
+// remove_var, current_dir / set_current_dir, temp_dir, split_paths
+// (`;` between paths on Windows), the process id.
+
+use std::env;
+use core::io::IoError;
+use std::path::Path;
+use std::process;
+
+#[cfg(target_os = "windows")]
+const LIST: str = ";";
+#[cfg(not(target_os = "windows"))]
+const LIST: str = ":";
+
+fn main() throws (IoError) {
+    let args = env::args();
+    println(f"args: {args.len()} {args[0].len() > 0}");
+
+    unsafe { try! env::set_var("NABI_STD_ENV_TEST", "hello"); }
+    println("var: " + (try env::var("NABI_STD_ENV_TEST") catch _ { "?" }));
+    let seen = false;
+    for kv in env::vars() {
+        let (k, v) = kv;
+        if k == "NABI_STD_ENV_TEST" && v == "hello" { seen = true; }
+    }
+    println(f"vars has it: {seen}");
+    unsafe { try! env::remove_var("NABI_STD_ENV_TEST"); }
+    println("removed: " + (try env::var("NABI_STD_ENV_TEST") catch e { f"{e:?}" }));
+
+    let start = try env::current_dir();
+    let up = start.parent() ?? start;
+    try env::set_current_dir("..");
+    println(f"cwd moved: {(try env::current_dir()) == up}");
+    try env::set_current_dir(start);
+    println(f"cwd back: {(try env::current_dir()) == start}");
+
+    println(f"temp absolute: {env::temp_dir().is_absolute()}");
+    let parts = "";
+    for p in env::split_paths(f"/a{LIST}{LIST}/b{LIST}/c") { parts = parts + " " + p.as_str(); }
+    println("split:" + parts);
+    println(f"pid: {process::id() > 0u32}");
+}
+

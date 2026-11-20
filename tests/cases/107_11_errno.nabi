@@ -1,0 +1,44 @@
+// only-os: linux macos freebsd
+// needs: process
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// -1 2 true
+// not found Some(2)
+// 0
+// -1 2
+
+// `#[errno]` saves errno right after the call returns, before the
+// thread may wait out a collection or unpin the `str` argument: the
+// value read later is the call's, whatever runs in between.
+use bare::ffi::{errno, set_errno};
+
+#[errno]
+extern "C" {
+    fn open(path: str, flags: c_int, ...) -> c_int;
+}
+
+extern "C" {
+    #[errno]
+    fn chdir(path: str) -> c_int;
+    fn nabi_gc_collect();
+}
+
+fn main() {
+    let fd = unsafe { open("/nabi-no-such-dir/file", 0) };
+    let xs: List<str> = [];
+    for i in 0..1000 {
+        xs.push(f"{i}");
+    }
+    unsafe { nabi_gc_collect() };
+    let e = io::IoError::last_os_error();
+    println(f"{fd} {errno()} {e.message().len() > 0}");
+    let code = match e.os_code() {
+        c: i32 => f"Some({c})",
+        none => "None",
+    };
+    println(f"{e.kind()} {code}");
+    set_errno(0);
+    println(f"{errno()}");
+    println(f"{unsafe { chdir("/nabi-no-such-dir") }} {errno()}");
+}

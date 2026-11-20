@@ -1,0 +1,80 @@
+//! core::encoding - bytes as text (RFC 4648): `hex` and `base64`.
+//! Encoders return `str` or fill a `SliceMut<u8>`; decoders return
+//! `List<u8>` or fill a `SliceMut<u8>`, and throw `DecodeError` naming
+//! the byte offset of the first problem.
+
+pub mod base64;
+pub mod hex;
+
+use core::collections::raw::GcBuf;
+
+extern "nabi" {
+    fn nabi_str_from_buf(buf: GcBuf<u8>, off: usize, len: usize) -> str;
+}
+
+/// What a `DecodeError` is about.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum DecodeErrorKind {
+    /// A byte that is not in the alphabet.
+    InvalidByte,
+    /// A text whose length no encoded text has.
+    InvalidLength,
+    /// Padding where the codec takes none, missing where it needs it,
+    /// or of the wrong length.
+    InvalidPadding,
+}
+
+/// Text that `hex::decode` or `base64::decode` cannot decode.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DecodeError {
+    kind: DecodeErrorKind;
+    position: usize;
+    msg: str;
+}
+
+impl DecodeError {
+    pub(pkg) const fn new(kind: DecodeErrorKind, position: usize, msg: str) -> DecodeError {
+        DecodeError { kind, position, msg }
+    }
+
+    /// What kind of input was rejected.
+    pub const fn kind(self) -> DecodeErrorKind { self.kind }
+
+    /// The byte offset in the text where decoding failed.
+    pub const fn position(self) -> usize { self.position }
+
+    /// What went wrong and what to write instead.
+    pub const fn message(self) -> str { self.msg }
+}
+
+impl Display for DecodeError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.msg) }
+}
+
+impl Debug for DecodeError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"DecodeError {{ kind: {self.kind:?}, position: {self.position} }}")
+    }
+}
+
+impl Error for DecodeError {}
+
+/// `c` for a message: quoted when printable ASCII, else its value.
+pub(pkg) const fn shown_byte(c: u8) -> str {
+    if c > 0x20u8 && c < 0x7fu8 { return f"'{c as char}'"; }
+    f"byte 0x{c:02x}"
+}
+
+/// A zeroed list of `n` bytes to encode or decode into.
+pub(pkg) const fn zeroed(n: usize) -> List<u8> {
+    let out: List<u8> = List::with_capacity(n);
+    unsafe { out.set_len(n) };
+    out
+}
+
+/// The first `n` bytes of `b`, which are ASCII, as a `str`.
+pub(pkg) fn ascii(b: List<u8>, n: usize) -> str {
+    let (buf, at, _) = unsafe { b[0:n].raw_parts() };
+    unsafe { nabi_str_from_buf(buf, at, n) }
+}

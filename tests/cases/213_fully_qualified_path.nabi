@@ -1,0 +1,17 @@
+// expect-exit: 7
+// expect-stdout:
+
+// Fully qualified path `<T as Trait>::method`.
+trait Make {
+    fn make() -> i32;
+}
+
+struct A;
+impl Make for A {
+    fn make() -> i32 { return 7; }
+}
+
+fn main() -> i32 {
+    return <A as Make>::make();
+}
+

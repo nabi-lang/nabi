@@ -1,0 +1,29 @@
+// expect-exit: 0
+// expect-stdout:
+// 5 6 true true
+
+// A child module named `std` takes the name in its parent, in `use`s
+// too; `use ::std::..` and `::std::..` paths are the library's.
+mod std {
+    pub fn five() -> i32 { 5 }
+    pub mod path { pub fn six() -> i32 { 6 } }
+}
+
+mod inner {
+    mod core { pub fn on() -> bool { true } }
+    use ::core::collections::dict::Dict;
+
+    pub fn go() -> bool {
+        let d: Dict<str, bool> = Dict::new();
+        d["x"] = core::on();
+        d["x"]
+    }
+}
+
+use std::five;
+use std::path::six;
+use ::std::path::Path;
+
+fn main() {
+    println(f"{five()} {six()} {Path::empty().is_relative()} {inner::go()}");
+}

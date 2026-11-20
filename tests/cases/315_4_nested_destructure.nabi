@@ -1,0 +1,14 @@
+// expect-exit: 0
+// expect-stdout:
+// 1
+// 2
+// 3
+
+// Nested destructuring `let ((a, b), c) = ((1, 2), 3);`.
+fn main() -> i32 {
+    let ((a, b), c) = ((1, 2), 3);
+    println(f"{a}");
+    println(f"{b}");
+    println(f"{c}");
+    return 0;
+}

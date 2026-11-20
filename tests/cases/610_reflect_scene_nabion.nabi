@@ -1,0 +1,66 @@
+// expect-exit: 0
+// expect-stdout:
+// Scene {
+//     entities: [
+//         Entity { name: "hero", pos: Vec2 { x: 1.0, y: 2.0 }, kind: Kind::Player, hp: 100 },
+//         Entity {
+//             name: "orc",
+//             pos: Vec2 { x: 5.0, y: 0.0 },
+//             kind: Kind::Enemy { level: 3 },
+//             hp: 40,
+//         },
+//     ],
+//     tags: { "level": 1 },
+// }
+// 2 2 40 0 1 Enemy
+// default hp 100
+// hp in 0..100
+
+// A scene saved to NABION and loaded back through reflection alone
+// (`std::nabion::to_value_any` / `from_value_any`): no `ToNabion`
+// impl. A field the text leaves out takes its default.
+use core::reflect;
+use std::nabion;
+use std::nabion::NabionError;
+
+#[runtime_attribute(range)]
+pub struct Range { pub min: f64; pub max: f64; }
+
+#[derive(Inspect, Clone)]
+struct Vec2 { x: f64 = 0.0; y: f64 = 0.0; }
+
+#[derive(Inspect, Clone)]
+enum Kind { Player, Enemy { level: i32 }, Prop }
+
+#[derive(Inspect, Clone)]
+struct Entity { name: str; pos: Vec2; kind: Kind; #[range(0, 100)] hp: i32 = 100; }
+
+#[derive(Inspect, Clone)]
+struct Scene { entities: List<Entity>; tags: Dict<str, i32>; }
+
+fn load<T: Inspect>(text: str) throws (NabionError) -> T {
+    let v = try nabion::from_value_any(T::type_info(), try nabion::parse(text));
+    return reflect::cast::<T>(v) ?? throw NabionError::new(f"not a {T::type_name()}");
+}
+
+fn main() throws (NabionError) {
+    let tags: Dict<str, i32> = Dict::new();
+    tags.insert("level", 1);
+    let scene = Scene {
+        entities: [
+            Entity { name: "hero", pos: Vec2 { x: 1.0, y: 2.0 }, kind: Kind::Player },
+            Entity { name: "orc", pos: Vec2 { x: 5.0 }, kind: Kind::Enemy { level: 3 }, hp: 40 },
+        ],
+        tags: tags,
+    };
+    let text = try (try nabion::to_value_any(scene)).to_str();
+    println(text);
+    let back = try load::<Scene>(text);
+    let e = back.entities;
+    println(f"{e.len()} {e[0].pos.y} {e[1].hp} {e[1].pos.y} {back.tags["level"]} {e[1].kind.variant_name()}");
+    let one = try load::<Entity>("Entity { name: \"rat\", pos: Vec2 {}, kind: Kind::Prop }");
+    println(f"default hp {one.hp}");
+    let hp = Entity::type_info().field("hp") ?? throw NabionError::new("no hp");
+    let r = hp.attr::<Range>() ?? throw NabionError::new("no range");
+    println(f"hp in {r.min}..{r.max}");
+}

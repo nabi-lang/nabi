@@ -1,0 +1,16 @@
+// expect-exit: 0
+// expect-stdout: 12
+
+pub mod parent {
+    pub fn shared() -> i32 { 5i32 }
+
+    pub mod child {
+        use sup::shared;            // resolve via sup::
+        pub fn caller() -> i32 { shared() + 7i32 }
+    }
+}
+
+fn main() {
+    println(f"{parent::child::caller()}");
+}
+

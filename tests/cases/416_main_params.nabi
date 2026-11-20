@@ -1,0 +1,4 @@
+// expect-error: takes no parameters
+
+// `fn main` has no parameters.
+fn main(argc: i32) -> i32 { return argc; }

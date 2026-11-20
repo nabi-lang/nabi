@@ -1,0 +1,179 @@
+// std::net::udp: UDP: `UdpSocket`.
+
+use core::convert::AsBytes;
+use core::io::{AsyncClose, Close, IoError};
+use core::time::Duration;
+use std::net::addr::{Ipv4Addr, SocketAddr, ToSocketAddrs, each_addr, first_addr, words_of};
+use std::net::socket::{Sock, Socket, flag, new_sock};
+use std::sys::check;
+
+/// A UDP socket. It has one owner: `let b = a` moves it.
+pub struct UdpSocket {
+    pub(pkg) sock: Sock;
+}
+
+fn udp_on(addr: SocketAddr) throws (IoError) -> UdpSocket {
+    let s = try new_sock(addr.family(), 2, 0);
+    try s.bind_listen(addr, -1);
+    UdpSocket { sock: s }
+}
+
+impl Debug for UdpSocket {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("UdpSocket") }
+}
+
+impl UdpSocket {
+    /// Bind the first address of `addr` that works.
+    pub fn bind<A: ToSocketAddrs>(addr: A) throws (IoError) -> UdpSocket {
+        try each_addr(addr, |a| try udp_on(a))
+    }
+
+    /// Send the datagram `buf` to the first address of `addr`; bytes
+    /// sent.
+    pub fn send_to<B: AsBytes, A: ToSocketAddrs>(self, buf: B, addr: A) throws (IoError) -> usize {
+        try self.sock.send_to(buf.byte_slice(), try first_addr(addr))
+    }
+
+    /// `send_to`, suspending the task instead of blocking.
+    pub async fn send_to_async<B: AsBytes, A: ToSocketAddrs>(ref self, buf: B, addr: A) throws (IoError) -> usize {
+        try await self.sock.send_to_async(buf.byte_slice(), try first_addr(addr))
+    }
+
+    /// The next datagram into `buf[0..n]` (truncated to `buf.len()`)
+    /// and its sender.
+    pub fn recv_from(self, buf: SliceMut<u8>) throws (IoError) -> (usize, SocketAddr) { try self.sock.recv_from(buf) }
+
+    /// `recv_from` that suspends the task until a datagram arrives.
+    pub async fn recv_from_async(ref self, buf: SliceMut<u8>) throws (IoError) -> (usize, SocketAddr) {
+        try await self.sock.recv_from_async(buf)
+    }
+
+    /// Fix the peer to the first address of `addr` that takes it: `send`
+    /// / `recv` then talk to it only.
+    pub fn connect<A: ToSocketAddrs>(self, addr: A) throws (IoError) {
+        let fd = try self.sock.live();
+        try each_addr(addr, |a| {
+            let r = unsafe { nabi_net_connect(fd, words_of(a)) };
+            try check(r as i64, f"connect {a}");
+        });
+    }
+
+    /// As `connect`: a UDP connect only records the peer, so it never
+    /// waits (a name in `addr` is resolved as `connect` does).
+    pub async fn connect_async<A: ToSocketAddrs>(ref self, addr: A) throws (IoError) { try self.connect(addr); }
+
+    /// Send `buf` as one datagram to the peer set by `connect`.
+    pub fn send<B: AsBytes>(self, buf: B) throws (IoError) -> usize {
+        try self.sock.write(buf.byte_slice())
+    }
+
+    /// `send`, suspending the task instead of blocking.
+    pub async fn send_async<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize {
+        try await self.sock.write_async(buf.byte_slice())
+    }
+
+    /// The next datagram from the `connect` peer into `buf` (truncated to
+    /// `buf.len()`); its length.
+    pub fn recv(self, buf: SliceMut<u8>) throws (IoError) -> usize { try self.sock.read(buf) }
+
+    /// `recv`, suspending the task instead of blocking.
+    pub async fn recv_async(ref self, buf: SliceMut<u8>) throws (IoError) -> usize {
+        try await self.sock.read_async(buf)
+    }
+
+    /// The bound address.
+    pub fn local_addr(self) throws (IoError) -> SocketAddr { try self.sock.addr(0) }
+    /// The peer set by `connect`; throws without one.
+    pub fn peer_addr(self) throws (IoError) -> SocketAddr { try self.sock.addr(1) }
+
+    /// Allow sending to broadcast addresses (`SO_BROADCAST`).
+    pub fn set_broadcast(self, on: bool) throws (IoError) { try self.sock.setopt(3, flag(on)); }
+    /// `SO_BROADCAST`.
+    pub fn broadcast(self) throws (IoError) -> bool { (try self.sock.getopt(3)) != 0i64 }
+
+    /// Set `IP_TTL`.
+    pub fn set_ttl(self, ttl: u32) throws (IoError) { try self.sock.setopt(11, ttl as i64); }
+    /// `IP_TTL`.
+    pub fn ttl(self) throws (IoError) -> u32 { (try self.sock.getopt(11)) as u32 }
+
+    /// Join the multicast group `addr` on the interface whose address is
+    /// `interface` (`0.0.0.0`: the default).
+    pub fn join_multicast_v4(self, addr: Ipv4Addr, interface: Ipv4Addr) throws (IoError) {
+        let fd = try self.sock.enter();
+        let r = unsafe { nabi_net_multicast_v4(fd, addr.to_bits(), interface.to_bits(), 1) };
+        self.sock.done();
+        try check(r as i64, "join_multicast_v4");
+    }
+
+    /// Leave the multicast group `addr` on `interface`.
+    pub fn leave_multicast_v4(self, addr: Ipv4Addr, interface: Ipv4Addr) throws (IoError) {
+        let fd = try self.sock.enter();
+        let r = unsafe { nabi_net_multicast_v4(fd, addr.to_bits(), interface.to_bits(), 0) };
+        self.sock.done();
+        try check(r as i64, "leave_multicast_v4");
+    }
+
+    /// Whether this host receives its own multicast datagrams.
+    pub fn set_multicast_loop_v4(self, on: bool) throws (IoError) { try self.sock.setopt(4, flag(on)); }
+
+    /// Hops a multicast datagram may take (`IP_MULTICAST_TTL`).
+    pub fn set_multicast_ttl_v4(self, ttl: u32) throws (IoError) {
+        try self.sock.setopt(5, ttl as i64);
+    }
+
+    /// `UDP_SEGMENT` (GSO); `Unsupported` off Linux.
+    pub fn set_segment_size(self, size: u16) throws (IoError) {
+        try self.sock.setopt(6, size as i64);
+    }
+
+    /// Make a blocking read throw `TimedOut` after `dur`; `none` waits forever.
+    pub const fn set_read_timeout(self, dur: Duration | none) { self.sock.set_timeout(0, dur); }
+    /// Make a blocking write throw `TimedOut` after `dur`; `none` waits forever.
+    pub const fn set_write_timeout(self, dur: Duration | none) { self.sock.set_timeout(1, dur); }
+    /// The read timeout; `none` waits forever.
+    pub const fn read_timeout(self) -> Duration | none { self.sock.timeout(0) }
+    /// The write timeout; `none` waits forever.
+    pub const fn write_timeout(self) -> Duration | none { self.sock.timeout(1) }
+
+    /// Make the blocking calls throw `WouldBlock` instead of waiting.
+    pub const fn set_nonblocking(self, nb: bool) { self.sock.set_nonblocking(nb); }
+
+    /// A second descriptor on the same socket (`dup`).
+    pub fn try_clone(self) throws (IoError) -> UdpSocket {
+        UdpSocket { sock: try self.sock.try_clone() }
+    }
+
+    /// Close now, throwing the OS's error.
+    pub fn close(self) throws (IoError) { try self.sock.close(); }
+}
+
+impl From<Socket> for UdpSocket {
+    /// A datagram socket.
+    fn from(s: Socket) -> UdpSocket {
+        let sock = s.sock.moved();
+        // Already moved: closes nothing, and marks `s` taken.
+        try s.close() catch _ {};
+        UdpSocket { sock }
+    }
+}
+
+impl From<UdpSocket> for Socket {
+    fn from(s: UdpSocket) -> Socket {
+        let sock = s.sock.moved();
+        // Already moved: closes nothing, and marks `s` taken.
+        try s.close() catch _ {};
+        Socket { sock }
+    }
+}
+
+impl Close for UdpSocket {
+    fn close(self) throws (IoError) { try self.sock.close(); }
+}
+
+impl AsyncClose for UdpSocket {
+    async fn close_async(self) throws (IoError) { try await self.sock.close_async(); }
+}
+
+impl Drop for UdpSocket {
+    fn drop(ref self) { self.sock.discard(); }
+}

@@ -1,0 +1,8 @@
+// expect-error: error[E0040]
+
+// Assigning another type to a typed slot is an error.
+fn main() -> i32 {
+    let x: i32 = 42;
+    x = "hello";    // ERROR: str into an i32 slot
+    return 0;
+}

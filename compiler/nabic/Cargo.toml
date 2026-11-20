@@ -1,0 +1,44 @@
+[package]
+name = "nabic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# The command line and builds, which `nabi` links to run its tools.
+[lib]
+path = "src/lib.rs"
+test = false
+doctest = false
+
+[[bin]]
+name = "nabic"
+path = "src/main.rs"
+# No unit tests: src/main.rs only calls the library.
+test = false
+
+[dependencies]
+nabic_core = { workspace = true }
+nabic_harness = { workspace = true }
+nabic_interface = { workspace = true }
+nabic_target = { workspace = true }
+nabic_tools = { workspace = true }
+
+[dev-dependencies]
+nabic_diagnostic = { workspace = true }
+# tests/main/fuzz: the NABIHIR decoder.
+nabic_driver = { workspace = true }
+nabic_lexer = { workspace = true }
+nabic_parser = { workspace = true }
+nabic_nabion = { workspace = true }
+# tests/main/fuzz/bytes.rs: the object readers; tests/main/native: the C
+# side of a cross-target program as an archive.
+nabild = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+# tests/main/fuzz.rs: the CPU limit of a checked `nabic`.
+libc = { workspace = true }
+
+[lints]
+workspace = true

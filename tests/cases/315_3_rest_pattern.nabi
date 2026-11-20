@@ -1,0 +1,13 @@
+// expect-exit: 0
+// expect-stdout:
+// 1
+// 4
+
+// `..rest` binds the remaining tuple elements.
+fn main() -> i32 {
+    let (first, ..rest) = (1, 2, 3, 4);
+    let (..init, last) = (1, 2, 3, 4);
+    println(f"{first}");
+    println(f"{last}");
+    return 0;
+}

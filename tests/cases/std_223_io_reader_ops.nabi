@@ -1,0 +1,54 @@
+// needs: fs
+// expect-exit: 0
+// expect-stdout:
+// read_exact: abc
+// short read_exact: UnexpectedEof
+// pos 6, rewind 0
+// line [abcdef\n] 7 then end 0 []
+// copied 8
+// copy: [abcdef\ng]
+
+// `read_exact` fills the whole buffer or throws
+// `UnexpectedEof`; `stream_position` / `rewind`; `BufRead::read_line`
+// appends the line with its `\n` and returns 0 at the end;
+// `io::copy(ref r, ref w)` returns the bytes copied.
+use core::io::{IoError, IoErrorKind};
+use std::fs;
+use std::fs::File;
+use std::env;
+
+fn main() throws (IoError) {
+    let p = env::temp_dir() / "nabi_probe_305.txt";
+    let q = env::temp_dir() / "nabi_probe_305.out";
+    try fs::write(p, "abcdef\ng");
+    let f = try File::open(p);
+    let buf: List<u8> = [0u8, 0u8, 0u8];
+    try f.read_exact(buf);
+    println("read_exact: " + (try! str::from_utf8(buf)));
+    let big: List<u8> = List::new();
+    let i = 0;
+    while i < 64 { big.push(0u8); i += 1; }
+    try f.read_exact(big) catch e { println(f"short read_exact: {e.kind():?}"); };
+    try f.seek(core::io::SeekFrom::Start(6u64));
+    let pos = try f.stream_position();
+    try f.rewind();
+    println(f"pos {pos}, rewind {try f.stream_position()}");
+    let r = io::BufReader::new(f);
+    let l1 = StrBuf::new();
+    let n1 = try r.read_line(l1);
+    try r.read_line(StrBuf::new());
+    let l3 = StrBuf::new();
+    let n3 = try r.read_line(l3);
+    println("line [" + l1.to_str().replace("\n", "\\n") + f"] {n1} then end {n3} [" + l3.to_str() + "]");
+    try r.close();
+
+    let src = try File::open(p);
+    let dst = try fs::create(q);
+    let n = try io::copy(ref src, ref dst);
+    try src.close();
+    try dst.close();
+    println(f"copied {n}");
+    println("copy: [" + (try fs::read_to_str(q)).replace("\n", "\\n") + "]");
+    try fs::remove_file(p);
+    try fs::remove_file(q);
+}

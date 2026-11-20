@@ -1,0 +1,16 @@
+// expect-exit: 0
+// expect-stdout:
+// 50
+
+// `loop` yields a value through `break`.
+fn main() -> i32 {
+    let n = 0;
+    let result = loop {
+        n = n + 10;
+        if n >= 50 {
+            break n;
+        }
+    };
+    println(f"{result}");
+    return 0;
+}

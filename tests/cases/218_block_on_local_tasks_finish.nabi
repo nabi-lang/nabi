@@ -1,0 +1,27 @@
+// expect-exit: 0
+// expect-stdout:
+// block_on: 1
+// local tasks finished: 3
+// on this thread: true
+
+// `block_on` waits for its `spawn_local` tasks, which only its thread can run.
+static DONE: Atomic<i32> = Atomic::new(0);
+
+let here = std::thread::current().id();
+let same = Mutex::new(true);
+let r = task::block_on(async {
+    for i in 1..4 {
+        task::spawn_local(async {
+            await task::sleep(Duration::ms(20 * i as i64));
+            if std::thread::current().id() != here {
+                using g = same.lock() { g.set(false); }
+            }
+            DONE.fetch_add(1);
+            0
+        });
+    }
+    1
+});
+println(f"block_on: {r}");
+println(f"local tasks finished: {DONE.load()}");
+using g = same.lock() { println(f"on this thread: {g.get()}"); }

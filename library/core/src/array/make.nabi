@@ -1,0 +1,68 @@
+// Arrays from ranges of values, element type conversion, and arrays
+// over raw buffers.
+
+/// `n` evenly spaced values from `start` to `stop`, both included,
+/// as a vector (see `num::linspace` for a list). NumPy: `np.linspace`.
+///
+/// ```nabi
+/// use core::array::{arange, linspace};
+///
+/// assert(linspace(0.0, 1.0, 5).to_list() == [0.0, 0.25, 0.5, 0.75, 1.0]);
+/// assert(arange(0.0, 1.0, 0.25).to_list() == [0.0, 0.25, 0.5, 0.75]);
+/// ```
+pub fn linspace<T: FloatingPoint>(start: T, stop: T, n: usize) -> Array<T, 1> {
+    let xs = core::num::linspace(start, stop, n);
+    Array::view_list(xs, [xs.len()])
+}
+
+/// `start, start + step, ..` while before `stop`, as a vector (see
+/// `num::arange`). A zero or NaN step panics. NumPy: `np.arange`.
+#[track_caller]
+pub fn arange<T: FloatingPoint>(start: T, stop: T, step: T) -> Array<T, 1> {
+    let xs = core::num::arange(start, stop, step);
+    Array::view_list(xs, [xs.len()])
+}
+
+impl<T, const N: usize> Array<T, N> {
+    /// Each element converted to `U` without loss (`i32` to `f64`,
+    /// `u8` to `i64`, ..), as a new array of the same shape. NumPy:
+    /// `a.astype(U)`. A lossy conversion is a `map`:
+    /// `a.map(|x: f64| -> i64 { x as i64 })`.
+    ///
+    /// ```nabi
+    /// use core::array::Vector;
+    ///
+    /// let v: Vector<i32> = [1, 2, 3];
+    /// let f: Vector<f64> = v.cast();
+    /// assert(f.mean() == 2.0);
+    /// ```
+    pub const fn cast<U: From<T>>(self) -> Array<U, N> {
+        self.map(|x: T| -> U { U::from(x) })
+    }
+}
+
+impl<T, const N: usize> Array<T, N> {
+    /// An array over `buf`: the element at `idx` is `buf[off + sum(idx[k]
+    /// * strides[k])]`. No copy and no check: every index in the shape
+    /// must name a slot of `buf`. For kernels that keep their data in a
+    /// `GcBuf` and want the array methods on a run of it.
+    ///
+    /// ```nabi
+    /// use bare::mem::GcBuf;
+    /// use core::array::Array;
+    ///
+    /// let b: GcBuf<f64> = unsafe { GcBuf::new(4) };
+    /// unsafe { b.set(1, 2.0); b.set(2, 3.0); }
+    /// let v: Array<f64, 1> = unsafe { Array::from_raw_parts(b, 1, [2], [1]) };
+    /// assert(v.sum() == 5.0);
+    /// ```
+    pub const unsafe fn from_raw_parts(buf: GcBuf<T>, off: usize, shape: [usize; N], strides: [isize; N]) -> Array<T, N> {
+        Array { buf, off, shape, strides }
+    }
+
+    /// The buffer, the offset of the first element, the shape and the
+    /// strides: what `from_raw_parts` takes.
+    pub const unsafe fn raw_parts(self) -> (GcBuf<T>, usize, [usize; N], [isize; N]) {
+        (self.buf, self.off, self.shape, self.strides)
+    }
+}

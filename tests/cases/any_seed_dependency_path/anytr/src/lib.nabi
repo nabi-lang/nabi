@@ -1,0 +1,16 @@
+//! A trait a private module declares, re-exported at the root, and a
+//! function over `any` of it.
+
+mod inner {
+    pub trait Tr { fn f(self) -> i64; }
+}
+
+pub use inner::Tr;
+
+pub fn total(xs: List<any Tr>) -> i64 {
+    let s = 0;
+    for x in xs {
+        s += x.f();
+    }
+    s
+}

@@ -1,0 +1,40 @@
+// only-os: macos linux
+// (the expected output spells unix separators)
+// expect-exit: 0
+// expect-stdout:
+// /etc/nginx/nginx.conf
+// parent /etc/nginx name nginx.conf stem nginx ext conf
+// with_ext /etc/nginx/nginx.bak
+// starts true ends true
+// strip nginx/nginx.conf
+// normalize /a/c
+// div-assign x/y/z
+// ancestors /a/b /a /
+// root parent none
+
+// Decomposition and manipulation return new paths; `/`
+// and `/=`; `normalize` is lexical.
+use std::path::Path;
+
+fn main() {
+    let p = Path::new("/etc") / "nginx" / "nginx.conf";
+    println(p.as_str());
+    let parent = p.parent() ?? Path::empty();
+    println(f"parent {parent.as_str()} name {p.file_name() ?? "-"} stem {p.file_stem() ?? "-"} ext {p.extension() ?? "-"}");
+    println(f"with_ext {p.with_extension("bak").as_str()}");
+    println(f"starts {p.starts_with(Path::new("/etc"))} ends {p.ends_with(Path::new("nginx.conf"))}");
+    let s = p.strip_prefix(Path::new("/etc")) ?? Path::empty();
+    println(f"strip {s.as_str()}");
+    println(f"normalize {Path::new("/a/b/../c").normalize().as_str()}");
+    let q = Path::new("x");
+    q /= "y";
+    q /= Path::new("z");
+    println(f"div-assign {q.as_str()}");
+    let line = "ancestors";
+    for a in Path::new("/a/b").ancestors() {
+        line = line + f" {a.as_str()}";
+    }
+    println(line);
+    let r = Path::new("/").parent();
+    println(f"root parent {if r == none { "none" } else { "some" }}");
+}

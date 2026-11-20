@@ -1,0 +1,12 @@
+// expect-error: type `Weak<i64>` does not satisfy trait bound `Sync`
+
+// `impl<T> !Sync for Weak<T>` - a weak reference is not
+// shared across threads.
+use bare::gc::{GcPtr, Weak};
+
+fn need_sync<T: Sync>(x: T) -> i32 { 1 }
+
+fn main() {
+    let w = Weak::new(GcPtr::new(1i64));
+    need_sync(w);
+}

@@ -1,0 +1,11 @@
+// expect-exit: 0
+// expect-stdout: 50
+
+// A `static` with a literal initializer inlines like `const`.
+static GREET: i32 = 30i32;
+static EXTRA: i32 = 20i32;
+
+fn main() {
+    println(f"{GREET + EXTRA}");
+}
+

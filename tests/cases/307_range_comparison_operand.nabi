@@ -1,0 +1,11 @@
+// expect-exit: 0
+// expect-stdout: true false..true 0..2 true
+
+// A comparison is a range operand only in parentheses; `in` takes a
+// range on its right as it is.
+fn main() {
+    let x = 1;
+    let b = (x == 0)..(x == 1);
+    let r = 0..(x + 1);
+    println(f"{x in 0..3} {b:?} {r:?} {(0..3).contains(x)}");
+}

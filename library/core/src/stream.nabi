@@ -1,0 +1,812 @@
+//! core::stream - `Stream` / `IntoStream` / `FromStream`.
+//!
+//! `for await x in s` polls `s.poll_next(ref ctx)` (after
+//! `s.into_stream()` when `s` has no `poll_next`) like `await`, until it
+//! is `Ready(none)`.
+//!
+//! The adapters are provided methods of `Stream` returning the
+//! structs below (`stream::Map<S, U>` is not `iter::Map`). `throttle` /
+//! `buffered` / `buffer_unordered` wrap an `async yield` stream built by
+//! a generic helper, the others poll their source directly.
+
+use core::future::{AsyncFuture, Context, Future, Poll};
+use core::task;
+use core::task::Task;
+use core::time::Duration;
+
+/// An asynchronous source of items: `poll_next` gives `Ready(item)`,
+/// `Ready(none)` at the end, or `Pending`. The adapters are lazy.
+pub trait Stream {
+    type Item;
+    /// The next item: `Ready(x)`, `Ready(none)` once done, or `Pending`
+    /// (the waker in `ctx` is woken when it may be ready).
+    fn poll_next(ref self, ref ctx: Context) -> Poll<Item | none>;
+
+    /// `f` of each item.
+    const fn map<U>(self, f: fn(Item) -> U) -> Map<Self, U> {
+        Map { s: self, f: f }
+    }
+
+    /// The items `pred` accepts.
+    const fn filter(self, pred: fn(Item) -> bool) -> Filter<Self> {
+        Filter { s: self, pred: pred }
+    }
+
+    /// At most the first `n` items.
+    const fn take(self, n: usize) -> Take<Self> {
+        Take { s: self, left: n }
+    }
+
+    /// All but the first `n` items.
+    const fn skip(self, n: usize) -> Skip<Self> {
+        Skip { s: self, n: n }
+    }
+
+    /// The items, at most one per `dur`.
+    fn throttle(self, dur: Duration) -> Throttle<Self> {
+        Throttle { inner: throttle_of(self, dur) }
+    }
+
+    /// The outputs of a stream of futures, in stream order, running up
+    /// to `n` of them at once.
+    fn buffered(self, n: usize) -> Buffered<Self> where Item: Future {
+        Buffered { inner: buffered_of(self, n, true) }
+    }
+
+    /// Like `buffered`, in completion order.
+    fn buffer_unordered(self, n: usize) -> BufferUnordered<Self> where Item: Future {
+        BufferUnordered { inner: buffered_of(self, n, false) }
+    }
+
+    /// All items gathered into a `FromStream` collection; a
+    /// `List` when the slot does not pick one.
+    async fn collect<C: FromStream<Item> = List<Item>>(self) -> C {
+        await C::from_stream(self)
+    }
+
+    /// `f` of each item, in order.
+    async fn for_each(self, f: fn(Item)) {
+        await for_each_of(self, f)
+    }
+}
+
+/// A value `for await` can walk: `into_stream` turns it into a stream.
+pub trait IntoStream {
+    type Item;
+    type IntoStream: Stream<Item = Item>;
+    /// A stream over the value.
+    fn into_stream(self) -> IntoStream;
+}
+
+/// Every stream is its own `IntoStream` (as `IntoIterator`).
+impl<S: Stream> IntoStream for S {
+    type Item = S::Item;
+    type IntoStream = S;
+    fn into_stream(self) -> S { self }
+}
+
+/// `collect`'s target: a collection built from a stream's items.
+pub trait FromStream<T> {
+    /// Drain `s`, in order, into a new collection.
+    async fn from_stream<S: IntoStream<Item = T>>(s: S) -> Self;
+}
+
+impl<T> FromStream<T> for List<T> {
+    async fn from_stream<S: IntoStream<Item = T>>(s: S) -> List<T> {
+        let out: List<T> = List::new();
+        for await x in s {
+            out.push(x);
+        }
+        out
+    }
+}
+
+impl<T: Hash> FromStream<T> for Set<T> {
+    async fn from_stream<S: IntoStream<Item = T>>(s: S) -> Set<T> {
+        let out: Set<T> = Set::new();
+        for await x in s {
+            out.insert(x);
+        }
+        out
+    }
+}
+
+impl<K: Hash, V> FromStream<(K, V)> for Dict<K, V> {
+    async fn from_stream<S: IntoStream<Item = (K, V)>>(s: S) -> Dict<K, V> {
+        let out: Dict<K, V> = Dict::new();
+        for await (k, v) in s {
+            out.insert(k, v);
+        }
+        out
+    }
+}
+
+/// The value of an `async yield fn` call / `async yield { .. }` block.
+// One library type per coroutine kind.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct AsyncStream<T> {
+    resume: fn(Context) -> Poll<T | none>;
+}
+
+impl<T> Debug for AsyncStream<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("AsyncStream") }
+}
+
+impl<T> Stream for AsyncStream<T> {
+    type Item = T;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll<T | none> {
+        (self.resume)(ctx)
+    }
+}
+
+// adapters
+
+/// The stream `map` returns: `f` of each item.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct Map<S, U> {
+    s: S;
+    f: fn(S::Item) -> U;
+}
+
+impl<S: Stream, U> Debug for Map<S, U> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Map") }
+}
+
+impl<S: Stream, U> Stream for Map<S, U> {
+    type Item = U;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll<U | none> {
+        match self.s.poll_next(ref ctx) {
+            Poll::Ready(v) => {
+                if let x: S::Item = v {
+                    return Poll::Ready((self.f)(x));
+                }
+                Poll::Ready(none)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// The stream `filter` returns: the items `pred` accepts.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct Filter<S> {
+    s: S;
+    pred: fn(S::Item) -> bool;
+}
+
+impl<S: Stream> Debug for Filter<S> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Filter") }
+}
+
+impl<S: Stream> Stream for Filter<S> {
+    type Item = S::Item;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll<S::Item | none> {
+        loop {
+            match self.s.poll_next(ref ctx) {
+                Poll::Ready(v) => {
+                    if let x: S::Item = v {
+                        if (self.pred)(x) {
+                            return Poll::Ready(x);
+                        }
+                    } else {
+                        return Poll::Ready(none);
+                    }
+                }
+                Poll::Pending => {
+                    return Poll::Pending;
+                }
+            }
+        }
+    }
+}
+
+/// The stream `take` returns: at most the first `n` items.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct Take<S> {
+    s: S;
+    left: usize;
+}
+
+impl<S> Debug for Take<S> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Take") }
+}
+
+impl<S: Stream> Stream for Take<S> {
+    type Item = S::Item;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll<S::Item | none> {
+        if self.left == 0 {
+            return Poll::Ready(none);
+        }
+        let r = self.s.poll_next(ref ctx);
+        if let Poll::Ready(v) = r {
+            if v is none {
+                self.left = 0;
+            } else {
+                self.left -= 1;
+            }
+        }
+        r
+    }
+}
+
+/// The stream `skip` returns: all but the first `n` items.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct Skip<S> {
+    s: S;
+    n: usize;
+}
+
+impl<S> Debug for Skip<S> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Skip") }
+}
+
+impl<S: Stream> Stream for Skip<S> {
+    type Item = S::Item;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll<S::Item | none> {
+        loop {
+            let r = self.s.poll_next(ref ctx);
+            if self.n == 0 {
+                return r;
+            }
+            match r {
+                Poll::Ready(v) => {
+                    if v is none {
+                        return Poll::Ready(none);
+                    }
+                    self.n -= 1;
+                }
+                Poll::Pending => {
+                    return Poll::Pending;
+                }
+            }
+        }
+    }
+}
+
+/// The stream `throttle` returns: the items, at most one per interval.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct Throttle<S> {
+    inner: AsyncStream<S::Item>;
+}
+
+impl<S: Stream> Debug for Throttle<S> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Throttle") }
+}
+
+impl<S: Stream> Stream for Throttle<S> {
+    type Item = S::Item;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll<S::Item | none> {
+        self.inner.poll_next(ref ctx)
+    }
+}
+
+/// The stream `buffered` returns: the futures' outputs in stream order,
+/// up to `n` running at once.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct Buffered<S> {
+    inner: AsyncStream< <S::Item as Future>::Output>;
+}
+
+impl<S: Stream> Debug for Buffered<S>
+where
+    S::Item: Future,
+{
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Buffered") }
+}
+
+impl<S: Stream> Stream for Buffered<S>
+where
+    S::Item: Future,
+{
+    type Item = <S::Item as Future>::Output;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll< <S::Item as Future>::Output | none> {
+        self.inner.poll_next(ref ctx)
+    }
+}
+
+/// The stream `buffer_unordered` returns: the futures' outputs in
+/// completion order, up to `n` running at once.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct BufferUnordered<S> {
+    inner: AsyncStream< <S::Item as Future>::Output>;
+}
+
+impl<S: Stream> Debug for BufferUnordered<S>
+where
+    S::Item: Future,
+{
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("BufferUnordered") }
+}
+
+impl<S: Stream> Stream for BufferUnordered<S>
+where
+    S::Item: Future,
+{
+    type Item = <S::Item as Future>::Output;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll< <S::Item as Future>::Output | none> {
+        self.inner.poll_next(ref ctx)
+    }
+}
+
+fn throttle_of<S: Stream>(s: S, dur: Duration) -> AsyncStream<S::Item> {
+    async yield {
+        let first = true;
+        for await x in s {
+            if !first {
+                await task::sleep(dur);
+            }
+            first = false;
+            yield x;
+        }
+    }
+}
+
+fn buffered_of<S: Stream>(s: S, n: usize, ordered: bool) -> AsyncStream< <S::Item as Future>::Output>
+where
+    S::Item: Future,
+{
+    async yield {
+        let q: List<Task< <S::Item as Future>::Output>> = List::new();
+        for await f in s {
+            q.push(task::spawn_local(f));
+            if q.len() >= n {
+                let i = if ordered { 0 } else { await task::first_done(q) };
+                yield await q.remove(i);
+            }
+        }
+        while q.len() > 0 {
+            let i = if ordered { 0 } else { await task::first_done(q) };
+            yield await q.remove(i);
+        }
+    }
+}
+
+async fn for_each_of<S: Stream>(s: S, f: fn(S::Item)) {
+    for await x in s {
+        f(x);
+    }
+}
+
+// combinators
+
+/// Both streams' items as they come; ends when both have.
+pub const fn merge<S1: Stream, S2: Stream>(a: S1, b: S2) -> Merge<S1, S2> {
+    Merge { a: a, b: b, a_done: false, b_done: false, either: false }
+}
+
+/// Like `merge`, but ends as soon as either stream does.
+pub const fn select<S1: Stream, S2: Stream>(a: S1, b: S2) -> Select<S1, S2> {
+    Select { m: Merge { a: a, b: b, a_done: false, b_done: false, either: true } }
+}
+
+/// The stream `merge` returns. Each poll tries the first stream before
+/// the second, so a first stream that is always ready starves the second.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct Merge<S1, S2> {
+    a: S1;
+    b: S2;
+    a_done: bool;
+    b_done: bool;
+    /// `select`: stop at the first end.
+    either: bool;
+}
+
+impl<S1, S2> Debug for Merge<S1, S2> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Merge") }
+}
+
+impl<S1: Stream, S2: Stream> Stream for Merge<S1, S2> {
+    type Item = S1::Item | S2::Item;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll<S1::Item | S2::Item | none> {
+        if !self.a_done {
+            if let Poll::Ready(v) = self.a.poll_next(ref ctx) {
+                if let x: S1::Item = v {
+                    return Poll::Ready(x);
+                }
+                self.a_done = true;
+            }
+        }
+        if self.either && self.a_done {
+            return Poll::Ready(none);
+        }
+        if !self.b_done {
+            if let Poll::Ready(v) = self.b.poll_next(ref ctx) {
+                if let x: S2::Item = v {
+                    return Poll::Ready(x);
+                }
+                self.b_done = true;
+            }
+        }
+        if self.a_done && (self.b_done || self.either) {
+            return Poll::Ready(none);
+        }
+        if self.b_done && self.either {
+            return Poll::Ready(none);
+        }
+        Poll::Pending
+    }
+}
+
+/// The stream `select` returns: `merge` that ends when either side does.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct Select<S1, S2> {
+    m: Merge<S1, S2>;
+}
+
+impl<S1, S2> Debug for Select<S1, S2> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Select") }
+}
+
+impl<S1: Stream, S2: Stream> Stream for Select<S1, S2> {
+    type Item = S1::Item | S2::Item;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll<S1::Item | S2::Item | none> {
+        self.m.poll_next(ref ctx)
+    }
+}
+
+/// Pairs of the two streams' items, until either ends.
+pub const fn zip<S1: Stream, S2: Stream>(a: S1, b: S2) -> Zip<S1, S2> {
+    Zip { a: a, b: b, left: none, right: none }
+}
+
+/// The stream `zip` returns: pairs of items, until either side ends.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct Zip<S1, S2> {
+    a: S1;
+    b: S2;
+    left: S1::Item | none;
+    right: S2::Item | none;
+}
+
+impl<S1: Stream, S2: Stream> Debug for Zip<S1, S2> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Zip") }
+}
+
+impl<S1: Stream, S2: Stream> Stream for Zip<S1, S2> {
+    type Item = (S1::Item, S2::Item);
+    const fn poll_next(ref self, ref ctx: Context) -> Poll<(S1::Item, S2::Item) | none> {
+        if self.left is none {
+            if let Poll::Ready(v) = self.a.poll_next(ref ctx) {
+                if v is none {
+                    return Poll::Ready(none);
+                }
+                self.left = v;
+            }
+        }
+        if self.right is none {
+            if let Poll::Ready(v) = self.b.poll_next(ref ctx) {
+                if v is none {
+                    return Poll::Ready(none);
+                }
+                self.right = v;
+            }
+        }
+        if let x: S1::Item = self.left {
+            if let y: S2::Item = self.right {
+                self.left = none;
+                self.right = none;
+                return Poll::Ready((x, y));
+            }
+        }
+        Poll::Pending
+    }
+}
+
+/// A throwing stream (`async yield fn f() throws (E) -> T`): a
+/// `TryStream` whose `poll_next` throws what the body throws, stepped
+/// with `try for await x in s { .. }`.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `try for await`, or call `try await {}.collect()`")]
+pub struct TryAsyncStream<T, E> {
+    resume: fn(Context) throws (E) -> Poll<T | none>;
+}
+
+impl<T, E> Debug for TryAsyncStream<T, E> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("TryAsyncStream") }
+}
+
+// fallible streams
+
+/// A stream whose `poll_next` can fail: an item, `none` at the end, or a
+/// thrown `Error` (the async `TryIterator`). `try for await x in s { .. }`
+/// steps it; the `try` covers the stream and each step, not the body.
+pub trait TryStream {
+    type Item;
+    type Error;
+    /// Resume the body: `Ready` with the next item (`none` when done), or
+    /// `Pending`; throws what the body throws.
+    fn poll_next(ref self, ref ctx: Context) throws (Error) -> Poll<Item | none>;
+
+    /// `f` of each item.
+    const fn map<U>(self, f: fn(Item) throws (Error) -> U) -> TryMap<Self, U> {
+        TryMap { s: self, f: f }
+    }
+
+    /// The items `pred` accepts.
+    const fn filter(self, pred: fn(Item) throws (Error) -> bool) -> TryFilter<Self> {
+        TryFilter { s: self, pred: pred }
+    }
+
+    /// The same items, each error passed through `f`.
+    const fn map_err<E2>(self, f: fn(Error) -> E2) -> MapErr<Self, E2> {
+        MapErr { s: self, f: f }
+    }
+
+    /// At most the first `n` items.
+    const fn take(self, n: usize) -> TryTake<Self> {
+        TryTake { s: self, left: n }
+    }
+
+    /// All but the first `n` items.
+    const fn skip(self, n: usize) -> TrySkip<Self> {
+        TrySkip { s: self, n: n }
+    }
+
+    /// A plain stream of `Result`s: each error becomes a `Result::Err`
+    /// item and polling goes on.
+    const fn results(self) -> Results<Self> {
+        Results { s: self }
+    }
+
+    /// All items gathered into a `FromStream` collection; the first error
+    /// stops it and is thrown.
+    async fn collect<C: FromStream<Item> = List<Item>>(self) throws (Error) -> C {
+        let err: List<Error> = List::new();
+        let c: C = await C::from_stream(Shunt { s: self, err: err });
+        if err.len() > 0 {
+            throw err[0];
+        }
+        c
+    }
+
+    /// `f` of each item, in order.
+    async fn for_each(self, f: fn(Item) throws (Error)) throws (Error) {
+        try for await x in self {
+            try f(x);
+        }
+    }
+
+    /// Every item folded into `init` by `f`, in order.
+    async fn fold<B>(self, init: B, f: fn(B, Item) throws (Error) -> B) throws (Error) -> B {
+        let acc = init;
+        try for await x in self {
+            acc = try f(acc, x);
+        }
+        acc
+    }
+}
+
+/// A plain stream of `Result`s as a `TryStream`: an `Err` item is
+/// thrown, then polling goes on.
+pub const fn from_results<S: Stream<Item = Result<T, E>>, T, E>(s: S) -> FromResults<S, T, E> {
+    FromResults { s: s }
+}
+
+impl<T, E> TryStream for TryAsyncStream<T, E> {
+    type Item = T;
+    type Error = E;
+    const fn poll_next(ref self, ref ctx: Context) throws (E) -> Poll<T | none> {
+        try (self.resume)(ctx)
+    }
+}
+
+/// The stream `TryStream::map` returns: `f` of each item.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `try for await`, or call `try await {}.collect()`")]
+pub struct TryMap<S, U> {
+    s: S;
+    f: fn(S::Item) throws (S::Error) -> U;
+}
+
+impl<S: TryStream, U> Debug for TryMap<S, U> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("TryMap") }
+}
+
+impl<S: TryStream, U> TryStream for TryMap<S, U> {
+    type Item = U;
+    type Error = S::Error;
+    const fn poll_next(ref self, ref ctx: Context) throws (S::Error) -> Poll<U | none> {
+        match try self.s.poll_next(ref ctx) {
+            Poll::Ready(v) => {
+                if let x: S::Item = v {
+                    return Poll::Ready(try (self.f)(x));
+                }
+                Poll::Ready(none)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// The stream `TryStream::filter` returns: the items `pred` accepts.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `try for await`, or call `try await {}.collect()`")]
+pub struct TryFilter<S> {
+    s: S;
+    pred: fn(S::Item) throws (S::Error) -> bool;
+}
+
+impl<S: TryStream> Debug for TryFilter<S> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("TryFilter") }
+}
+
+impl<S: TryStream> TryStream for TryFilter<S> {
+    type Item = S::Item;
+    type Error = S::Error;
+    const fn poll_next(ref self, ref ctx: Context) throws (S::Error) -> Poll<S::Item | none> {
+        loop {
+            match try self.s.poll_next(ref ctx) {
+                Poll::Ready(v) => {
+                    if let x: S::Item = v {
+                        if try (self.pred)(x) {
+                            return Poll::Ready(x);
+                        }
+                    } else {
+                        return Poll::Ready(none);
+                    }
+                }
+                Poll::Pending => {
+                    return Poll::Pending;
+                }
+            }
+        }
+    }
+}
+
+/// The stream `map_err` returns: each error passed through `f`.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `try for await`, or call `try await {}.collect()`")]
+pub struct MapErr<S, E2> {
+    s: S;
+    f: fn(S::Error) -> E2;
+}
+
+impl<S: TryStream, E2> Debug for MapErr<S, E2> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("MapErr") }
+}
+
+impl<S: TryStream, E2> TryStream for MapErr<S, E2> {
+    type Item = S::Item;
+    type Error = E2;
+    const fn poll_next(ref self, ref ctx: Context) throws (E2) -> Poll<S::Item | none> {
+        try self.s.poll_next(ref ctx) catch e {
+            throw (self.f)(e);
+        }
+    }
+}
+
+/// The stream `TryStream::take` returns: at most the first `n` items.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `try for await`, or call `try await {}.collect()`")]
+pub struct TryTake<S> {
+    s: S;
+    left: usize;
+}
+
+impl<S: TryStream> Debug for TryTake<S> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("TryTake") }
+}
+
+impl<S: TryStream> TryStream for TryTake<S> {
+    type Item = S::Item;
+    type Error = S::Error;
+    const fn poll_next(ref self, ref ctx: Context) throws (S::Error) -> Poll<S::Item | none> {
+        if self.left == 0 {
+            return Poll::Ready(none);
+        }
+        let r = try self.s.poll_next(ref ctx);
+        if let Poll::Ready(v) = r {
+            if v is none {
+                self.left = 0;
+            } else {
+                self.left -= 1;
+            }
+        }
+        r
+    }
+}
+
+/// The stream `TryStream::skip` returns: all but the first `n` items.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `try for await`, or call `try await {}.collect()`")]
+pub struct TrySkip<S> {
+    s: S;
+    n: usize;
+}
+
+impl<S: TryStream> Debug for TrySkip<S> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("TrySkip") }
+}
+
+impl<S: TryStream> TryStream for TrySkip<S> {
+    type Item = S::Item;
+    type Error = S::Error;
+    const fn poll_next(ref self, ref ctx: Context) throws (S::Error) -> Poll<S::Item | none> {
+        loop {
+            let r = try self.s.poll_next(ref ctx);
+            if self.n == 0 {
+                return r;
+            }
+            match r {
+                Poll::Ready(v) => {
+                    if v is none {
+                        return Poll::Ready(none);
+                    }
+                    self.n -= 1;
+                }
+                Poll::Pending => {
+                    return Poll::Pending;
+                }
+            }
+        }
+    }
+}
+
+/// `results`'s adapter.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `for await`, or call `await {}.collect()`")]
+pub struct Results<S> {
+    s: S;
+}
+
+impl<S: TryStream> Debug for Results<S> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Results") }
+}
+
+impl<S: TryStream> Stream for Results<S> {
+    type Item = Result<S::Item, S::Error>;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll<Result<S::Item, S::Error> | none> {
+        let r = try self.s.poll_next(ref ctx) catch e {
+            return Poll::Ready(Result::Err(e));
+        };
+        match r {
+            Poll::Ready(v) => {
+                if let x: S::Item = v {
+                    return Poll::Ready(Result::Ok(x));
+                }
+                Poll::Ready(none)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// The `TryStream` `stream::from_results` returns: an `Err` item is
+/// thrown.
+#[must_use("stream is lazy and does nothing unless polled: walk it with `try for await`, or call `try await {}.collect()`")]
+pub struct FromResults<S, T, E> {
+    s: S;
+}
+
+impl<S: Stream<Item = Result<T, E>>, T, E> Debug for FromResults<S, T, E> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("FromResults") }
+}
+
+impl<S: Stream<Item = Result<T, E>>, T, E> TryStream for FromResults<S, T, E> {
+    type Item = T;
+    type Error = E;
+    const fn poll_next(ref self, ref ctx: Context) throws (E) -> Poll<T | none> {
+        match self.s.poll_next(ref ctx) {
+            Poll::Ready(v) => {
+                if let r: Result<T, E> = v {
+                    return Poll::Ready(try r.get());
+                }
+                Poll::Ready(none)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// `collect`'s plain view of a `TryStream`: ends at the first error,
+/// which it keeps in `err` (shared with the caller).
+struct Shunt<S> {
+    s: S;
+    err: List<S::Error>;
+}
+
+impl<S: TryStream> Stream for Shunt<S> {
+    type Item = S::Item;
+    const fn poll_next(ref self, ref ctx: Context) -> Poll<S::Item | none> {
+        if self.err.len() > 0 {
+            return Poll::Ready(none);
+        }
+        try self.s.poll_next(ref ctx) catch e {
+            self.err.push(e);
+            Poll::Ready(none)
+        }
+    }
+}

@@ -1,0 +1,23 @@
+// expect-exit: 0
+// expect-stdout:
+// true 3 true 5 false
+
+// A closure fits `fn(..) -> R | none` as it fits `fn(..) -> R`, capturing
+// a collection too: the slot asks for no `Send` / `Sync`.
+pub struct Step { pub k: usize; }
+pub struct Options { pub callback: fn(Step) -> bool | none = none; }
+
+fn opt(cb: fn(Step) -> bool | none = none) -> bool {
+    match cb { none => false, c: fn(Step) -> bool => c(Step { k: 3 }) }
+}
+fn run(o: Options) -> bool {
+    match o.callback { none => false, c: fn(Step) -> bool => c(Step { k: 5 }) }
+}
+
+fn main() {
+    let seen = [0];
+    let a = opt(|s: Step| -> bool { seen[0] = s.k; true });
+    let b = seen[0];
+    let c = run(Options { callback: |s: Step| -> bool { seen[0] = s.k; true } });
+    println(f"{a} {b} {c} {seen[0]} {opt()}");
+}

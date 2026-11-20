@@ -1,0 +1,13 @@
+// Constant arithmetic that overflows in an instance points at the
+// call that made the instance, with the const arguments it has.
+// expect-error: constant expression overflows `usize`: the result is -1
+// expect-error: `last` is instantiated with `N = 0` through this call of `outer`
+// expect-error: help: a branch whose constant condition is false is not checked: write `if N > 0 { .. }` around it, or use `N.saturating_sub(..)`
+fn last<const N: usize>(a: [i32; N]) -> i32 { a[N - 1] }
+
+fn outer<const M: usize>(a: [i32; M]) -> i32 { last(a) }
+
+fn main() {
+    let e: [i32; 0] = [];
+    println(f"{outer(e)}");
+}

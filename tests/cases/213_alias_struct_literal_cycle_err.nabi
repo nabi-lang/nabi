@@ -1,0 +1,11 @@
+// expect-error: 6:1: type alias `A` is cyclic
+// expect-error: 7:1: type alias `B` is cyclic
+// expect-error: 10:13: `A` is not a struct
+
+// A struct literal through a cycle of aliases stops at the cycle.
+type A = B;
+type B = A;
+
+fn main() {
+    let a = A { x: 1 };
+}

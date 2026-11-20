@@ -1,0 +1,23 @@
+// expect-error: 18:41: conflicting implementations of trait `Tilde`: `impl<..> Tilde<D> for S` and `impl<..> Tilde<Iid<D>> for S` overlap on `S`
+
+// Once `Iid<D>` is a `Distribution` too, the two blanket impls overlap.
+pub trait Distribution { type Value; fn draw(self) -> Value; }
+
+pub struct Iid<D> { d: D; n: usize; }
+
+impl<D: Distribution> Distribution for Iid<D> { type Value = D::Value; fn draw(self) -> D::Value { self.d.draw() } }
+
+pub struct S {}
+
+pub trait Tilde<Rhs> { type Output; fn tilde(self, rhs: Rhs) -> Output; }
+
+impl<D: Distribution> Tilde<D> for S {
+    type Output = D::Value;
+    fn tilde(self, d: D) -> D::Value { d.draw() }
+}
+impl<D: Distribution> Tilde<Iid<D>> for S {
+    type Output = List<D::Value>;
+    fn tilde(self, d: Iid<D>) -> List<D::Value> { List::from_fn(d.n, |_| d.d.draw()) }
+}
+
+fn main() {}

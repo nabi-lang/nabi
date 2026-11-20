@@ -1,0 +1,305 @@
+// std::time::zoned: `Zoned`, an instant with the civil time and
+// offset a time zone gives it.
+
+use core::time::Duration;
+use std::time::SystemTime;
+use std::time::civil::{DateTime, NS_PER_SEC, Time};
+use std::time::date::{Date, Period, Weekday, fdiv};
+use std::time::format::{Parts, render, rfc2822, scan};
+use std::time::iso::Scan;
+use std::time::offset::Offset;
+use std::time::zone::{Disambiguation, LOCAL_GAP, LOCAL_ONE, TimeZone, offset_of};
+
+/// An instant, the time zone it is shown in, and the civil date, time
+/// and offset there: `2024-03-10T03:30:00-04:00` in `America/New_York`.
+/// `+` / `-` a `Duration` is exact time; `add_days` and friends move the
+/// civil date and keep the time of day. Comparison and hashing see the
+/// instant only. `Display` is RFC 3339 (`Z` for a zero offset); `Debug`
+/// adds the zone (`2024-03-10T03:30:00-04:00[America/New_York]`).
+#[derive(Clone)]
+pub struct Zoned {
+    secs: i64;
+    nano: i32;
+    offset: Offset;
+    local: DateTime;
+    zone: TimeZone;
+}
+
+impl Zoned {
+    /// Now, in `tz`.
+    pub fn now(tz: TimeZone) -> Zoned { Zoned::from_system_time(SystemTime::now(), tz) }
+
+    /// The instant `t`, in `tz`.
+    pub fn from_system_time(t: SystemTime, tz: TimeZone) -> Zoned {
+        let ns = t.unix_nanos();
+        let s = fdiv(ns, NS_PER_SEC);
+        Zoned::at(s, (ns - s * NS_PER_SEC) as i32, tz)
+    }
+
+    /// The instant `secs` seconds and `nano` nanoseconds after the Unix
+    /// epoch, in `tz`. Panics outside the `Date` range.
+    #[track_caller]
+    pub fn from_unix(secs: i64, nano: u32, tz: TimeZone) -> Zoned {
+        let s = secs + (nano as i64) / NS_PER_SEC;
+        Zoned::at(s, ((nano as i64) % NS_PER_SEC) as i32, tz)
+    }
+
+    #[track_caller]
+    fn at(secs: i64, nano: i32, tz: TimeZone) -> Zoned {
+        let off = tz.off_at(secs);
+        let local = DateTime::from_unix(secs + (off as i64), nano as u32);
+        Zoned { secs, nano, offset: offset_of(off), local, zone: tz }
+    }
+
+    /// `dt` on the wall clock of `tz`, `choice` picking in a gap or an
+    /// overlap; `none` for `Reject` there.
+    pub(pkg) fn pick(dt: DateTime, tz: TimeZone, choice: Disambiguation) -> Zoned | none {
+        let local = dt.unix_secs();
+        let l = tz.locate(local);
+        if l.kind() == LOCAL_ONE { return Zoned::exact(dt, l.a(), tz); }
+        if choice == Disambiguation::Reject { return none; }
+        let gap = l.kind() == LOCAL_GAP;
+        // In a gap, `a` (the offset before) reads it later, `b` earlier;
+        // in an overlap, `a` is the earlier instant.
+        let use_a = match choice {
+            Compatible => true,
+            Earlier => !gap,
+            Later => gap,
+            Reject => true,
+        };
+        let off = if use_a { l.a() } else { l.b() };
+        if !gap { return Zoned::exact(dt, off, tz); }
+        Zoned::at(local - (off as i64), dt.nanosecond(), tz)
+    }
+
+    fn exact(dt: DateTime, off: i32, tz: TimeZone) -> Zoned {
+        Zoned { secs: dt.unix_secs() - (off as i64), nano: dt.nanosecond(), offset: offset_of(off), local: dt, zone: tz }
+    }
+
+    pub(pkg) fn resolve(dt: DateTime, tz: TimeZone, choice: Disambiguation) -> Zoned {
+        Zoned::pick(dt, tz, choice) ?? Zoned::pick(dt, tz, Disambiguation::Compatible) ?? Zoned::exact(dt, 0, tz)
+    }
+
+    pub(pkg) fn resolve_or_throw(dt: DateTime, tz: TimeZone, choice: Disambiguation) throws (ValueError) -> Zoned {
+        if let z = Zoned::pick(dt, tz, choice) { return z; }
+        let l = tz.locate(dt.unix_secs());
+        let a = offset_of(l.a());
+        let b = offset_of(l.b());
+        if l.kind() == LOCAL_GAP {
+            throw ValueError::new(f"{dt} does not exist in {tz.name()}: the clocks skip it ({a} to {b}); pass Disambiguation::Earlier or Disambiguation::Later");
+        }
+        throw ValueError::new(f"{dt} happens twice in {tz.name()} (at {a} and at {b}); pass Disambiguation::Earlier or Disambiguation::Later");
+    }
+
+    /// Whole seconds since the Unix epoch, rounded down.
+    pub const fn unix_secs(self) -> i64 { self.secs }
+    /// Nanoseconds since the Unix epoch. Panics past the `i64` range
+    /// (years 1678..2262).
+    #[track_caller]
+    pub const fn unix_nanos(self) -> i64 { (Duration::secs(self.secs) + Duration::ns(self.nano as i64)).as_ns() }
+    /// The instant as a `SystemTime`. Panics outside its range (years
+    /// 1678..2262).
+    #[track_caller]
+    pub const fn to_system_time(self) -> SystemTime { SystemTime::from_unix(self.secs, self.nano as u32) }
+
+    /// The civil date and time in the zone.
+    pub const fn datetime(self) -> DateTime { self.local }
+    /// The civil date in the zone.
+    pub const fn date(self) -> Date { self.local.date() }
+    /// The time of day in the zone.
+    pub const fn time(self) -> Time { self.local.time() }
+    /// The offset from UTC at this instant.
+    pub const fn offset(self) -> Offset { self.offset }
+    /// The zone.
+    pub const fn zone(self) -> TimeZone { self.zone }
+    /// The zone's abbreviation at this instant (`EDT`).
+    pub const fn abbreviation(self) -> str { self.zone.at(self.secs).1 }
+    /// `true` when the zone is on daylight saving time at this instant.
+    pub const fn is_dst(self) -> bool { self.zone.dst_at(self.secs) }
+    /// The year.
+    pub const fn year(self) -> i32 { self.local.year() }
+    /// The month, 1..=12.
+    pub const fn month(self) -> i32 { self.local.month() }
+    /// The day of the month.
+    pub const fn day(self) -> i32 { self.local.day() }
+    /// The day of the week.
+    pub const fn weekday(self) -> Weekday { self.local.date().weekday() }
+    /// The hour, 0..=23.
+    pub const fn hour(self) -> i32 { self.local.hour() }
+    /// The minute.
+    pub const fn minute(self) -> i32 { self.local.minute() }
+    /// The second.
+    pub const fn second(self) -> i32 { self.local.second() }
+    /// The nanosecond within the second.
+    pub const fn nanosecond(self) -> i32 { self.nano }
+
+    /// The same instant in `tz`.
+    pub fn in_zone(self, tz: TimeZone) -> Zoned { Zoned::at(self.secs, self.nano, tz) }
+    /// The same instant in UTC.
+    pub fn to_utc(self) -> Zoned { Zoned::at(self.secs, self.nano, TimeZone::utc()) }
+
+    /// `n` days later on the zone's calendar at the same time of day,
+    /// resolved as `Disambiguation::Compatible` when that time falls in a
+    /// gap or an overlap.
+    #[must_use]
+    pub fn add_days(self, n: i64) -> Zoned { Zoned::resolve(self.local.add_days(n), self.zone, Disambiguation::Compatible) }
+    /// `n` months later, as `add_days`; the day clamps as
+    /// `Date::add_months`.
+    #[must_use]
+    pub fn add_months(self, n: i64) -> Zoned { Zoned::resolve(self.local.add_months(n), self.zone, Disambiguation::Compatible) }
+    /// `n` years later, as `add_days`.
+    #[must_use]
+    pub fn add_years(self, n: i64) -> Zoned { Zoned::resolve(self.local.add_years(n), self.zone, Disambiguation::Compatible) }
+
+    /// `self - earlier` as exact time, negative when `earlier` is later.
+    #[track_caller]
+    pub const fn duration_since(self, earlier: Zoned) -> Duration {
+        Duration::secs(self.secs - earlier.secs) + Duration::ns((self.nano - earlier.nano) as i64)
+    }
+
+    /// The time written by strftime-style `pattern`
+    /// (`%Y-%m-%d %H:%M:%S %Z`). Panics on a bad pattern.
+    #[track_caller]
+    pub const fn format(self, pattern: str) -> str {
+        render(pattern, Parts::of(self.local.date(), self.local.time(), self.offset, self.abbreviation(), self.secs))
+    }
+
+    /// The time in `text`, read by `pattern`. It needs `%z` (or `%Z` as
+    /// `UTC` or a zone name such as `Europe/Paris`), or `%s`.
+    #[track_caller]
+    pub fn parse_with(text: str, pattern: str) throws (ParseError) -> Zoned {
+        let f = try scan(text, pattern);
+        if let s = f.secs() {
+            let tz = f.zone() ?? TimeZone::fixed(f.offset() ?? Offset::UTC);
+            return Zoned::at(s, f.nano(), tz);
+        }
+        let dt = DateTime::of(try f.date(text), try f.time(text));
+        if let z = f.zone() {
+            if let o = f.offset() { return try with_offset(text, dt, o, z); }
+            return Zoned::resolve(dt, z, Disambiguation::Compatible);
+        }
+        let o: Offset = f.offset() else {
+            throw ParseError::new(text, 0, "the pattern has no offset (`%z`) or zone (`%Z`); parse a DateTime and call `in_zone`");
+        };
+        Zoned::exact(dt, o.secs(), TimeZone::fixed(o))
+    }
+
+    /// RFC 2822 / RFC 5322 (email): `Thu, 14 Nov 2026 09:30:00 +0900`.
+    pub const fn to_rfc2822(self) -> str { self.format("%a, %d %b %Y %H:%M:%S %z") }
+
+    /// An RFC 2822 / RFC 5322 date: the weekday is optional, seconds
+    /// too, and the zone is `+hhmm` or an old name (`GMT`, `EST`, `PDT`).
+    pub fn parse_rfc2822(text: str) throws (ParseError) -> Zoned {
+        let (dt, o) = try rfc2822(text);
+        Zoned::exact(dt, o.secs(), TimeZone::fixed(o))
+    }
+}
+
+/// The rest of an RFC 9557 text: `[Zone/Name]` after `dt` and `off`.
+fn bracketed(s: str, c: Scan, dt: DateTime, off: Offset | none) throws (ParseError) -> Zoned {
+    if !c.eat(b'[') { throw c.fail("the end of the text or a zone in brackets (`[Europe/Paris]`)"); }
+    let _ = c.eat(b'!');
+    let at = c.pos();
+    let close: usize = c.rest().find("]") else { throw c.fail("a zone name and `]`"); };
+    let name = c.rest()[0:close];
+    c.skip(close + 1);
+    let z = try TimeZone::get(name) catch e: ValueError { throw c.bad_at(at, e.message()); };
+    try c.end();
+    if let o = off { return try with_offset(s, dt, o, z); }
+    Zoned::resolve(dt, z, Disambiguation::Compatible)
+}
+
+/// `dt` at offset `o` in `z`, which must agree.
+fn with_offset(text: str, dt: DateTime, o: Offset, z: TimeZone) throws (ParseError) -> Zoned {
+    let r = Zoned::at(dt.unix_secs() - (o.secs() as i64), dt.nanosecond(), z);
+    if r.offset != o {
+        throw ParseError::new(text, 0, f"offset {o} does not match {z.name()} at that time ({r.offset}); fix the offset or drop it");
+    }
+    r
+}
+
+#[track_caller]
+fn shift(z: Zoned, d: Duration) -> Zoned {
+    let secs = d.as_secs();
+    let ns = (z.nano as i64) + (d.as_ns() - secs * NS_PER_SEC);
+    Zoned::at(z.secs + secs + fdiv(ns, NS_PER_SEC), (ns %% NS_PER_SEC) as i32, z.zone)
+}
+
+impl Add<Duration> for Zoned {
+    type Output = Zoned;
+    #[track_caller]
+    fn add(self, rhs: Duration) -> Zoned { shift(self, rhs) }
+}
+
+impl Sub<Duration> for Zoned {
+    type Output = Zoned;
+    #[track_caller]
+    fn sub(self, rhs: Duration) -> Zoned { shift(self, Duration::ZERO - rhs) }
+}
+
+impl Add<Period> for Zoned {
+    type Output = Zoned;
+    /// The civil date moves, as `add_months` then `add_days`.
+    fn add(self, rhs: Period) -> Zoned { Zoned::resolve(self.local + rhs, self.zone, Disambiguation::Compatible) }
+}
+
+impl Sub<Period> for Zoned {
+    type Output = Zoned;
+    fn sub(self, rhs: Period) -> Zoned { Zoned::resolve(self.local - rhs, self.zone, Disambiguation::Compatible) }
+}
+
+impl PartialEq for Zoned {
+    const fn eq(self, rhs: Zoned) -> bool { self.secs == rhs.secs && self.nano == rhs.nano }
+}
+impl Eq for Zoned {}
+impl PartialOrd for Zoned {
+    const fn lt(self, rhs: Zoned) -> bool { self.secs < rhs.secs || (self.secs == rhs.secs && self.nano < rhs.nano) }
+    const fn gt(self, rhs: Zoned) -> bool { rhs.lt(self) }
+    const fn le(self, rhs: Zoned) -> bool { !rhs.lt(self) }
+    const fn ge(self, rhs: Zoned) -> bool { !self.lt(rhs) }
+}
+impl Ord for Zoned {
+    const fn cmp(self, rhs: Zoned) -> Ordering {
+        if self.lt(rhs) { return Ordering::Less; }
+        if rhs.lt(self) { return Ordering::Greater; }
+        Ordering::Equal
+    }
+}
+impl Hash for Zoned {
+    const fn hash<H: Hasher>(self, ref h: H) {
+        self.secs.hash(ref h);
+        self.nano.hash(ref h);
+    }
+}
+
+impl Display for Zoned {
+    /// RFC 3339: `2024-03-10T03:30:00-04:00`, `Z` for a zero offset.
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let o = if self.offset.is_utc() { "Z" } else { f"{self.offset}" };
+        try f.write_str(f"{self.local}{o}")
+    }
+}
+
+impl Debug for Zoned {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let o = if self.offset.is_utc() { "Z" } else { f"{self.offset}" };
+        try f.write_str(f"{self.local}{o}[{self.zone.name()}]")
+    }
+}
+
+impl FromStr for Zoned {
+    type Err = ParseError;
+    /// RFC 3339 (`2024-03-10T03:30:00-04:00`, `...Z`), optionally with a
+    /// zone in brackets (RFC 9557): `2024-03-10T03:30:00-04:00[America/New_York]`,
+    /// which must agree with the offset. With only the bracket, the
+    /// local time resolves as `Disambiguation::Compatible`. With no
+    /// bracket, the zone is the fixed offset.
+    fn from_str(s: str) throws (ParseError) -> Zoned {
+        let c = Scan::new(s);
+        let dt = try c.datetime();
+        if c.peek() == b'[' { return try bracketed(s, c, dt, none); }
+        let o = try c.offset(true);
+        if !c.done() { return try bracketed(s, c, dt, o); }
+        Zoned::exact(dt, o.secs(), TimeZone::fixed(o))
+    }
+}

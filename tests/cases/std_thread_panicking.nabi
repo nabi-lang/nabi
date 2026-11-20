@@ -1,0 +1,15 @@
+// needs: threads
+// expect-exit: 0
+// expect-stdout:
+// main: false
+// thread: false
+
+// `thread::panicking()` asks the runtime: true only on a thread that
+// panicked, while the process ends.
+use std::thread;
+
+fn main() {
+    println(f"main: {thread::panicking()}");
+    let h = thread::spawn(|| thread::panicking());
+    println(f"thread: {try! h.join()}");
+}

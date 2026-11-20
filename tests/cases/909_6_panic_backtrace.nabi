@@ -1,0 +1,31 @@
+// run-env: NABI_BACKTRACE=1
+// skip-target: powerpc64le-unknown-linux-gnu riscv32imac-unknown-none-elf wasm32-wasip2 wasm32-wasip1-threads wasm32-unknown-unknown
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at *
+// expect-stderr: boom 3
+// expect-stderr: stack backtrace:
+// expect-stderr: 0: inner
+// expect-stderr: 1: outer
+// expect-stderr: 2: main
+// expect-stderr: note: some details are omitted, run with `NABI_BACKTRACE=full` for a verbose backtrace.
+// expect-stdout:
+
+// `NABI_BACKTRACE=1`: the panic lists the functions on the call stack,
+// innermost first, without the standard library's panic functions.
+
+#[inline(never)]
+fn inner(n: i64) -> i64 {
+    if n > 2 {
+        panic(f"boom {n}");
+    }
+    n
+}
+
+#[inline(never)]
+fn outer(n: i64) -> i64 {
+    inner(n + 1) * 2
+}
+
+fn main() {
+    println(f"{outer(2)}");
+}

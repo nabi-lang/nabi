@@ -1,0 +1,18 @@
+// needs: threads
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/219_par_stale_view_panics.nabi:17:5:
+// expect-stderr: SliceMut used after its list was resized (push, insert, clear, ...): make the view again after the resize
+// expect-stdout:
+
+// A stale view among the items of `par` panics before any item runs: it
+// would race with the resize it missed.
+fn grow(xs: List<i32>) {
+    for i in 0..100 { xs.push(i); }
+}
+
+fn main() {
+    let xs: List<i32> = List::filled(8, 0);
+    let parts: List<SliceMut<i32>> = xs.chunks_mut(4).collect();
+    grow(xs);
+    par::for_each(parts, |p| { p[0] = 1; });
+}

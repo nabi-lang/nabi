@@ -1,0 +1,7 @@
+// expect-error: 5:5: `pub` is meaningless on a nested function
+
+fn main() {
+    let a = 1;
+    pub fn helper() {}
+    helper();
+}

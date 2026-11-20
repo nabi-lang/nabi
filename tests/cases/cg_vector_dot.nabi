@@ -1,0 +1,114 @@
+// Sums of products of bytes (`s += (a[i] as i32) * (b[i] as i32)`),
+// vectorized four products to a lane where the target has dot
+// products (arm64 `dotprod`, `-O2`): the scalar loop's sums for every
+// length from 0 to 33 and every start; a checked sum that would
+// overflow runs scalar again and panics at the element that overflows.
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/cg_vector_dot.nabi:17:9:
+// expect-stderr: attempt to add with overflow
+// expect-stdout:
+// 3264 3264 3264 3264
+// 2147467264 -2130690176
+
+fn dot8(a: List<i8>, b: List<i8>, k: usize) -> i32 {
+    let n = a.len().min(b.len());
+    let s: i32 = 0;
+    for i in k..n {
+        s += (a[i] as i32) * (b[i] as i32);
+    }
+    s
+}
+
+fn dotu8(a: List<u8>, b: List<u8>, k: usize) -> i32 {
+    let n = a.len().min(b.len());
+    let s: i32 = 0;
+    for i in k..n {
+        s += (a[i] as i32) * (b[i] as i32);
+    }
+    s
+}
+
+fn dotu32(a: List<u8>, b: List<u8>) -> u32 {
+    let n = a.len().min(b.len());
+    let s: u32 = 7u32;
+    for i in 0..n {
+        s = s.wrapping_add((a[i] as u32) * (b[i] as u32));
+    }
+    s
+}
+
+fn sq8(a: List<i8>, s: i32) -> i32 {
+    let s = s;
+    for x in a {
+        s = s.wrapping_add((x as i32) * (x as i32));
+    }
+    s
+}
+
+fn r8(a: List<i8>, b: List<i8>, ix: List<usize>, k: usize, n: usize) -> i32 {
+    let s: i32 = 0;
+    for i in k..n {
+        s += (a[ix[i]] as i32) * (b[ix[i]] as i32);
+    }
+    s
+}
+
+fn ru8(a: List<u8>, b: List<u8>, ix: List<usize>, k: usize, n: usize) -> i32 {
+    let s: i32 = 0;
+    for i in k..n {
+        s += (a[ix[i]] as i32) * (b[ix[i]] as i32);
+    }
+    s
+}
+
+fn main() -> i32 {
+    let ix: List<usize> = List::filled(40000, 0usize);
+    for i in 0..40000 {
+        ix[i] = i;
+    }
+    let seed: u64 = 7;
+    let (g8, gu8, g32, gsq) = (0, 0, 0, 0);
+    for n in 0..34 {
+        for k in 0..3 {
+            for t in 0..32 {
+                let a: List<i8> = List::filled(n, 0i8);
+                let b: List<i8> = List::filled(n, 0i8);
+                let c: List<u8> = List::filled(n, 0u8);
+                let d: List<u8> = List::filled(n, 0u8);
+                for i in 0..n {
+                    seed = seed.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+                    let r = seed >> 24;
+                    a[i] = if t % 4 == 0 { -128i8 } else { r as i8 };
+                    b[i] = (r >> 8) as i8;
+                    c[i] = if t % 4 == 1 { 255u8 } else { (r >> 16) as u8 };
+                    d[i] = (r >> 24) as u8;
+                }
+                let m = n.max(k);
+                if dot8(a, b, k) == r8(a, b, ix, k, m) { g8 += 1; }
+                if dotu8(c, d, k) == ru8(c, d, ix, k, m) { gu8 += 1; }
+                let w: u32 = 7u32;
+                for i in 0..n {
+                    w = w.wrapping_add((c[ix[i]] as u32) * (d[ix[i]] as u32));
+                }
+                if dotu32(c, d) == w { g32 += 1; }
+                let q: i32 = -5;
+                for i in 0..n {
+                    q = q.wrapping_add((a[ix[i]] as i32) * (a[ix[i]] as i32));
+                }
+                if sq8(a, -5) == q { gsq += 1; }
+            }
+        }
+    }
+    println(f"{g8} {gu8} {g32} {gsq}");
+    // 2^17 products of -128 * -128 are 2^31: the last one overflows.
+    let big: List<i8> = List::filled(131072, -128i8);
+    let half: List<i8> = List::filled(131072, -128i8);
+    big[0] = 0i8;
+    let s = dot8(big, half, 0);
+    let mixed: List<i8> = List::filled(131072, 127i8);
+    let x = dot8(big, mixed, 0);
+    println(f"{s} {x}");
+    big[0] = -128i8;
+    println(f"{dot8(big, half, 0)}");
+    return 0;
+}

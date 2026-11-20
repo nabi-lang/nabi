@@ -1,0 +1,519 @@
+//! bare::ffi::objc - Objective-C objects on Apple targets.
+//!
+//! Classes and their methods are declared in `extern "objc"` blocks,
+//! which the compiler turns into a type per class and methods on `Id`:
+//! each method sends its message with `objc_msgSend` under the C ABI
+//! of its signature, and its selector is a static reference the runtime
+//! fixes up at load. This module holds what every program shares: `Id`,
+//! `Sel`, `Class`, the root class `NSObject`, `NSString` and `str`,
+//! `NSError` as `Error`, autorelease pools and blocks.
+//!
+//! An `Id<T>` owns one retain of its object. Copies share it; the
+//! collector gives it back once no copy is left, and `release_now()`
+//! gives it back at once. A `WeakId<T>` refers to an object without
+//! keeping it.
+//!
+//! `T: IsA<C>` says a `T` is a `C`: `C` itself, a superclass, or a
+//! protocol it conforms to. The methods of `C` are on every `Id<T>`
+//! with `T: IsA<C>`, and a parameter of class `C` takes them.
+
+pub mod block;
+pub mod dispatch;
+pub mod error;
+pub mod string;
+pub mod subclass;
+
+pub use block::{Block, BlockRef};
+pub use dispatch::{Queue, dispatch_async};
+pub use error::{Error, NSError};
+pub use string::{NSString, ns};
+pub use subclass::ClassBuilder;
+
+use bare::alloc::{alloc_array, alloc_one, dealloc_array, dealloc_one};
+use bare::ffi::CStr;
+use bare::mem::{GcBuf, buf_get, buf_new, buf_set, transmute_unchecked};
+use bare::ptr::{CPtr, ConstPtr, Ptr};
+
+// The collector's cleanups: `release` runs once the handle is collected.
+extern "nabi" {
+    fn nabi_objc_track(cell: GcBuf<u8>, release: unsafe extern "C" fn(CPtr<u8>), p: usize, main: bool) -> usize;
+    fn nabi_objc_weak_track(cell: GcBuf<u8>, slot: usize) -> usize;
+    fn nabi_gc_cancel_cleanup(token: usize);
+}
+
+// A call of `sel_registerName` / `objc_getRequiredClass` with a string
+// literal compiles to a load of a static reference. A program calling
+// these links libobjc.
+extern "C" {
+    fn sel_registerName(name: str) -> Sel;
+    fn sel_getName(s: Sel) -> ConstPtr<c_char>;
+    fn objc_getRequiredClass(name: str) -> Class;
+    fn objc_lookUpClass(name: str) -> CPtr<u8>;
+    fn class_getName(c: Class) -> ConstPtr<c_char>;
+    fn objc_retain(o: CPtr<u8>) -> CPtr<u8>;
+    fn objc_release(o: CPtr<u8>);
+    fn objc_autorelease(o: CPtr<u8>) -> CPtr<u8>;
+    fn objc_retainAutoreleasedReturnValue(o: CPtr<u8>) -> CPtr<u8>;
+    fn objc_initWeak(slot: CPtr<u8>, o: CPtr<u8>) -> CPtr<u8>;
+    fn objc_loadWeakRetained(slot: CPtr<u8>) -> CPtr<u8>;
+    fn objc_destroyWeak(slot: CPtr<u8>);
+    fn objc_autoreleasePoolPush() -> CPtr<u8>;
+    fn objc_autoreleasePoolPop(pool: CPtr<u8>);
+    #[link_name = "objc_msgSend"]
+    fn send_word(r: CPtr<u8>, s: Sel) -> usize;
+    #[link_name = "objc_msgSend"]
+    fn send_ptr(r: CPtr<u8>, s: Sel) -> CPtr<u8>;
+    #[link_name = "objc_msgSend"]
+    fn send_bool_ptr(r: CPtr<u8>, s: Sel, a: CPtr<u8>) -> bool;
+    #[link_name = "objc_msgSend"]
+    fn send_bool_class(r: CPtr<u8>, s: Sel, a: Class) -> bool;
+    #[link_name = "objc_msgSend"]
+    fn send_bool_sel(r: CPtr<u8>, s: Sel, a: Sel) -> bool;
+}
+
+/// A selector: the name of a method, as the runtime registered it.
+#[repr(transparent)]
+pub struct Sel {
+    p: CPtr<u8>;
+}
+
+impl Clone for Sel {
+    const fn clone(self) -> Sel { self }
+}
+
+impl Copy for Sel {}
+
+impl PartialEq for Sel {
+    fn eq(self, rhs: Sel) -> bool { self.p.addr() == rhs.p.addr() }
+}
+
+impl Eq for Sel {}
+
+impl Debug for Sel {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"Sel({self.name()})") }
+}
+
+impl Sel {
+    /// The selector named `name` (`"initWithFrame:"`), registered with
+    /// the runtime.
+    pub fn register(name: str) -> Sel { unsafe { sel_registerName(name) } }
+
+    /// Its name, as `register` was given it.
+    pub fn name(self) -> str { unsafe { c_text(sel_getName(self)) } }
+}
+
+/// A class object.
+#[repr(transparent)]
+pub struct Class {
+    p: CPtr<u8>;
+}
+
+impl Clone for Class {
+    const fn clone(self) -> Class { self }
+}
+
+impl Copy for Class {}
+
+impl PartialEq for Class {
+    fn eq(self, rhs: Class) -> bool { self.p.addr() == rhs.p.addr() }
+}
+
+impl Eq for Class {}
+
+impl Debug for Class {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"Class({self.name()})") }
+}
+
+impl Class {
+    /// The class named `name`, if the program has loaded it.
+    pub fn lookup(name: str) -> Class | none {
+        let p = unsafe { objc_lookUpClass(name) };
+        if p.is_null() {
+            return none;
+        }
+        Class { p }
+    }
+
+    /// Its name.
+    pub fn name(self) -> str { unsafe { c_text(class_getName(self)) } }
+
+    /// The class as an object pointer, the receiver of a class method.
+    pub fn as_raw(self) -> CPtr<u8> { self.p }
+
+    /// `+[C new]`: a new instance, of a class `ClassBuilder` made or
+    /// another one Nabi has no type for.
+    pub fn new_object(self) -> Id<NSObject> {
+        let p = unsafe { send_ptr(self.p, sel_registerName("new")) };
+        unsafe { Id::<NSObject>::from_retained(p) } ?? panic(f"`+[{self.name()} new]` returned nil")
+    }
+}
+
+/// A Nabi type standing for an Objective-C class or protocol: the
+/// marker types `extern "objc"` blocks declare, and `NSObject`,
+/// `NSString`, `NSError`.
+pub trait Object {
+    /// The class or protocol name.
+    fn name() -> str;
+    /// The class object; a protocol has none and panics.
+    fn class() -> Class;
+    /// Its objects are released on the main thread (`NSView`,
+    /// `NSWindow` and the other `NSResponder`s).
+    fn main_thread() -> bool { false }
+}
+
+/// A `Self` is a `C`: `C` itself, one of its superclasses, or a
+/// protocol it (or a superclass) conforms to. `extern "objc"` blocks
+/// declare these.
+pub trait IsA<C> {}
+
+/// `NSObject`, the root class: its methods are on every `Id`.
+pub struct NSObject {}
+
+impl Object for NSObject {
+    fn name() -> str { "NSObject" }
+    fn class() -> Class { unsafe { objc_getRequiredClass("NSObject") } }
+}
+
+impl IsA<NSObject> for NSObject {}
+impl IsA<NSObject> for NSString {}
+impl IsA<NSString> for NSString {}
+impl IsA<NSObject> for NSError {}
+impl IsA<NSError> for NSError {}
+
+/// An Objective-C object of class `T` (or a subclass of it), holding one
+/// retain. Copies of an `Id` share that retain; the collector releases
+/// it once no copy is left, and `release_now()` on any of them gives it
+/// back at once.
+pub struct Id<T> {
+    /// The object (0 once released), then the collector's cleanup
+    /// that releases it.
+    cell: GcBuf<usize>;
+}
+
+impl<T> Clone for Id<T> {
+    const fn clone(self) -> Id<T> { self }
+}
+
+impl<T> Copy for Id<T> {}
+
+impl<T: Object> Debug for Id<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.shown()) }
+}
+
+impl<T: Object> Display for Id<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.shown()) }
+}
+
+impl<T: Object> Id<T> {
+    /// Take over the retain the caller owns on `p` (a `+1` result:
+    /// `alloc`, `new`, `copy`, `init`); `none` for nil.
+    ///
+    /// Safety: `p` is nil or an object of class `T` the caller owns once.
+    pub unsafe fn from_retained(p: CPtr<u8>) -> Id<T> | none {
+        if p.is_null() {
+            return none;
+        }
+        let cell: GcBuf<usize> = unsafe { buf_new(2) };
+        unsafe { buf_set(cell, 0, p.addr()) };
+        let token = unsafe { nabi_objc_track(transmute_unchecked(cell), objc_release, p.addr(), T::main_thread()) };
+        unsafe { buf_set(cell, 1, token) };
+        Id<T> { cell }
+    }
+
+    /// Retain `p`, an object the caller does not own (a `+0` result);
+    /// `none` for nil.
+    ///
+    /// Safety: `p` is nil or a live object of class `T`.
+    pub unsafe fn retain(p: CPtr<u8>) -> Id<T> | none {
+        if p.is_null() {
+            return none;
+        }
+        unsafe { Id::<T>::from_retained(objc_retain(p)) }
+    }
+
+    /// `retain` of a method's autoreleased result, right after the send:
+    /// the runtime then skips the autorelease pool when it can.
+    ///
+    /// Safety: as `retain`.
+    #[doc(hidden)]
+    pub unsafe fn from_autoreleased(p: CPtr<u8>) -> Id<T> | none {
+        if p.is_null() {
+            return none;
+        }
+        unsafe { Id::<T>::from_retained(objc_retainAutoreleasedReturnValue(p)) }
+    }
+
+    /// The object pointer, for a message send; panics once released.
+    pub fn as_raw(self) -> CPtr<u8> {
+        let p = unsafe { buf_get(self.cell, 0) };
+        if p == 0 {
+            panic(f"an `Id<{T::name()}>` was used after `release_now()`; release an object only once nothing uses it any more");
+        }
+        CPtr::from_addr(p)
+    }
+
+    /// The object and its retain, for a callee that takes it over (an
+    /// `init` receiver): this `Id`, and every copy, then reads as
+    /// released.
+    #[doc(hidden)]
+    pub fn take_raw(self) -> CPtr<u8> {
+        let p = self.as_raw();
+        unsafe { buf_set(self.cell, 0, 0usize) };
+        unsafe { nabi_gc_cancel_cleanup(buf_get(self.cell, 1)) };
+        p
+    }
+
+    /// A retain of the object for a callee that takes one over (an
+    /// `NS_CONSUMED` parameter).
+    pub fn retained_raw(self) -> CPtr<u8> { unsafe { objc_retain(self.as_raw()) } }
+
+    /// The object retained and autoreleased: what a block or method
+    /// written in Nabi returns.
+    #[doc(hidden)]
+    pub fn autoreleased_raw(self) -> CPtr<u8> { unsafe { objc_autorelease(objc_retain(self.as_raw())) } }
+
+    /// Whether `release_now()` gave the object back.
+    pub fn is_released(self) -> bool { unsafe { buf_get(self.cell, 0) } == 0 }
+
+    /// Release the object now, not when the last copy goes. Every copy
+    /// of this `Id` then reads as released, and sending to one panics.
+    /// A second call does nothing.
+    pub fn release_now(self) {
+        let p = unsafe { buf_get(self.cell, 0) };
+        if p == 0 {
+            return;
+        }
+        unsafe { buf_set(self.cell, 0, 0usize) };
+        unsafe { nabi_gc_cancel_cleanup(buf_get(self.cell, 1)) };
+        unsafe { objc_release(CPtr::from_addr(p)) };
+    }
+
+    /// The same object (and the same retain) as class `U`.
+    ///
+    /// Safety: the object is a `U`; `downcast` checks it.
+    pub unsafe fn cast<U: Object>(self) -> Id<U> { Id<U> { cell: self.cell } }
+
+    /// The object as a `U` when it is one (or a subclass of it).
+    pub fn downcast<U: Object>(self) -> Id<U> | none {
+        if self.isKindOfClass(U::class()) {
+            return unsafe { self.cast::<U>() };
+        }
+        none
+    }
+
+    /// The object as an `NSObject`, for a parameter that takes any object.
+    pub fn as_object(self) -> Id<NSObject> { Id<NSObject> { cell: self.cell } }
+
+    /// The object as a `U`, which a `T` is (a superclass or a protocol
+    /// it conforms to): `button.upcast::<NSView>()`.
+    pub fn upcast<U: Object>(self) -> Id<U> where T: IsA<U> { Id<U> { cell: self.cell } }
+
+    /// `-[NSObject description]`.
+    pub fn description(self) -> Id<NSString> {
+        let p = unsafe { send_ptr(self.as_raw(), sel_registerName("description")) };
+        unsafe { Id::<NSString>::from_autoreleased(p) } ?? ns("(nil)")
+    }
+
+    /// `-[NSObject hash]`.
+    pub fn hash(self) -> usize { unsafe { send_word(self.as_raw(), sel_registerName("hash")) } }
+
+    /// `-[NSObject isEqual:]`.
+    pub fn isEqual<U: Object>(self, other: Id<U>) -> bool {
+        unsafe { send_bool_ptr(self.as_raw(), sel_registerName("isEqual:"), other.as_raw()) }
+    }
+
+    /// `-[NSObject isKindOfClass:]`.
+    pub fn isKindOfClass(self, c: Class) -> bool {
+        unsafe { send_bool_class(self.as_raw(), sel_registerName("isKindOfClass:"), c) }
+    }
+
+    /// `-[NSObject respondsToSelector:]`.
+    pub fn respondsToSelector(self, s: Sel) -> bool {
+        unsafe { send_bool_sel(self.as_raw(), sel_registerName("respondsToSelector:"), s) }
+    }
+
+    /// `-[NSObject class]`.
+    pub fn class(self) -> Class { Class { p: unsafe { send_ptr(self.as_raw(), sel_registerName("class")) } } }
+
+    /// `-[NSObject retainCount]`, for tests: the count Objective-C code
+    /// sees, one of which this `Id` holds.
+    pub fn retainCount(self) -> usize { unsafe { send_word(self.as_raw(), sel_registerName("retainCount")) } }
+
+    fn shown(self) -> str {
+        if self.is_released() {
+            return f"<released {T::name()}>";
+        }
+        let d = self.description();
+        let t = d.to_str();
+        d.release_now();
+        t
+    }
+}
+
+/// A weak reference to an object: it does not keep the object alive,
+/// and reads as `none` once the object is deallocated. The answer to a
+/// cycle through Objective-C (a delegate that holds what holds it).
+pub struct WeakId<T> {
+    /// The address of the runtime's weak slot (outside the GC heap, which
+    /// moves objects), 0 once released.
+    slot: GcBuf<usize>;
+}
+
+impl<T> Clone for WeakId<T> {
+    const fn clone(self) -> WeakId<T> { self }
+}
+
+impl<T> Copy for WeakId<T> {}
+
+impl<T: Object> WeakId<T> {
+    /// A weak reference to `o`'s object.
+    pub fn new(o: Id<T>) -> WeakId<T> {
+        let p = unsafe { alloc_one::<usize>() }.as_ptr() ?? panic("out of memory");
+        unsafe { p.write(0usize) };
+        unsafe { objc_initWeak(CPtr::from_addr(p.addr()), o.as_raw()) };
+        let slot: GcBuf<usize> = unsafe { buf_new(2) };
+        unsafe { buf_set(slot, 0, p.addr()) };
+        let token = unsafe { nabi_objc_weak_track(transmute_unchecked(slot), p.addr()) };
+        unsafe { buf_set(slot, 1, token) };
+        WeakId<T> { slot }
+    }
+
+    /// The object, retained, while it is alive; `none` after.
+    pub fn load(self) -> Id<T> | none {
+        let a = unsafe { buf_get(self.slot, 0) };
+        if a == 0 {
+            return none;
+        }
+        unsafe { Id::<T>::from_retained(objc_loadWeakRetained(CPtr::from_addr(a))) }
+    }
+
+    /// Give back the weak slot now, not when the collector does;
+    /// `load` then returns `none`.
+    pub fn release_now(self) {
+        let a = unsafe { buf_get(self.slot, 0) };
+        if a == 0 {
+            return;
+        }
+        unsafe { buf_set(self.slot, 0, 0usize) };
+        unsafe { nabi_gc_cancel_cleanup(buf_get(self.slot, 1)) };
+        unsafe { objc_destroyWeak(CPtr::from_addr(a)) };
+        unsafe { dealloc_one(Ptr::<usize>::dangling().with_addr(a)) };
+    }
+}
+
+/// `-[NSObject new]` style: an object of class `T` made with `alloc` and
+/// `init`.
+pub fn new<T: Object>() -> Id<T> {
+    let p = unsafe { send_ptr(T::class().as_raw(), sel_registerName("new")) };
+    unsafe { Id::<T>::from_retained(p) } ?? panic(f"`+[{T::name()} new]` returned nil")
+}
+
+/// Run `f` inside an autorelease pool: objects Objective-C code
+/// autoreleases meanwhile are released when it returns. Wrap loops that
+/// call many methods; each `Id` keeps its own object regardless.
+pub fn autoreleasepool<R>(f: fn() -> R) -> R {
+    let pool = unsafe { objc_autoreleasePoolPush() };
+    let r = f();
+    unsafe { objc_autoreleasePoolPop(pool) };
+    r
+}
+
+extern "C" {
+    fn sysctlbyname(name: str, old: CPtr<u8>, oldlen: Ptr<usize>, new: CPtr<u8>, newlen: usize) -> i32;
+}
+
+/// `"13.0.1"` as one number that orders as the version does.
+fn version_key(v: str) -> u64 {
+    let parts = [0u64, 0u64, 0u64];
+    let i = 0usize;
+    for b in v.as_bytes() {
+        if b == b'.' {
+            i += 1;
+            if i == 3 {
+                break;
+            }
+        } else if b >= b'0' && b <= b'9' {
+            parts[i] = parts[i] * 10 + (b - b'0') as u64;
+        }
+    }
+    parts[0] * 1_000_000 + parts[1] * 1_000 + parts[2]
+}
+
+/// Whether the running OS is the given version or newer: macOS
+/// `macos` (`"13.0"`), iOS `ios` (`"16.0"`); an empty one (the default)
+/// is any version of that OS. Inside
+/// `if objc::available(macos: "13.0", ios: "16.0") { .. }` the APIs those
+/// versions brought may be called though the deployment target is older;
+/// the compiler refuses them elsewhere.
+pub fn available(macos: str = "", ios: str = "") -> bool {
+    if cfg!(target_os = "ios") {
+        return ios == "" || ios_at_least(ios);
+    }
+    if macos == "" {
+        return true;
+    }
+    let buf = unsafe { alloc_array::<u8>(64) }.as_ptr() ?? panic("out of memory");
+    let len = unsafe { alloc_one::<usize>() }.as_ptr() ?? panic("out of memory");
+    unsafe { len.write(64usize) };
+    let r = unsafe { sysctlbyname("kern.osproductversion", CPtr::from_addr(buf.addr()), len, CPtr::null(), 0) };
+    let have = if r == 0 {
+        version_key(unsafe { c_text(ConstPtr::<c_char>::dangling().with_addr(buf.addr())) })
+    } else {
+        0
+    };
+    unsafe { dealloc_one(len) };
+    unsafe { dealloc_array(buf, 64) };
+    have >= version_key(macos)
+}
+
+extern "C" {
+    /// dyld's check clang's `@available` calls: `count` pairs of
+    /// `PLATFORM_*` and packed version (`xxxx.yy.zz`).
+    fn _availability_version_check(count: u32, versions: Ptr<u32>) -> bool;
+}
+
+/// Whether the running iOS (the simulator's too) is `v` or newer.
+fn ios_at_least(v: str) -> bool {
+    let k = version_key(v);
+    let packed = ((k / 1_000_000) << 16 | (k / 1_000 % 1_000) << 8 | k % 1_000) as u32;
+    let pair = unsafe { alloc_array::<u32>(2) }.as_ptr() ?? panic("out of memory");
+    // PLATFORM_IOS: dyld answers for the simulator from its runtime.
+    unsafe { pair.write(2u32) };
+    unsafe { Ptr::<u32>::dangling().with_addr(pair.addr() + 4).write(packed) };
+    let ok = unsafe { _availability_version_check(1, pair) };
+    unsafe { dealloc_array(pair, 2) };
+    ok
+}
+
+/// The object pointer an extern global holds, the global named as a
+/// function only for its address (`NSDefaultRunLoopMode`).
+///
+/// Safety: `g` names a global holding an object pointer.
+#[doc(hidden)]
+pub unsafe fn global(g: unsafe extern "C" fn()) -> CPtr<u8> {
+    let at: usize = unsafe { transmute_unchecked(g) };
+    unsafe { ConstPtr::<CPtr<u8>>::dangling().with_addr(at).read() }
+}
+
+/// The raw pointer of an optional object, nil for `none`.
+#[doc(hidden)]
+pub fn raw_or_nil<T: Object>(o: Id<T> | none) -> CPtr<u8> {
+    match o {
+        o: Id<T> => o.as_raw(),
+        none => CPtr::null(),
+    }
+}
+
+/// Panic for a method declared to return an object that returned nil.
+#[doc(hidden)]
+pub fn nil_result(method: str) -> ! {
+    panic(f"`{method}` returned nil, but its declaration returns an object: declare the result `Id<T> | none`")
+}
+
+/// `p`'s C string as a `str`, copied.
+unsafe fn c_text(p: ConstPtr<c_char>) -> str {
+    match unsafe { CStr::from_ptr(p) } {
+        c: CStr => str::from_utf8_lossy(c.as_bytes()),
+        none => "",
+    }
+}

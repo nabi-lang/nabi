@@ -1,0 +1,28 @@
+// expect-exit: 0
+// expect-stdout:
+// 170 ABCDEFGHIJKLMNOPQ ABCDEFGHIJKLMNOPQ
+// 100 true
+
+// A store to a buffer made here, on one way to a merge that also
+// passes a call: a load after the merge reads what was stored, not
+// what was loaded before the branch (a grown `StrBuf` keeps its new
+// capacity).
+
+fn main() {
+    let out = StrBuf::with_capacity(64);
+    for k in 0..170usize {
+        unsafe { out.push_byte(65u8 + ((k % 17) as u8)); }
+    }
+    let s = out.to_str();
+    println(f"{s.len()} {s[0:17]} {s[153:170]}");
+    let b = StrBuf::with_capacity(4);
+    let ok = true;
+    for k in 0..100usize {
+        if b.len() == b.capacity() {
+            b.reserve(1);
+        }
+        unsafe { b.push_byte(97u8 + ((k % 26) as u8)); }
+        ok = ok && b.len() <= b.capacity();
+    }
+    println(f"{b.len()} {ok}");
+}

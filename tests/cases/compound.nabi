@@ -1,0 +1,16 @@
+// expect-exit: 54
+// expect-stdout:
+// 55 11
+
+fn main() -> i32 {
+    let total = 0i32;
+    let i = 1i32;
+    while i <= 10i32 {
+        total += i;
+        i += 1i32;
+    }
+    println(f"{total} {i}");
+    total -= 1i32;
+    total *= 1i32;
+    return total;
+}

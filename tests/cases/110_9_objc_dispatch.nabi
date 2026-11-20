@@ -1,0 +1,48 @@
+// needs: objc
+// expect-exit: 0
+// expect-stdout:
+// global 36
+// called 1
+// main 2
+
+// `Block` over a closure, run by Grand Central Dispatch: eight blocks
+// on the global queue, then main-queue ones (`Block::new_main_thread`)
+// drained by `dispatch_main` after the last exits.
+use bare::ffi::objc::{Block, Queue, dispatch_async};
+use bare::ptr::CPtr;
+
+extern "C" {
+    fn dispatch_semaphore_create(value: isize) -> CPtr<u8>;
+    fn dispatch_semaphore_signal(s: CPtr<u8>) -> isize;
+    fn dispatch_semaphore_wait(s: CPtr<u8>, timeout: u64) -> isize;
+    fn dispatch_main();
+    fn exit(code: i32);
+}
+
+fn main() {
+    // A raw pointer is not `Send`: the closures take its address.
+    let sem = unsafe { dispatch_semaphore_create(0) }.addr();
+    let total = Atomic::new(0);
+    for i in 1..=8 {
+        dispatch_async(Queue::global(), Block::new(|| {
+            total.fetch_add(i);
+            unsafe { dispatch_semaphore_signal(CPtr::from_addr(sem)) };
+        }));
+    }
+    for _ in 0..8 {
+        unsafe { dispatch_semaphore_wait(CPtr::from_addr(sem), 0xFFFF_FFFF_FFFF_FFFFu64) };
+    }
+    println(f"global {total.load()}");
+    let calls = Atomic::new(0);
+    let b = Block::new(|| { calls.fetch_add(1); });
+    b.call();
+    println(f"called {calls.load()}");
+    let n = Atomic::new(0);
+    dispatch_async(Queue::main(), Block::new_main_thread(|| { n.fetch_add(1); }));
+    dispatch_async(Queue::main(), Block::new_main_thread(|| {
+        n.fetch_add(1);
+        println(f"main {n.load()}");
+        unsafe { exit(0) };
+    }));
+    unsafe { dispatch_main() };
+}

@@ -1,0 +1,19 @@
+// expect-exit: 0
+// expect-stdout: 5 5 99
+
+// A method from a trait in scope: `use`d (`SampleRange`), the prelude's
+// or core's (`Iterator::count`); a trait of this module is in scope
+// here, so `Units::count` wins over core's `Iterator::count`.
+use std::random::SampleRange;
+
+mod geo {
+    pub trait Units { fn count(self) -> u64; }
+    impl Units for Range<i64> { fn count(self) -> u64 { 99 } }
+}
+
+use geo::Units;
+
+fn main() {
+    let r = 0..5;
+    println(f"{r.outcomes()} {r.map(|x| x).count()} {r.count()}");
+}

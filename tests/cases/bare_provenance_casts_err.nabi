@@ -1,0 +1,23 @@
+// expect-error: cannot cast `i64` as `Ptr<i32>`
+// expect-error: cannot cast `Ptr<i32>` as `Ptr<u8>`
+// expect-error: cannot cast `Ptr<i32>` as `ConstPtr<i32>`
+// expect-error: cannot cast `ManyPtr<i32>` as `usize`
+// expect-error: type `Ptr<i32>` does not satisfy trait bound `Pod`
+// expect-error: `Holder` cannot be `Pod`: `p` has type `Ptr<i32>`, which is not `Pod`
+// A pointer carries provenance: `as` never makes, retypes or erases one,
+// and a pointer is not `Pod`, so `reinterpret` cannot forge one.
+use bare::ptr::{ConstPtr, ManyPtr, Ptr, addr_of, many_addr_of};
+
+#[derive(Pod)]
+#[repr(C)]
+struct Holder { p: Ptr<i32>; }
+
+fn main() -> i32 {
+    let x: i32 = 1;
+    let a = 16 as Ptr<i32>;
+    let b = addr_of(x) as Ptr<u8>;
+    let c = addr_of(x) as ConstPtr<i32>;
+    let d = many_addr_of(x) as usize;
+    let e: u64 = bare::reinterpret::<Ptr<i32>, u64>(addr_of(x));
+    0
+}

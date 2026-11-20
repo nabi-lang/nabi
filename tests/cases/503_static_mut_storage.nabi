@@ -1,0 +1,14 @@
+// expect-error: `static mut` is only allowed inside `extern "C"
+
+// `static mut` is not allowed in ordinary code, so this storage
+// pattern must be rejected; use `Atomic` / `Mutex` / `Cell` instead.
+static mut COUNTER: i32 = 0;
+
+fn bump() -> i32 {
+    COUNTER = COUNTER + 7;
+    return COUNTER;
+}
+
+fn main() -> i32 {
+    return bump();
+}

@@ -1,0 +1,49 @@
+// needs: threads
+// expect-exit: 0
+// gc-stress: 5000
+// expect-stdout:
+// collected while multiplying
+// 32000000 true
+
+// A long `int` kernel runs parked: collections do not wait for it.
+
+extern "C" {
+    fn nabi_gc_collect();
+    fn nabi_parked_marks() -> usize;
+}
+
+// Two collections (under NABI_GC_CONCURRENT=always the pause that starts
+// a mark and the one that finishes it) once the product's kernel has
+// started: whether they ended with that kernel still running, and
+// whether the product is right. The runtime marks the kernel's end
+// before the thread can stop again, so a collection that waited for it
+// always sees the marks moved on.
+fn attempt(a: int) -> (bool, bool) {
+    let m0 = unsafe { nabi_parked_marks() };
+    let t = std::thread::spawn(|| {
+        let p = a * a;
+        // (2^k - 1)^2 = 2^2k - 2^(k+1) + 1.
+        p == (int::from(1) << 32000000u32) - (int::from(1) << 16000001u32) + int::from(1)
+    });
+    let m = m0;
+    while m == m0 { m = unsafe { nabi_parked_marks() }; }
+    for _ in 0..2 { unsafe { nabi_gc_collect() }; }
+    let during = m == m0 + 1 && unsafe { nabi_parked_marks() } == m;
+    let ok = try! t.join();
+    (during, ok)
+}
+
+fn main() {
+    let a = (int::from(1) << 16000000u32) - int::from(1);
+    // This thread stalled past the kernel's end spoils an attempt; a
+    // collection that waits for the kernel spoils every one.
+    let r = attempt(a);
+    let tries = 1;
+    while r.1 && !r.0 && tries < 5 {
+        r = attempt(a);
+        tries += 1;
+    }
+    let (during, ok) = r;
+    println(if during { "collected while multiplying" } else { "the collections waited for the product" });
+    println(f"{(a * a).bit_length()} {ok}");
+}

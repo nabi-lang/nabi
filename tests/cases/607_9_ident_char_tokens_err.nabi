@@ -1,0 +1,25 @@
+// expect-error: `′` can't be a new operator token: `′` (U+2032) is an identifier character, not an operator one: primes continue a name (`f′`)
+// expect-error: help: use a method (`a.t()`), or a symbol such as `†` or `⊛`
+// expect-error: `ℱ` can't be a new operator token: `ℱ` (U+2131) is an identifier character, not an operator one: letters and digits make names (`ℱx` is one name)
+// expect-error: help: use a function (`fourier(x)`), or a symbol such as `†` or `⊛`
+// expect-error: `@` can't be a new operator token: `@` is meta syntax before an operand (`@derive`) and after a pattern name (`n @ (a, b)`): only binary `a @ b` can be bound
+
+// Identifier characters (letters, primes, `∑ ∏ ∫`) make names, so no
+// operator token holds one; `@` binds only as a binary operator.
+trait Transpose {
+    type Output;
+    #[postfix("′", like = "?")]
+    fn tr(self) -> Output;
+}
+
+trait Fourier {
+    #[prefix("ℱ", like = "-")]
+    fn fourier(self) -> i64;
+}
+
+trait At {
+    #[prefix("@", like = "-")]
+    fn at(self) -> i64;
+}
+
+fn main() {}

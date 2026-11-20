@@ -1,0 +1,58 @@
+// expect-exit: 0
+// expect-stdout:
+// slot: 1 2 3
+// new: 9
+// read/write: 5 6
+// copy (overlap): [1, 1, 2, 3, 8]
+// replace: 1 -> 40
+// volatile: 77
+// sizes: 8 true 8 4
+
+// `MaybeUninit` written then taken out, the free raw memory
+// functions (`copy` allows overlap), and the size / align helpers.
+use bare::mem::{
+    MaybeUninit, align_of, copy, read, replace, size_of, write,
+};
+use bare::volatile;
+use bare::ptr::{Ptr, addr_of};
+
+// i64's alignment is 4 in System V i386, 8 elsewhere.
+#[cfg(all(target_arch = "x86", not(target_os = "windows")))]
+const WIDE_ALIGN: usize = 4;
+#[cfg(not(all(target_arch = "x86", not(target_os = "windows"))))]
+const WIDE_ALIGN: usize = 8;
+
+struct Big { a: i64; b: i64; c: i64; }
+
+fn big_value() -> Big { return Big { a: 1, b: 2, c: 3 }; }
+
+fn main() {
+    let slot: MaybeUninit<Big> = MaybeUninit::uninit();
+    slot.write(big_value());
+    let v: Big = unsafe { slot.assume_init() };
+    println(f"slot: {v.a} {v.b} {v.c}");
+    let n: MaybeUninit<i32> = MaybeUninit::new(9);
+    println(f"new: {unsafe { n.assume_init() }}");
+
+    let x: i64 = 5;
+    let y: i64 = 0;
+    let px: Ptr<i64> = addr_of(x);
+    let py: Ptr<i64> = addr_of(y);
+    unsafe { write(py, read(px.as_const()) + 1); }
+    println(f"read/write: {x} {y}");
+
+    let xs: [i32; 5] = [1, 2, 3, 5, 8];
+    let p: Ptr<i32> = addr_of(xs[0]);
+    unsafe { copy(p.as_const(), p.add(1), 3); }
+    println(f"copy (overlap): {xs:?}");
+
+    let old = unsafe { replace(p, 40) };
+    println(f"replace: {old} -> {xs[0]}");
+
+    unsafe { volatile::write(px, 77); }
+    println(f"volatile: {unsafe { volatile::read(px.as_const()) }}");
+
+    let w: i64 = 3;
+    let f: f32 = 1.0;
+    println(f"sizes: {w.size_of_val()} {align_of::<i64>() == WIDE_ALIGN} {size_of::<i64>()} {f.size_of_val()}");
+}

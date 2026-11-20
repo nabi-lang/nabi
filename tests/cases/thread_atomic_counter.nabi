@@ -1,0 +1,48 @@
+// needs: threads
+// expect-exit: 0
+// expect-stdout:
+// 280
+// 800000
+// unit thread
+// 5
+// w
+// ids differ
+
+// std::thread: eight OS threads bump one `Atomic<i32>`;
+// `join` returns each closure's value. A `()` closure, `Builder`, and
+// `ThreadId`.
+use core::sync::UpdateOrdering;
+use std::thread;
+use core::time::Duration;
+
+fn main() -> i32 {
+    let n = Atomic::new(0);
+    let hs: List<thread::JoinHandle<i32>> = [];
+    let i = 0;
+    while i < 8 {
+        let k = i;
+        hs.push(thread::spawn(|| {
+            let j = 0;
+            while j < 100000 {
+                n.fetch_add(1, UpdateOrdering::Relaxed);
+                j += 1;
+            }
+            k * 10
+        }));
+        i += 1;
+    }
+    let sum = 0;
+    for h in hs { sum += try! h.join(); }
+    println(f"{sum}");
+    println(f"{n.load()}");
+    thread::sleep(Duration::ms(1));
+    thread::yield_now();
+    let u = thread::spawn(|| { println("unit thread"); });
+    try! u.join();
+    let b = try! thread::Builder::new().name("w").stack_size(1048576).spawn(|| 5);
+    println(f"{try! b.join()}");
+    match b.thread().name() { s: str => println(s), none => {}, }
+    if b.thread().id() != thread::current().id() { println("ids differ"); }
+    return 0;
+}
+

@@ -1,0 +1,6 @@
+// expect-error: 5:1: unknown attribute `#[main]`
+
+// There is no entry point attribute; `main.nabi` and the
+// name `main` (or top-level statements) designate the entry.
+#[main]
+fn start() { println("start"); }

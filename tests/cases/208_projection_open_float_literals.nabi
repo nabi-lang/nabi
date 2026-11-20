@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout: 0.5 1 0.25
+
+// `R::Item` of a range made from float literals (`lo..2.0`) is the
+// impl's for the type the literals hold.
+trait Lo { type Item; fn lo(self) -> Item; }
+impl Lo for Range<i64> { type Item = i64; fn lo(self) -> i64 { self.start } }
+impl Lo for Range<f64> { type Item = f64; fn lo(self) -> f64 { self.start } }
+
+fn go<R: Lo>(r: R) -> R::Item { r.lo() }
+
+fn main() {
+    let lo = 0.5;
+    println(f"{go(lo..2.0)} {go(1..3)} {go(0.25..1.0)}");
+}

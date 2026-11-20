@@ -1,0 +1,93 @@
+// expect-exit: 0
+// expect-stdout:
+// sum: 1003 2003 3
+// self: f32 other
+// half: 1.5 7
+// member: true true false
+// both: 1.5 6 no
+// bump: 3 1
+// fast: true false
+// sets: true false | true true
+
+// `T is X` tests a type parameter with no value. In the branch `T` is
+// `X` (checked once at the definition); each instance keeps only the
+// branch its type takes.
+fn sum_f32(xs: List<f32>) -> f32 {
+    let acc = 0.0f32;
+    for x in xs { acc = acc + x; }
+    acc + 1000.0
+}
+
+fn sum<T: num::Num + Clone>(xs: List<T>) -> T {
+    if T is f32 {
+        return sum_f32(xs);
+    } else if T is f64 {
+        let acc = 0.0;
+        for x in xs { acc = acc + x; }
+        return acc + 2000.0;
+    }
+    let acc = T::zero();
+    for x in xs { acc = acc + x; }
+    acc
+}
+
+trait Describe {
+    fn tag(self) -> str {
+        if Self is f32 { "f32" } else { "other" }
+    }
+    fn twice(self) -> Self;
+}
+
+impl Describe for f32 { fn twice(self) -> f32 { self * 2.0 } }
+impl Describe for i32 { fn twice(self) -> i32 { self * 2 } }
+
+fn half<T: num::Num>(x: T) -> T {
+    if T is f32 { x / 2.0 } else { x }
+}
+
+fn member<T>(_x: T) -> bool { T is (i32 | str) }
+
+fn both<T, U>(a: T, b: U) -> str {
+    if T is f32 && U is i32 {
+        let s: f32 = a + 0.5;
+        let n: i32 = b * 2;
+        return f"{s} {n}";
+    }
+    "no"
+}
+
+// An outer local over `T`, and a closure, in the branch.
+fn bump<T: num::Num + Clone>(xs: List<T>) -> List<T> {
+    let out = xs;
+    if T is f32 {
+        out.push(9.5);
+        let f = |v: f32| v + out[0];
+        out.push(f(1.0));
+    }
+    out
+}
+
+fn fast<T>() -> bool {
+    let fast = T is f32;
+    fast
+}
+
+// A value test asks about this value, a type test about every value.
+fn sets<T>(x: T) -> str { f"{x is i32} {T is i32}" }
+
+fn main() {
+    let a: List<f32> = [1.0, 2.0];
+    let b: List<f64> = [1.0, 2.0];
+    let c: List<i32> = [1, 2];
+    println(f"sum: {sum(a)} {sum(b)} {sum(c)}");
+    println(f"self: {1.5f32.tag()} {3i32.tag()}");
+    println(f"half: {half(3.0f32)} {half(7i32)}");
+    println(f"member: {member(1i32)} {member("s")} {member(1.0)}");
+    println(f"both: {both(1.0f32, 3i32)} {both(1i32, 3i32)}");
+    let xs: List<f32> = [1.0];
+    let ys: List<i64> = [1];
+    println(f"bump: {bump(xs).len()} {bump(ys).len()}");
+    println(f"fast: {fast::<f32>()} {fast::<f64>()}");
+    let s: i32 | str = 4;
+    println(f"sets: {sets(s)} | {sets(4i32)}");
+}

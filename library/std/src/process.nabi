@@ -1,0 +1,1132 @@
+//! std::process: child processes.
+//!
+//! Spawning is `posix_spawnp`; the program is looked up in this
+//! process's `PATH` (not the child's `env`) unless it contains `/`. Every
+//! fd the library opens is close-on-exec, and an exec failure comes back
+//! as the `IoError`. On Linux each child also has a pidfd, so a signal
+//! never hits a recycled pid.
+//!
+//! Windows: `CreateProcessW` with arguments quoted for the MSVC CRT
+//! (`.exe` added when there is no extension); the child inherits only its
+//! standard handles; batch files refuse arguments holding `"`, `%` or a
+//! line break. `send_signal` sends only `Signal::Kill`, as
+//! `TerminateProcess`; `on_signal` routes console events: Ctrl-C
+//! (`Interrupt`) and close (`Hangup`); Ctrl-Break goes through
+//! `os::windows::process::on_ctrl_break`.
+//!
+//! The OS-only parts are trait impls under `#[cfg]` here
+//! (`os::unix::process`, `os::linux::process`), so a call on another
+//! target names the cfg it needs.
+//!
+//! `output()` drains stdout and stderr together. The `_async` twins
+//! (`wait_async`, `output_async`, `status_async`, the pipes' async io)
+//! run their sync twin on the blocking lane, as `fs` does.
+//!
+//! `on_signal(sig, f)`: the C handler writes the signal number to a pipe
+//! and a dispatcher thread (`nabi-signal`) calls `f`, never in signal
+//! context. A burst that fills the pipe drops signals.
+
+use bare::mem::{GcBuf, buf_new};
+use core::io::{Close, IoError, IoErrorKind, Read, Write, AsyncRead, AsyncWrite, AsyncClose};
+use core::marker::replace;
+use core::str::Utf8Error;
+use std::env;
+use std::fs::{File, file_of, off};
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::os::linux::process::ChildExt;
+#[cfg(target_family = "unix")]
+use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
+#[cfg(target_family = "unix")]
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+#[cfg(target_os = "windows")]
+use std::os::windows::io::{AsRawHandle, IntoRawHandle, RawHandle, raw_handle};
+use std::path::AsPath;
+use std::path::Path;
+use std::sys::{check, byte_buf, read_more, take_handle, use_begin, use_end, use_close, word_at};
+use std::thread;
+
+/// Abnormal termination (`SIGABRT`); nothing is cleaned up.
+pub const fn abort() -> ! { unsafe { nabi_os_abort() }; }
+
+/// Exit the process now with `code`; `finally` and
+/// `Drop` do not run.
+pub const fn exit(code: i32) -> ! {
+    unsafe { nabi_exit(code) };
+}
+
+/// This process's id.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn id() -> u32 { unsafe { nabi_os_getpid() } }
+
+/// Panics: wasm32 has no process ids.
+#[cfg(target_arch = "wasm32")]
+#[track_caller]
+pub fn id() -> u32 { panic("process::id: wasm32 has no process ids") }
+
+/// A signal to send or handle. Windows: only `Kill` can be sent
+/// (`TerminateProcess`), and only `Interrupt` (Ctrl-C) and `Hangup`
+/// (console closed) handled; Ctrl-Break is
+/// `os::windows::process::on_ctrl_break`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Signal {
+    /// `SIGHUP`.
+    Hangup,
+    /// `SIGINT`.
+    Interrupt,
+    /// `SIGQUIT`.
+    Quit,
+    /// `SIGILL`.
+    IllegalInstruction,
+    /// `SIGTRAP`.
+    Trap,
+    /// `SIGABRT`.
+    Abort,
+    /// `SIGBUS`.
+    Bus,
+    /// `SIGFPE`.
+    FloatingPoint,
+    /// `SIGKILL`: cannot be handled.
+    Kill,
+    /// `SIGSEGV`.
+    Segmentation,
+    /// `SIGPIPE`.
+    Pipe,
+    /// `SIGALRM`.
+    Alarm,
+    /// `SIGTERM`.
+    Terminate,
+    /// `SIGUSR1`.
+    User1,
+    /// `SIGUSR2`.
+    User2,
+    /// `SIGCHLD`.
+    Child,
+    /// `SIGCONT`.
+    Continue,
+    /// `SIGSTOP`: cannot be handled.
+    Stop,
+    /// `SIGTSTP`.
+    TerminalStop,
+    /// `SIGTTIN`.
+    TerminalInput,
+    /// `SIGTTOU`.
+    TerminalOutput,
+    /// `SIGURG`.
+    Urgent,
+    /// `SIGXCPU`.
+    CpuLimit,
+    /// `SIGXFSZ`.
+    FileSizeLimit,
+    /// `SIGVTALRM`.
+    VirtualAlarm,
+    /// `SIGPROF`.
+    Profile,
+    /// `SIGWINCH`.
+    WindowChange,
+    /// `SIGIO`.
+    Io,
+    /// `SIGSYS`.
+    BadSyscall,
+}
+
+const LINUX: bool = cfg!(any(target_os = "linux", target_os = "android"));
+
+/// Every `Signal`, for the number-to-signal lookup.
+const SIGNALS: [Signal; 29] = [
+    Signal::Hangup, Signal::Interrupt, Signal::Quit, Signal::IllegalInstruction, Signal::Trap,
+    Signal::Abort, Signal::Bus, Signal::FloatingPoint, Signal::Kill, Signal::Segmentation,
+    Signal::Pipe, Signal::Alarm, Signal::Terminate, Signal::User1, Signal::User2, Signal::Child,
+    Signal::Continue, Signal::Stop, Signal::TerminalStop, Signal::TerminalInput,
+    Signal::TerminalOutput, Signal::Urgent, Signal::CpuLimit, Signal::FileSizeLimit,
+    Signal::VirtualAlarm, Signal::Profile, Signal::WindowChange, Signal::Io, Signal::BadSyscall,
+];
+
+impl Signal {
+    /// The OS number (Linux's, else the BSD / macOS one; Windows: the
+    /// CRT's for the ones it routes).
+    pub const fn number(self) -> i32 {
+        match self {
+            Signal::Hangup => 1,
+            Signal::Interrupt => 2,
+            Signal::Quit => 3,
+            Signal::IllegalInstruction => 4,
+            Signal::Trap => 5,
+            Signal::Abort => 6,
+            Signal::Bus => if LINUX { 7 } else { 10 },
+            Signal::FloatingPoint => 8,
+            Signal::Kill => 9,
+            Signal::Segmentation => 11,
+            Signal::Pipe => 13,
+            Signal::Alarm => 14,
+            Signal::Terminate => 15,
+            Signal::User1 => if LINUX { 10 } else { 30 },
+            Signal::User2 => if LINUX { 12 } else { 31 },
+            Signal::Child => if LINUX { 17 } else { 20 },
+            Signal::Continue => if LINUX { 18 } else { 19 },
+            Signal::Stop => if LINUX { 19 } else { 17 },
+            Signal::TerminalStop => if LINUX { 20 } else { 18 },
+            Signal::TerminalInput => 21,
+            Signal::TerminalOutput => 22,
+            Signal::Urgent => if LINUX { 23 } else { 16 },
+            Signal::CpuLimit => 24,
+            Signal::FileSizeLimit => 25,
+            Signal::VirtualAlarm => 26,
+            Signal::Profile => 27,
+            Signal::WindowChange => 28,
+            Signal::Io => if LINUX { 29 } else { 23 },
+            Signal::BadSyscall => if LINUX { 31 } else { 12 },
+        }
+    }
+
+    /// The signal numbered `n`, if it is one of these.
+    pub(pkg) const fn from_number(n: i32) -> Signal | none {
+        for s in SIGNALS {
+            if s.number() == n { return s; }
+        }
+        none
+    }
+
+    /// Windows: what the OS can do with it (`Kill` to send; `Interrupt`,
+    /// `Hangup` to handle).
+    const fn on_windows(self, handle: bool) -> bool {
+        match self {
+            Signal::Kill => !handle,
+            Signal::Interrupt => handle,
+            Signal::Hangup => handle,
+            _ => false,
+        }
+    }
+}
+
+impl Debug for Signal {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(match self {
+            Signal::Hangup => "Hangup",
+            Signal::Interrupt => "Interrupt",
+            Signal::Quit => "Quit",
+            Signal::IllegalInstruction => "IllegalInstruction",
+            Signal::Trap => "Trap",
+            Signal::Abort => "Abort",
+            Signal::Bus => "Bus",
+            Signal::FloatingPoint => "FloatingPoint",
+            Signal::Kill => "Kill",
+            Signal::Segmentation => "Segmentation",
+            Signal::Pipe => "Pipe",
+            Signal::Alarm => "Alarm",
+            Signal::Terminate => "Terminate",
+            Signal::User1 => "User1",
+            Signal::User2 => "User2",
+            Signal::Child => "Child",
+            Signal::Continue => "Continue",
+            Signal::Stop => "Stop",
+            Signal::TerminalStop => "TerminalStop",
+            Signal::TerminalInput => "TerminalInput",
+            Signal::TerminalOutput => "TerminalOutput",
+            Signal::Urgent => "Urgent",
+            Signal::CpuLimit => "CpuLimit",
+            Signal::FileSizeLimit => "FileSizeLimit",
+            Signal::VirtualAlarm => "VirtualAlarm",
+            Signal::Profile => "Profile",
+            Signal::WindowChange => "WindowChange",
+            Signal::Io => "Io",
+            Signal::BadSyscall => "BadSyscall",
+        })
+    }
+}
+
+/// `sig` cannot be sent on Windows.
+fn unsent(sig: Signal) throws (IoError) {
+    if WINDOWS && !sig.on_windows(false) {
+        throw IoError::new(IoErrorKind::Unsupported, f"send_signal: Windows can send only Signal::Kill, not Signal::{sig:?}");
+    }
+}
+
+/// Send `sig` to process `pid`.
+pub fn send_signal(pid: u32, sig: Signal) throws (IoError) {
+    try unsent(sig);
+    try check(unsafe { nabi_os_kill(pid as i32, sig.number()) } as i64, "kill");
+}
+
+/// Send `sig` to this process. Windows: only `Interrupt` and `Hangup`,
+/// which reach an `on_signal` handler (`Interrupt` without one ends the
+/// process).
+pub fn raise(sig: Signal) throws (IoError) {
+    if WINDOWS && !sig.on_windows(true) {
+        throw IoError::new(IoErrorKind::Unsupported, f"raise: Windows can raise only Signal::Interrupt and Signal::Hangup, not Signal::{sig:?}");
+    }
+    try check(unsafe { nabi_os_raise(sig.number()) } as i64, "raise");
+}
+
+/// `on_signal` could not route the signal (`SIGKILL` / `SIGSTOP`, a bad
+/// number, or the OS refused).
+#[derive(Clone, PartialEq, Eq)]
+pub struct SignalError {
+    signal: Signal;
+    os_code: i32 | none;
+}
+
+impl SignalError {
+    /// The signal that could not be routed.
+    pub const fn signal(self) -> Signal { self.signal }
+    /// The OS error (errno; Windows: the error code), or `none` when
+    /// the handler thread could not start for another reason.
+    pub const fn os_code(self) -> i32 | none { self.os_code }
+    /// What went wrong, for display.
+    pub const fn message(self) -> str {
+        match self.os_code {
+            c: i32 => f"cannot handle signal {self.signal:?} (os error {c})",
+            none => f"cannot handle signal {self.signal:?}",
+        }
+    }
+}
+
+impl Display for SignalError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+impl Debug for SignalError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let code = match self.os_code {
+            c: i32 => f"{c}",
+            none => "none",
+        };
+        try f.write_str(f"SignalError {{ signal: {self.signal:?}, os_code: {code} }}")
+    }
+}
+impl Error for SignalError {}
+
+/// `program` with `args`, run to completion like `Command::output`: its
+/// stdout as text. Throws `ExitStatusError` (with stderr) when the
+/// program fails, `Utf8Error` when stdout is not UTF-8, `IoError` when
+/// it cannot run. The convenient form of `Command`; Python:
+/// `subprocess.run([..], check=True, capture_output=True,
+/// text=True).stdout`.
+pub fn run<P: AsPath>(program: P, args: List<str> = []) throws (IoError | ExitStatusError | Utf8Error) -> str {
+    let o = try Command::new(program).args(args).output();
+    if !o.status.success() {
+        throw ExitStatusError { status: o.status, stderr: str::from_utf8_lossy(o.stderr) };
+    }
+    try str::from_utf8(o.stdout)
+}
+
+/// A program `run` started ended unsuccessfully.
+#[derive(Clone)]
+pub struct ExitStatusError {
+    status: ExitStatus;
+    stderr: str;
+}
+
+impl ExitStatusError {
+    /// How the program ended.
+    pub const fn status(self) -> ExitStatus { self.status }
+    /// What it wrote to stderr (invalid UTF-8 replaced).
+    pub const fn stderr(self) -> str { self.stderr }
+    /// What went wrong, for display: the status and the stderr text.
+    pub const fn message(self) -> str {
+        let err = self.stderr.trim_end();
+        if err.is_empty() { f"the program failed ({self.status})" } else { f"the program failed ({self.status}): {err}" }
+    }
+}
+
+impl Display for ExitStatusError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+impl Debug for ExitStatusError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"ExitStatusError {{ status: {self.status:?}, stderr: {self.stderr:?} }}")
+    }
+}
+impl Error for ExitStatusError {}
+
+static SIGNAL_HANDLERS: Mutex<Dict<i32, fn() + Send + Sync>> = unsafe { Mutex::new_unshared(Dict::new()) };
+
+/// Call `handler` (on the `nabi-signal` thread) each time the process
+/// receives `sig`; a later `on_signal` for the same `sig` replaces it.
+pub fn on_signal(sig: Signal, handler: fn() + Send + Sync) throws (SignalError) {
+    // ERROR_NOT_SUPPORTED.
+    if WINDOWS && !sig.on_windows(true) { throw SignalError { signal: sig, os_code: 50 }; }
+    try install_handler(sig.number(), handler) catch e { throw SignalError { signal: sig, os_code: e.os_code() }; };
+}
+
+/// Route OS signal number `sig` to `handler` (`os::windows` routes
+/// Ctrl-Break through here too).
+pub(pkg) fn install_handler(sig: i32, handler: fn() + Send + Sync) throws (IoError) {
+    unsafe {
+        using g = SIGNAL_HANDLERS.lock() { g.get().insert(sig, handler); }
+        let fd: GcBuf<i32> = buf_new(1);
+        let r = nabi_os_signal_install(sig, fd);
+        if r < 0 {
+            using g = SIGNAL_HANDLERS.lock() { g.get().remove(sig); }
+            throw IoError::from_os_code(-r, "signal");
+        }
+        if fd[0] >= 0 {
+            let pipe = file_of(fd[0], "signal pipe");
+            let h = try thread::Builder::new().name("nabi-signal").spawn(|| {
+                dispatch_signals(pipe);
+                try pipe.close() catch _ {};
+            });
+            h.detach();
+        }
+    }
+}
+
+fn dispatch_signals(pipe: File) {
+    let buf = byte_buf(64);
+    loop {
+        let n = try pipe.read(buf) catch _ { return; };
+        if n == 0usize { return; }
+        for i in 0..n {
+            let h: (fn() + Send + Sync) | none = none;
+            using g = SIGNAL_HANDLERS.lock() { h = g.get().get(buf[i] as i32); }
+            if let f: fn() + Send + Sync = h { f(); }
+        }
+    }
+}
+
+/// Where a child's standard stream goes. A `File` moved in belongs to
+/// the command: running it closes the parent's copy, whether the spawn
+/// succeeds or fails.
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum Stdio {
+    Inherit,
+    Null,
+    Piped,
+    File(File),
+}
+
+/// The runtime's mode for `s`: an fd, or -1 / -2 / -3.
+fn stdio_mode(s: Stdio, program: str) throws (IoError) -> i32 {
+    match s {
+        Stdio::Inherit => -1,
+        Stdio::Null => -2,
+        Stdio::Piped => -3,
+        Stdio::File(f) => {
+            let fd = f.fd();
+            // A closed file must not read as -1 (inherit).
+            if fd < 0 {
+                throw IoError::new(IoErrorKind::InvalidInput, f"{program}: the Stdio::File was closed by an earlier run of this command; give each run its own file (`File::try_clone`)");
+            }
+            fd
+        }
+    }
+}
+
+/// Close the files the command owns; the first error.
+fn close_stdio(s: Stdio, first: IoError | none) -> IoError | none {
+    if let f: File = file_in(s) {
+        try f.close() catch e { return first ?? e; };
+    }
+    first
+}
+
+/// A `Stdio` not given to a command closes the file it owns.
+impl Close for Stdio {
+    fn close(self) throws (IoError) {
+        if let f: File = file_in(self) { try f.close(); }
+    }
+}
+
+const fn file_in(s: Stdio) -> File | none {
+    match s {
+        Stdio::File(f) => f,
+        _ => none,
+    }
+}
+
+/// A child's stdin: the write end of its pipe.
+pub struct ChildStdin {
+    file: File;
+}
+
+impl Debug for ChildStdin {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("ChildStdin") }
+}
+
+impl ChildStdin {
+    /// Close the pipe: the child reads end of input.
+    pub fn close(self) throws (IoError) { try self.file.close(); }
+}
+
+impl Write for ChildStdin {
+    fn write<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize { try self.file.write(buf) }
+    #[internal]
+    const fn copy_handle(self) -> i32 { self.file.fd() }
+    const fn flush(ref self) throws (IoError) {}
+}
+
+impl AsyncWrite for ChildStdin {
+    async fn write_async<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize { try await self.file.write_async(buf) }
+    async fn flush_async(ref self) throws (IoError) {}
+}
+
+impl Close for ChildStdin {
+    fn close(self) throws (IoError) { try self.file.close(); }
+}
+
+impl AsyncClose for ChildStdin {
+    async fn close_async(self) throws (IoError) { try await self.file.close_async(); }
+}
+
+#[cfg(target_family = "unix")]
+impl AsRawFd for ChildStdin {
+    const fn as_raw_fd(self) -> RawFd { self.file.fd() }
+}
+
+#[cfg(target_os = "windows")]
+impl AsRawHandle for ChildStdin {
+    fn as_raw_handle(self) -> RawHandle { raw_handle(self.file.fd()) }
+}
+
+#[cfg(target_family = "unix")]
+impl IntoRawFd for ChildStdin {
+    fn into_raw_fd(self) -> RawFd { self.file.give_up() }
+}
+
+#[cfg(target_os = "windows")]
+impl IntoRawHandle for ChildStdin {
+    fn into_raw_handle(self) -> RawHandle { raw_handle(self.file.give_up()) }
+}
+
+/// A child's stdout: the read end of its pipe.
+pub struct ChildStdout {
+    file: File;
+}
+
+impl Debug for ChildStdout {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("ChildStdout") }
+}
+
+impl ChildStdout {
+    /// Close the pipe; the child's later writes fail.
+    pub fn close(self) throws (IoError) { try self.file.close(); }
+}
+
+impl Read for ChildStdout {
+    fn read(ref self, buf: SliceMut<u8>) throws (IoError) -> usize { try self.file.read(buf) }
+    #[internal]
+    const fn copy_handle(self) -> i32 { self.file.fd() }
+}
+
+impl AsyncRead for ChildStdout {
+    async fn read_async(ref self, buf: SliceMut<u8>) throws (IoError) -> usize { try await self.file.read_async(buf) }
+}
+
+impl Close for ChildStdout {
+    fn close(self) throws (IoError) { try self.file.close(); }
+}
+
+impl AsyncClose for ChildStdout {
+    async fn close_async(self) throws (IoError) { try await self.file.close_async(); }
+}
+
+#[cfg(target_family = "unix")]
+impl AsRawFd for ChildStdout {
+    const fn as_raw_fd(self) -> RawFd { self.file.fd() }
+}
+
+#[cfg(target_os = "windows")]
+impl AsRawHandle for ChildStdout {
+    fn as_raw_handle(self) -> RawHandle { raw_handle(self.file.fd()) }
+}
+
+#[cfg(target_family = "unix")]
+impl IntoRawFd for ChildStdout {
+    fn into_raw_fd(self) -> RawFd { self.file.give_up() }
+}
+
+#[cfg(target_os = "windows")]
+impl IntoRawHandle for ChildStdout {
+    fn into_raw_handle(self) -> RawHandle { raw_handle(self.file.give_up()) }
+}
+
+/// A child's stderr: the read end of its pipe.
+pub struct ChildStderr {
+    file: File;
+}
+
+impl Debug for ChildStderr {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("ChildStderr") }
+}
+
+impl ChildStderr {
+    /// Close the pipe; the child's later writes fail.
+    pub fn close(self) throws (IoError) { try self.file.close(); }
+}
+
+impl Read for ChildStderr {
+    fn read(ref self, buf: SliceMut<u8>) throws (IoError) -> usize { try self.file.read(buf) }
+    #[internal]
+    const fn copy_handle(self) -> i32 { self.file.fd() }
+}
+
+impl AsyncRead for ChildStderr {
+    async fn read_async(ref self, buf: SliceMut<u8>) throws (IoError) -> usize { try await self.file.read_async(buf) }
+}
+
+impl Close for ChildStderr {
+    fn close(self) throws (IoError) { try self.file.close(); }
+}
+
+impl AsyncClose for ChildStderr {
+    async fn close_async(self) throws (IoError) { try await self.file.close_async(); }
+}
+
+#[cfg(target_family = "unix")]
+impl AsRawFd for ChildStderr {
+    const fn as_raw_fd(self) -> RawFd { self.file.fd() }
+}
+
+#[cfg(target_os = "windows")]
+impl AsRawHandle for ChildStderr {
+    fn as_raw_handle(self) -> RawHandle { raw_handle(self.file.fd()) }
+}
+
+#[cfg(target_family = "unix")]
+impl IntoRawFd for ChildStderr {
+    fn into_raw_fd(self) -> RawFd { self.file.give_up() }
+}
+
+#[cfg(target_os = "windows")]
+impl IntoRawHandle for ChildStderr {
+    fn into_raw_handle(self) -> RawHandle { raw_handle(self.file.give_up()) }
+}
+
+/// A process to run. Builder methods return the updated command
+/// and leave the one they were called on as it was, so copies are
+/// independent. The streams start as `Inherit`; `output` pipes an
+/// inherited stdout / stderr and reads stdin from null.
+#[must_use("command does nothing until it runs: call `.spawn()`, `.output()` or `.status()`, or keep the command the builder returns")]
+pub struct Command {
+    program: Path;
+    args: List<str>;
+    envs: Dict<str, str>;
+    env_clear: bool;
+    stdin: Stdio;
+    stdout: Stdio;
+    stderr: Stdio;
+    cwd: Path | none;
+    kill_on_drop: bool;
+    process_group: i32 | none;
+}
+
+impl Debug for Command {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"Command {{ program: {self.program:?}, args: {self.args:?} }}") }
+}
+
+impl Command {
+    /// A command that runs `program` with no arguments; the child inherits
+    /// the environment, the working directory and the standard streams.
+    pub const fn new<P: AsPath>(program: P) -> Command {
+        Command {
+            program: program.as_path(),
+            args: List::new(),
+            envs: Dict::new(),
+            env_clear: false,
+            stdin: Stdio::Inherit,
+            stdout: Stdio::Inherit,
+            stderr: Stdio::Inherit,
+            cwd: none,
+            kill_on_drop: false,
+            process_group: none,
+        }
+    }
+
+    // The lists are shared by copies of a command, so a builder that
+    // changes one changes a fresh copy.
+
+    /// Append one argument.
+    pub const fn arg(self, arg: str) -> Command {
+        self.args = self.args.clone();
+        self.args.push(arg);
+        self
+    }
+
+    /// Append each of `args`.
+    pub const fn args<I: IntoIterator<Item = str>>(self, args: I) -> Command {
+        self.args = self.args.clone();
+        for a in args { self.args.push(a); }
+        self
+    }
+
+    /// Set `key` to `value` in the child's environment.
+    pub const fn env(self, key: str, value: str) -> Command {
+        self.envs = self.envs.clone();
+        self.envs.insert(key, value);
+        self
+    }
+
+    /// Set each `(key, value)` in the child's environment, as `env`.
+    pub fn envs<I: IntoIterator<Item = (str, str)>>(self, envs: I) -> Command {
+        self.envs = self.envs.clone();
+        for (k, v) in envs {
+            self.envs.insert(k, v);
+        }
+        self
+    }
+
+    /// Start from an empty environment (then `env` adds to it).
+    pub const fn env_clear(self) -> Command {
+        self.env_clear = true;
+        self.envs = Dict::new();
+        self
+    }
+
+    /// Run the child in `dir`.
+    pub const fn current_dir<P: AsPath>(self, dir: P) -> Command {
+        self.cwd = dir.as_path();
+        self
+    }
+
+    /// Where the child's standard input comes from (default `Stdio::Inherit`).
+    pub const fn stdin(self, cfg: Stdio) -> Command { self.stdin = cfg; self }
+    /// Where the child's standard output goes (default `Stdio::Inherit`).
+    pub const fn stdout(self, cfg: Stdio) -> Command { self.stdout = cfg; self }
+    /// Where the child's standard error goes (default `Stdio::Inherit`).
+    pub const fn stderr(self, cfg: Stdio) -> Command { self.stderr = cfg; self }
+
+    /// Kill the child when its `Child` is released (its owner leaves scope
+    /// or its `using` block ends).
+    pub const fn kill_on_drop(self, on: bool) -> Command { self.kill_on_drop = on; self }
+
+    /// Start the child.
+    pub fn spawn(self) throws (IoError) -> Child {
+        try self.start()
+    }
+
+    /// Run to completion, collecting stdout and stderr (an inherited
+    /// stdin reads null instead; a piped one is closed at once, so the
+    /// child sees end of input).
+    pub fn output(self) throws (IoError) -> Output {
+        let c = self;
+        if c.stdin is Stdio::Inherit { c.stdin = Stdio::Null; }
+        if c.stdout is Stdio::Inherit { c.stdout = Stdio::Piped; }
+        if c.stderr is Stdio::Inherit { c.stderr = Stdio::Piped; }
+        let child = try c.start();
+        // Nothing can write to a piped stdin here; a child reading to end
+        // of input would wait forever with it open.
+        if let si: ChildStdin = child.take_stdin() {
+            try si.close() catch e { child.abandon(); throw e; };
+        }
+        // Both pipes drain together (poll), so neither can fill and stall.
+        let so = child.take_stdout();
+        let se = child.take_stderr();
+        let out: List<u8> = List::new();
+        let errs: List<u8> = List::new();
+        let fd_out = if so is ChildStdout { so.file.fd() } else { -1 };
+        let fd_err = if se is ChildStderr { se.file.fd() } else { -1 };
+        let failed: IoError | none = none;
+        try drain(fd_out, out, fd_err, errs, self.program.as_str()) catch e { failed = e; };
+        if let e: IoError = failed {
+            if so is ChildStdout { try so.close() catch _ {}; }
+            if se is ChildStderr { try se.close() catch _ {}; }
+            child.abandon();
+            throw e;
+        }
+        // A close error still waits: the child is reaped either way.
+        if so is ChildStdout { try so.close() catch e { failed = e; }; }
+        if se is ChildStderr { try se.close() catch e { failed = failed ?? e; }; }
+        let status = try child.wait();
+        if let e: IoError = failed { throw e; }
+        Output { status: status, stdout: out, stderr: errs }
+    }
+
+    /// `output` that suspends the task.
+    pub async fn output_async(self) throws (IoError) -> Output {
+        let c = self.own();
+        try await off([move c] || try c.output())
+    }
+
+    /// Run to completion with inherited streams.
+    pub fn status(self) throws (IoError) -> ExitStatus {
+        let child = try self.spawn();
+        try child.wait()
+    }
+
+    /// `status` that suspends the task.
+    pub async fn status_async(self) throws (IoError) -> ExitStatus {
+        let c = self.own();
+        try await off([move c] || try c.status())
+    }
+
+    /// A copy that shares no list with this command, for a blocking
+    /// thread to run while this one stays usable.
+    fn own(self) -> Command {
+        Command {
+            program: self.program,
+            args: self.args.clone(),
+            envs: self.envs.clone(),
+            env_clear: self.env_clear,
+            stdin: self.stdin,
+            stdout: self.stdout,
+            stderr: self.stderr,
+            cwd: self.cwd,
+            kill_on_drop: self.kill_on_drop,
+            process_group: self.process_group,
+        }
+    }
+
+    fn start(self) throws (IoError) -> Child {
+        unsafe {
+            let argv = StrBuf::new();
+            argv.push_str(self.program.as_str());
+            argv.push_byte(0u8);
+            for a in self.args {
+                argv.push_str(a);
+                argv.push_byte(0u8);
+            }
+            let envs = StrBuf::new();
+            let envc: isize = -1;
+            if self.env_clear || self.envs.len() > 0 {
+                envc = 0;
+                if !self.env_clear {
+                    for (k, v) in env::vars() {
+                        if !self.envs.contains_key(k) {
+                            envs.push_str(f"{k}={v}");
+                            envs.push_byte(0u8);
+                            envc += 1;
+                        }
+                    }
+                }
+                for (k, v) in self.envs.iter() {
+                    envs.push_str(f"{k}={v}");
+                    envs.push_byte(0u8);
+                    envc += 1;
+                }
+            }
+            let fds: GcBuf<i32> = buf_new(3);
+            let pid = try self.spawn_raw(argv, envs, envc, fds) catch e {
+                throw self.release_stdio(e) ?? e;
+            };
+            let state: GcBuf<i32> = buf_new(4);
+            state[2] = nabi_os_pidfd_open(pid);
+            let child = Child {
+                pid: pid,
+                stdin: if fds[0] < 0 { none } else { ChildStdin { file: file_of(fds[0], "child stdin") } },
+                stdout: if fds[1] < 0 { none } else { ChildStdout { file: file_of(fds[1], "child stdout") } },
+                stderr: if fds[2] < 0 { none } else { ChildStderr { file: file_of(fds[2], "child stderr") } },
+                state: state,
+                kill_on_drop: self.kill_on_drop,
+            };
+            // The child has its own copies now. If ours fail to close, the
+            // spawn fails and takes the child down with it.
+            if let e: IoError = self.release_stdio(none) {
+                child.abandon();
+                throw e;
+            }
+            child
+        }
+    }
+
+    unsafe fn spawn_raw(self, argv: StrBuf, envs: StrBuf, envc: isize, fds: GcBuf<i32>) throws (IoError) -> i32 {
+        let prog = self.program.as_str();
+        // The app sandbox refuses posix_spawn; say so before it does.
+        if IOS_DEVICE {
+            throw IoError::new(IoErrorKind::Unsupported, f"{prog}: an iOS app cannot start processes (the simulator, `aarch64-apple-ios-sim`, can)");
+        }
+        let pid = nabi_os_spawn(
+            argv.to_str(), self.args.len() + 1, envs.to_str(), envc,
+            if let d: Path = self.cwd { d.as_str() } else { "" },
+            try stdio_mode(self.stdin, prog),
+            try stdio_mode(self.stdout, prog),
+            try stdio_mode(self.stderr, prog),
+            self.process_group ?? -1,
+            fds,
+        );
+        try check(pid as i64, prog);
+        pid
+    }
+
+    /// Close the files moved into the streams; `first`, else the first
+    /// close error.
+    fn release_stdio(self, first: IoError | none) -> IoError | none {
+        let e = close_stdio(self.stdin, first);
+        e = close_stdio(self.stdout, e);
+        close_stdio(self.stderr, e)
+    }
+}
+
+/// Read pipes `fd1` / `fd2` (-1: none) to their ends into `out1` /
+/// `out2`, whichever has data first.
+fn drain(fd1: i32, out1: List<u8>, fd2: i32, out2: List<u8>, context: str) throws (IoError) {
+    while fd1 >= 0 || fd2 >= 0 {
+        let ready = try check(unsafe { nabi_os_poll_read(fd1, fd2) } as i64, context);
+        if (ready & 1) != 0 && (try fill(fd1, out1, context)) == 0 { fd1 = -1; }
+        if (ready & 2) != 0 && (try fill(fd2, out2, context)) == 0 { fd2 = -1; }
+    }
+}
+
+/// One read of `fd` onto the end of `out`; the count.
+fn fill(fd: i32, out: List<u8>, context: str) throws (IoError) -> usize {
+    try read_more(out, 16384, |b: GcBuf<u8>, at: usize, n: usize| unsafe { nabi_os_read(fd, b, at, n) }, context)
+}
+
+const WINDOWS: bool = cfg!(target_os = "windows");
+const IOS_DEVICE: bool = cfg!(all(target_os = "ios", not(target_abi = "sim")));
+
+/// A running (or finished) child. Its `Piped` streams stay in it until
+/// taken (`take_stdin` / `take_stdout` / `take_stderr`); the ones never
+/// taken close where the `Child` is released.
+pub struct Child {
+    pid: i32;
+    stdin: ChildStdin | none;
+    stdout: ChildStdout | none;
+    stderr: ChildStderr | none;
+    /// `[reaped, raw status, pidfd or -errno, calls in flight]`, shared
+    /// by copies of the handle. `reaped`: 0 not yet, 1 reaped, `-errno`
+    /// if reaping failed. Signals and waits hold a call (`io::use_begin`)
+    /// on the pid, and reaping waits them out, so none of them reaches a
+    /// pid or pidfd that was reused.
+    state: GcBuf<i32>;
+    kill_on_drop: bool;
+}
+
+impl Debug for Child {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"Child {{ pid: {self.pid} }}") }
+}
+
+impl Child {
+    /// The child's process id.
+    pub const fn id(self) -> u32 { self.pid as u32 }
+
+    /// Take the write end of the child's stdin pipe (`none` unless
+    /// `Stdio::Piped`, or once taken). The taker closes it; close it
+    /// before `wait` if the child reads to end of input.
+    pub fn take_stdin(ref self) -> ChildStdin | none { replace(ref self.stdin, none) }
+
+    /// Take the read end of the child's stdout pipe (`none` unless
+    /// `Stdio::Piped`, or once taken). The taker closes it.
+    pub fn take_stdout(ref self) -> ChildStdout | none { replace(ref self.stdout, none) }
+
+    /// Take the read end of the child's stderr pipe (`none` unless
+    /// `Stdio::Piped`, or once taken). The taker closes it.
+    pub fn take_stderr(ref self) -> ChildStderr | none { replace(ref self.stderr, none) }
+
+    /// Close the pipes not taken; closing cannot report to anyone here.
+    fn close_pipes(ref self) {
+        if let si: ChildStdin = self.take_stdin() { try si.close() catch _ {}; }
+        if let so: ChildStdout = self.take_stdout() { try so.close() catch _ {}; }
+        if let se: ChildStderr = self.take_stderr() { try se.close() catch _ {}; }
+    }
+
+    /// Kill the child, close its pipes and reap it, for an error path;
+    /// nothing here can report.
+    fn abandon(ref self) {
+        try self.raw_signal(9) catch _ {};
+        self.close_pipes();
+        try self.reap(true) catch _ { false };
+    }
+
+    /// A handle that signals the child while this `Child` is owned (and
+    /// waited on) elsewhere: another thread or task can kill it.
+    pub fn handle(self) -> ChildHandle { ChildHandle { pid: self.pid, state: self.state } }
+
+    /// `SIGKILL`.
+    pub fn kill(self) throws (IoError) { try self.raw_signal(9); }
+
+    /// Send `sig`; a no-op once the child has ended and is being reaped.
+    pub fn send_signal(self, sig: Signal) throws (IoError) {
+        try unsent(sig);
+        try self.raw_signal(sig.number());
+    }
+
+    fn raw_signal(self, sig: i32) throws (IoError) { try signal_child(self.pid, self.state, sig); }
+
+    /// Reap the child once it has ended (`block`: wait for that):
+    /// `false` if `!block` and it is still running. Of copies reaping at
+    /// once, the first to see it ended reaps it, after the calls in
+    /// flight; the rest wait for that.
+    fn reap(self, block: bool) throws (IoError) -> bool { try reap_pid(self.pid, self.state, block) }
+
+    /// Wait for the child to end. Closes our end of its stdin first, so
+    /// a child reading to EOF can finish.
+    pub fn wait(ref self) throws (IoError) -> ExitStatus {
+        if let si: ChildStdin = self.take_stdin() { try si.close(); }
+        _ = try self.reap(true);
+        ExitStatus { raw: unsafe { self.state[1] } }
+    }
+
+    /// `wait` that suspends the task. Closes stdin here; the blocking
+    /// thread only reaps.
+    pub async fn wait_async(ref self) throws (IoError) -> ExitStatus {
+        if let si: ChildStdin = self.take_stdin() { try si.close(); }
+        let pid = self.pid;
+        // The reaping state is atomics-guarded (and `Sync`): any thread
+        // may reap.
+        let st = self.state;
+        _ = try await off(|| try reap_pid(pid, st, true));
+        ExitStatus { raw: unsafe { st[1] } }
+    }
+
+    /// The status if it has ended, without blocking.
+    pub fn try_wait(self) throws (IoError) -> ExitStatus | none {
+        if !(try self.reap(false)) { return none; }
+        ExitStatus { raw: unsafe { self.state[1] } }
+    }
+}
+
+/// Reap `pid` once it has ended (`block`: wait for that): `false` if
+/// `!block` and it is still running. Of copies of `state` reaping at
+/// once, the first to see it ended reaps it, after the calls in flight;
+/// the rest wait for that.
+fn reap_pid(pid: i32, state: GcBuf<i32>, block: bool) throws (IoError) -> bool {
+    unsafe {
+        if word_at(state, 0) == 0 && use_begin(state, 3) {
+            let out: GcBuf<i32> = buf_new(1);
+            let r = nabi_os_waitpid(pid, if block { 2 } else { 3 }, out);
+            _ = use_end(state, 3);
+            if r == 0 { return false; }
+            try check(r as i64, "waitpid");
+            // The first to close reaps.
+            if (use_close(state, 3) & 1) == 0 {
+                while word_at(state, 3) != 1 { nabi_thread_yield_now(); }
+                let k = nabi_os_waitpid(pid, 1, out);
+                if k < 0 {
+                    take_handle(state, 0, k);
+                } else {
+                    reaped(state, out[0]);
+                }
+            }
+        }
+        while word_at(state, 0) == 0 { nabi_thread_yield_now(); }
+        let st = word_at(state, 0);
+        if st < 0 { try check(st as i64, "waitpid"); }
+        true
+    }
+}
+
+/// Record a reaped status; the pidfd goes with the process.
+unsafe fn reaped(state: GcBuf<i32>, raw: i32) {
+    state[1] = raw;
+    let fd = take_handle(state, 2, -9);
+    if fd >= 0 {
+        _ = nabi_os_close(fd);
+    }
+    take_handle(state, 0, 1);
+}
+
+/// Signal number `sig` to the child `pid`, unless reaping has begun:
+/// the call holds the pid (`use_begin`), so it never reaches a reused
+/// pid or pidfd.
+fn signal_child(pid: i32, state: GcBuf<i32>, sig: i32) throws (IoError) {
+    if !use_begin(state, 3) { return; }
+    let r = unsafe {
+        let fd = state[2];
+        if fd >= 0 { nabi_os_pidfd_signal(fd, sig) } else { nabi_os_kill(pid, sig) }
+    };
+    _ = use_end(state, 3);
+    try check(r as i64, "kill");
+}
+
+/// Signals a child that a `Child` owns (`Child::handle`). It owns
+/// nothing: no pipes, no wait. Copies are free and may go to any
+/// thread; once the child has ended and is being reaped, a signal is a
+/// no-op, never one for a reused pid.
+pub struct ChildHandle {
+    pid: i32;
+    state: GcBuf<i32>;
+}
+
+impl Debug for ChildHandle {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"ChildHandle {{ pid: {self.pid} }}") }
+}
+
+impl ChildHandle {
+    /// The child's process id.
+    pub const fn id(self) -> u32 { self.pid as u32 }
+
+    /// `SIGKILL` (Windows: `TerminateProcess`).
+    pub fn kill(self) throws (IoError) { try signal_child(self.pid, self.state, 9); }
+
+    /// Send `sig`, as `Child::send_signal`.
+    pub fn send_signal(self, sig: Signal) throws (IoError) {
+        try unsent(sig);
+        try signal_child(self.pid, self.state, sig.number());
+    }
+}
+
+/// Closes the pipes not taken; with `kill_on_drop`, also kills and
+/// reaps the child.
+impl Drop for Child {
+    fn drop(ref self) {
+        if self.kill_on_drop && unsafe { word_at(self.state, 0) } == 0 {
+            try self.raw_signal(9) catch _ {};
+            try self.wait() catch _ { ExitStatus { raw: 0 } };
+        }
+        self.close_pipes();
+    }
+}
+
+/// How a child ended (a raw `wait` status; Windows: the exit code).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExitStatus {
+    raw: i32;
+}
+
+impl ExitStatus {
+    /// `true` when the child exited with code 0.
+    pub const fn success(self) -> bool { self.raw == 0 }
+
+    /// The exit code; `none` if a signal ended it.
+    pub const fn code(self) -> i32 | none {
+        if WINDOWS { return self.raw; }
+        if (self.raw & 0x7f) != 0 { return none; }
+        (self.raw >> 8) & 0xff
+    }
+
+    /// The number of the signal that ended it, if any (never on
+    /// Windows).
+    const fn signal_number(self) -> i32 | none {
+        if WINDOWS { return none; }
+        let s = self.raw & 0x7f;
+        if s == 0 || s == 0x7f { return none; }
+        s
+    }
+}
+
+impl Debug for ExitStatus {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        if let c: i32 = self.code() {
+            try f.write_str(f"ExitStatus {{ code: {c} }}");
+        } else {
+            try f.write_str(f"ExitStatus {{ signal: {self.signal_number() ?? 0} }}");
+        }
+    }
+}
+
+impl Display for ExitStatus {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        if let c: i32 = self.code() {
+            try f.write_str(f"exit status: {c}");
+        } else {
+            try f.write_str(f"signal: {self.signal_number() ?? 0}");
+        }
+    }
+}
+
+#[cfg(target_family = "unix")]
+impl CommandExt for Command {
+    const fn process_group(self, pgid: i32) -> Command { self.process_group = pgid; self }
+}
+
+#[cfg(target_family = "unix")]
+impl ExitStatusExt for ExitStatus {
+    const fn signal(self) -> Signal | none { Signal::from_number(self.signal_number()?) }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl ChildExt for Child {
+    fn pidfd(self) throws (IoError) -> RawFd {
+        let fd = unsafe { self.state[2] };
+        try check(fd as i64, "pidfd");
+        fd
+    }
+}
+
+/// What `output()` collected.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Output {
+    pub status: ExitStatus;
+    pub stdout: List<u8>;
+    pub stderr: List<u8>;
+}

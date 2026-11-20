@@ -1,0 +1,20 @@
+// expect-error: no method `sol` found for type `R`
+// expect-error: no method `cb` found for type `R`
+// expect-error: `sol` is a field of `R` of type `D`, which is callable: call it as `(r.sol)(..)`
+// expect-error: `cb` is a field of `R` of type `fn(f64) -> f64`, which is callable: call it as `(r.cb)(..)`
+
+// `r.f(x)` names a method; a callable field is called as `(r.f)(x)`, and
+// the help says so.
+pub struct D { a: f64; }
+impl ops::Call<f64> for D {
+    type Output = f64;
+    fn call(self, x: f64) -> f64 { self.a * x }
+}
+pub struct R { pub sol: D; pub cb: fn(f64) -> f64; }
+
+fn main() {
+    let r = R { sol: D { a: 2.0 }, cb: |x: f64| -> f64 { x } };
+    println((r.sol)(1.5));
+    println(r.sol(1.5));
+    println(r.cb(1.0));
+}

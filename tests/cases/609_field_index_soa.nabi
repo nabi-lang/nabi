@@ -1,0 +1,40 @@
+// expect-exit: 0
+// expect-stdout:
+// [5.0, 7.0] [6, 8] 2
+// 4 [0, 1, 2, 3]
+
+// `@field.index` reaches a tuple column by the field's position;
+// `@Self.field_count` / `@Self.variant_count` are literals.
+trait Cols { fn put(self, ref c: (List<f32>, List<i32>)); fn width() -> usize; }
+
+#[impl_derive(Cols)] @derive {
+    impl Cols for @Self {
+        fn put(self, ref c: (List<f32>, List<i32>)) {
+            @for_fields { c.@field.index.push(self.@field); }
+        }
+        fn width() -> usize { @Self.field_count }
+    }
+}
+
+#[derive(Cols)]
+struct Sample { t: f32; n: i32; }
+
+trait Table { fn count() -> usize; fn ords() -> List<usize>; }
+
+#[impl_derive(Table)] @derive {
+    impl Table for @Self {
+        fn count() -> usize { @Self.variant_count }
+        fn ords() -> List<usize> { [@for_variants { @variant.index, }] }
+    }
+}
+
+#[derive(Table)]
+enum Dir { N, E, S, W }
+
+fn main() {
+    let c: (List<f32>, List<i32>) = ([], []);
+    Sample { t: 5.0, n: 6 }.put(ref c);
+    Sample { t: 7.0, n: 8 }.put(ref c);
+    println(f"{c.0:?} {c.1:?} {Sample::width()}");
+    println(f"{Dir::count()} {Dir::ords():?}");
+}

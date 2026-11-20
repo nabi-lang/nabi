@@ -1,0 +1,72 @@
+// needs: net
+// skip-wasm-runner: jco
+// (preview2-shim 0.31.1, the latest, files an accepted socket's
+// pollable under its input stream: closing the socket in wasi-libc's
+// order, the stream before the socket's pollable, traps; fixed by
+// targets/wasi/shim.patch)
+// expect-exit: 0
+// expect-stdout:
+// read: timed out
+// cancelled: true
+// registrations left: 0
+// read in time: 2
+// select: timed out
+
+// Timeouts on async socket calls (`set_read_timeout` is for
+// the blocking calls; the async ones go through `task::timeout`, or
+// `task::select` with a `sleep`). After a timeout the read keeps going
+// until cancelled.
+use std::net::{TcpListener, TcpStream, SocketAddr};
+
+let any: SocketAddr = try! "127.0.0.1:0".parse::<SocketAddr>();
+let listener = try! TcpListener::bind(any);
+let client = try! TcpStream::connect(try! listener.local_addr());
+let (server, _) = try! listener.accept();
+
+// Each reader owns the socket; its `finally` hands it back, cancelled or
+// not.
+let (back_tx, back_rx) = channel::<TcpStream>();
+fn back(rx: Receiver<TcpStream>) -> TcpStream {
+    match rx.recv() { s: TcpStream => s, none => panic("no socket back") }
+}
+
+let tx1 = back_tx.clone();
+let read = task::spawn(async {
+    let n = { try await server.read_async(List::filled(16, 0u8)) catch _ { 0 } } finally {
+        try! tx1.send(server);
+    };
+    n
+});
+let r = try await task::timeout(Duration::ms(20), read) catch _: task::TimeoutError { 999 };
+println(f"read: {if r == 999 { "timed out" } else { "data" }}");
+read.cancel();
+let gone = try await read.join() catch _: task::CancellationError { 999 };
+println(f"cancelled: {gone == 999}");
+println(f"registrations left: {task::registrations()}");
+
+let s2 = back(back_rx);
+let tx2 = back_tx.clone();
+let read2 = task::spawn(async {
+    let n = { try await s2.read_async(List::filled(16, 0u8)) catch _ { 0 } } finally {
+        try! tx2.send(s2);
+    };
+    n
+});
+try! client.write_all("hi");
+let n = try await task::timeout(Duration::secs(10), read2) catch _: task::TimeoutError { 999 };
+println(f"read in time: {n}");
+
+let s3 = back(back_rx);
+let (which, _) = await task::select([
+    async {
+        let n = { try await s3.read_async(List::filled(16, 0u8)) catch _ { 0 } } finally {
+            try! back_tx.send(s3);
+        };
+        n
+    },
+    async { await task::sleep(Duration::ms(20)); 0 },
+]);
+println(f"select: {if which == 1 { "timed out" } else { "data" }}");
+try! client.close();
+try! back(back_rx).close();
+try! listener.close();

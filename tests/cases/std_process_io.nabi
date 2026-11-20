@@ -1,0 +1,111 @@
+// expect-exit: 0
+// expect-stdout:
+// child args: child x y
+// first: [one]
+// line: [two]
+// line: [three]
+// bytes: 5
+// child stderr: [to stderr]
+// child exit: 5 false
+// code=3 out=[hi bar] err=[err]
+// big stderr: 200000 out=[done]
+// PIPED TEXT
+// exit status: 0
+// pwd: /
+// env: ONLY=1
+// missing: NotFound
+// signal=Kill code_none=true
+// try_wait ok, then: exit status: 0
+// id ok: true
+
+// The program re-runs itself as a child with
+// piped stdio (`Command`, `env::args`, `io::read_line`, stdin `lines`,
+// stdout / stderr writers), then drives `sh` / `tr` / `env` through
+// `output` / `spawn` / `status` with env, cwd, signals.
+
+use std::process;
+use std::process::{Command, Stdio};
+use core::io::IoError;
+use std::env;
+
+fn child() throws (IoError) {
+    let a = env::args();
+    let out = io::stdout();
+    try out.write_all(f"child args: {a[1]} {a[2]} {a[3]}\n");
+    let first = try io::read_line() ?? "";
+    try out.write_all("first: [" + first + "]\n");
+    try for line in io::stdin().lines() {
+        println("line: [" + line + "]");
+    }
+    try out.write_all([98u8, 121u8, 116u8, 101u8, 115u8]);
+    println(": 5");
+    try out.flush();
+    try io::stderr().write_all("to stderr");
+    process::exit(5);
+}
+
+fn text(bytes: List<u8>) -> str { return (try! str::from_utf8(bytes)).trim(); }
+
+// `env` by its path: Android keeps it in /system/bin.
+#[cfg(not(target_os = "android"))]
+const ENV: str = "/usr/bin/env";
+#[cfg(target_os = "android")]
+const ENV: str = "/system/bin/env";
+
+fn main() throws (IoError) {
+    let args = env::args();
+    if args.len() > 1 { try child(); }
+
+    let me = try Command::new(args[0]).args(["child", "x", "y"])
+        .stdin(Stdio::Piped).stdout(Stdio::Piped).stderr(Stdio::Piped).spawn();
+    let si = me.take_stdin() ?? panic("stdin not piped");
+    try si.write_all("one\ntwo\r\nthree");
+    try si.close();
+    let so = me.take_stdout() ?? panic("stdout not piped");
+    print(try so.read_to_str());
+    try so.close();
+    let se = me.take_stderr() ?? panic("stderr not piped");
+    println("child stderr: [" + (try se.read_to_str()) + "]");
+    try se.close();
+    let st = try me.wait();
+    println(f"child exit: {st.code() ?? -1} {st.success()}");
+
+    let out = try Command::new("sh").args(["-c", "echo hi $FOO; echo err >&2; exit 3"])
+        .env("FOO", "bar").output();
+    println(f"code={out.status.code() ?? -1} out=[{text(out.stdout)}] err=[{text(out.stderr)}]");
+
+    // 200 KB to stderr before stdout closes: both pipes must drain together.
+    let big = try Command::new("sh").args(["-c", "head -c 200000 /dev/zero >&2; echo done"]).output();
+    println(f"big stderr: {big.stderr.len()} out=[{text(big.stdout)}]");
+
+    let tr = try Command::new("tr").arg("a-z").arg("A-Z")
+        .stdin(Stdio::Piped).stdout(Stdio::Piped).spawn();
+    let tin = tr.take_stdin() ?? panic("no stdin");
+    try tin.write_all("piped text\n");
+    try tin.close();
+    let tout = tr.take_stdout() ?? panic("no stdout");
+    print(try tout.read_to_str());
+    try tout.close();
+    println(f"{try tr.wait()}");
+
+    let pwd = try Command::new("pwd").current_dir("/").output();
+    println("pwd: " + text(pwd.stdout));
+    let clean = try Command::new(ENV).env_clear().env("ONLY", "1").output();
+    println("env: " + text(clean.stdout));
+
+    let missing = try Command::new("no-such-program-nabi").status().success() catch e {
+        println("missing: " + f"{e.kind():?}");
+        false
+    };
+    let sig = try Command::new("sh").args(["-c", "kill -9 $$"]).status();
+    println(f"signal={sig.signal():?} code_none={sig.code() is none}");
+
+    let quick = try Command::new("true").spawn();
+    let polled = try quick.try_wait();
+    let done = try quick.wait();
+    println(f"try_wait ok, then: {done}");
+    println(f"id ok: {process::id() > 0u32}");
+}
+
+// only-os: macos linux
+// needs: native-run

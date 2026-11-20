@@ -1,0 +1,914 @@
+//! core::collections::slice: `Slice<T>`, a zero-copy view;
+//! element `i` is `buf[start + i * stride]`, and the view keeps
+//! its buffer alive.
+//!
+//! `xs[a:b]` is `xs.slice(a..b)` and `xs[a:b:k]` is
+//! `xs.slice(index::slice_range(a, b, k, len)).step(k)`, with Python's
+//! semantics (bounds clamp, `xs[::-1]` reverses). A view of a `List` sees
+//! later element writes but not a regrowth, which moves the list to a new
+//! buffer; a view of an array or `StrBuf` views a copy.
+
+use core::marker::{Memo, Transfer, buf_is_null, buf_slots, copy_buf, copy_shared};
+
+/// A zero-copy view of a buffer: element `i` is
+/// `buf[start + i * stride]`. A view of a `List` sees later element writes
+/// but not a regrowth; a view of an array or `StrBuf` views a copy.
+pub struct Slice<T> {
+    pub(pkg) buf: GcBuf<T>;
+    pub(pkg) start: usize;
+    pub(pkg) len: usize;
+    pub(pkg) stride: isize;
+    /// `buf` is a GC object of its own (a list's buffer, an array's
+    /// copy), not a `str`'s bytes or raw parts: a hand-off may copy it
+    /// whole.
+    pub(pkg) whole: bool;
+}
+
+// Shares its buffer like `List`.
+impl<T> !Sync for Slice<T> {}
+
+/// A contiguous view of `buf[r]` (`r` clamped to the length `n`).
+pub(pkg) const fn view_of<T>(buf: GcBuf<T>, r: Range<usize>, n: usize) -> Slice<T> {
+    let r = clamp_range(r, n);
+    Slice { buf: buf, start: r.start, len: r.end - r.start, stride: 1, whole: true }
+}
+
+impl<T> Slice<T> {
+    /// The number of elements.
+    pub const fn len(self) -> usize {
+        self.len
+    }
+
+    /// `true` when the slice has no element.
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+
+    /// Buffer index of element `i` (`i < len`): in the buffer, so
+    /// nothing wraps, and no checked arithmetic keeps it out of the
+    /// `#[track_caller]` accessors.
+    const fn at(self, i: usize) -> usize {
+        self.start.wrapping_add((i as isize).wrapping_mul(self.stride) as usize)
+    }
+
+    /// Element `i`, or `none` out of bounds.
+    pub const fn get(self, i: usize) -> T | none {
+        unsafe {
+            if i >= self.len {
+                return none;
+            }
+            return self.buf[self.at(i)];
+        }
+    }
+
+    /// The first element; `none` when empty.
+    pub const fn first(self) -> T | none {
+        self.get(0)
+    }
+
+    /// The last element; `none` when empty.
+    pub const fn last(self) -> T | none {
+        if self.len == 0 {
+            return none;
+        }
+        self.get(self.len - 1)
+    }
+
+    /// Every `k`th element (`k` != 0), back to front when `k` < 0.
+    #[track_caller]
+    pub const fn step(self, k: isize) -> Slice<T> {
+        if k == 0 {
+            panic("Slice::step: the step is zero; use a positive step, or a negative one to go back to front");
+        }
+        let m = if k < 0 { -k } else { k };
+        let n = (self.len + (m as usize) - 1) / (m as usize);
+        let first = if k < 0 && self.len > 0 { self.at(self.len - 1) } else { self.start };
+        Slice { buf: self.buf, start: first, len: n, stride: self.stride * k, whole: self.whole }
+    }
+
+    /// The elements front to back.
+    pub const fn iter(self) -> SliceIter<T> {
+        SliceIter { s: self, i: 0 }
+    }
+
+    /// Views of `[0, mid)` and `[mid, len)`; panics if `mid` is past the
+    /// length.
+    #[track_caller]
+    pub const fn split_at(self, mid: usize) -> (Slice<T>, Slice<T>) {
+        if mid > self.len {
+            index_oob("Slice::split_at: index", mid, self.len);
+        }
+        (self.slice(0..mid), self.slice(mid..self.len))
+    }
+
+    /// Views of `size` consecutive elements, sliding by one (`size` > 0);
+    /// nothing when the view is shorter than `size`.
+    #[track_caller]
+    pub const fn windows(self, size: usize) -> Windows<T> {
+        if size == 0 {
+            panic("Slice::windows: size is 0; pass a positive size, e.g. `windows(2)`");
+        }
+        Windows { s: self, size: size, i: 0 }
+    }
+
+    /// Views of `size` elements in order, the last one shorter
+    /// (`size` > 0).
+    #[track_caller]
+    pub const fn chunks(self, size: usize) -> Chunks<T> {
+        if size == 0 {
+            panic("Slice::chunks: size is 0; pass a positive size, e.g. `chunks(2)`");
+        }
+        Chunks { s: self, size: size, i: 0 }
+    }
+
+    /// `(buffer, start, len)` of the viewed elements as one contiguous
+    /// run, for runtime calls on a buffer region. A strided view is
+    /// copied first, so writes through its run do not reach the view.
+    pub const unsafe fn raw_parts(self) -> (GcBuf<T>, usize, usize) {
+        if self.stride == 1 {
+            return (self.buf, self.start, self.len);
+        }
+        (self.to_list().buffer(), 0, self.len)
+    }
+
+    /// The view `raw_parts` takes apart: `len` elements of `buf` from
+    /// `start`.
+    pub const unsafe fn from_raw_parts(buf: GcBuf<T>, start: usize, len: usize) -> Slice<T> {
+        Slice { buf: buf, start: start, len: len, stride: 1, whole: false }
+    }
+
+    /// A new list holding the viewed elements.
+    pub const fn to_list(self) -> List<T> {
+        let out: List<T> = List::with_capacity(self.len);
+        for x in self {
+            out.push(x);
+        }
+        out
+    }
+}
+
+/// `s.iter()` / `for x in s`, in view order.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct SliceIter<T> {
+    s: Slice<T>;
+    i: usize;
+    /// Items taken from the back (`next_back`).
+    back: usize = 0;
+}
+
+impl<T> Debug for SliceIter<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SliceIter") }
+}
+
+impl<T> Iterator for SliceIter<T> {
+    type Item = T;
+    const fn next(ref self) -> T | none {
+        unsafe {
+            if self.i + self.back >= self.s.len {
+                return none;
+            }
+            self.i += 1;
+            // `return`: with `T = ()` a bare tail reads as a missing value.
+            return self.s.buf[self.s.at(self.i - 1)];
+        }
+    }
+
+    const fn exact_len(self) -> usize | none { self.len() }
+
+    /// `ExactSizeIterator`: O(1).
+    const fn count(self) -> usize { self.len() }
+}
+
+impl<T> DoubleEndedIterator for SliceIter<T> {
+    const fn next_back(ref self) -> T | none {
+        unsafe {
+            if self.i + self.back >= self.s.len {
+                return none;
+            }
+            self.back += 1;
+            return self.s.buf[self.s.at(self.s.len - self.back)];
+        }
+    }
+}
+
+impl<T> ExactSizeIterator for SliceIter<T> {
+    const fn len(self) -> usize { self.s.len - self.i - self.back }
+}
+
+impl<T> IntoIterator for Slice<T> {
+    type IntoIter = SliceIter<T>;
+    type Item = T;
+    const fn into_iter(self) -> SliceIter<T> {
+        self.iter()
+    }
+}
+
+impl<T> Slice<T> {
+    /// The first index whose element fails `pred`, which must hold for a
+    /// prefix and fail for the rest; O(log n).
+    pub const fn partition_point(self, pred: fn(T) -> bool) -> usize {
+        let lo: usize = 0;
+        let hi = self.len;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if pred(self[mid]) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+}
+
+impl<T: Ord> Slice<T> {
+    /// The index of the first element equal to `x` in an ascending
+    /// view, or `none`; O(log n).
+    pub const fn binary_search(self, x: T) -> usize | none {
+        let i = self.partition_point(|e: T| e.cmp(x).is_lt());
+        if i < self.len && self[i].cmp(x).is_eq() {
+            return i;
+        }
+        none
+    }
+}
+
+impl<T: PartialEq> Slice<T> {
+    /// `true` when an element equals `x`.
+    pub const fn contains(self, x: T) -> bool {
+        for y in self {
+            if y == x {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// `s.windows(size)`: each window is a view of `s`, no copy.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Windows<T> {
+    s: Slice<T>;
+    size: usize;
+    /// Start of the next window.
+    i: usize;
+}
+
+impl<T> Debug for Windows<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Windows") }
+}
+
+impl<T> Iterator for Windows<T> {
+    type Item = Slice<T>;
+    const fn next(ref self) -> Slice<T> | none {
+        if self.s.len - self.i < self.size {
+            return none;
+        }
+        let w = self.s.slice(self.i..self.i + self.size);
+        self.i += 1;
+        w
+    }
+
+    const fn exact_len(self) -> usize | none { self.len() }
+
+    /// `ExactSizeIterator`: O(1).
+    const fn count(self) -> usize { self.len() }
+}
+
+impl<T> ExactSizeIterator for Windows<T> {
+    const fn len(self) -> usize {
+        if self.s.len - self.i < self.size { 0 } else { self.s.len - self.size - self.i + 1 }
+    }
+}
+
+/// `s.chunks(size)`: each chunk is a view of `s`, no copy.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Chunks<T> {
+    s: Slice<T>;
+    size: usize;
+    /// Start of the next chunk.
+    i: usize;
+}
+
+impl<T> Debug for Chunks<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Chunks") }
+}
+
+impl<T> Iterator for Chunks<T> {
+    type Item = Slice<T>;
+    const fn next(ref self) -> Slice<T> | none {
+        if self.i >= self.s.len {
+            return none;
+        }
+        let end = self.i + self.size.min(self.s.len - self.i);
+        let c = self.s.slice(self.i..end);
+        self.i = end;
+        c
+    }
+
+    const fn exact_len(self) -> usize | none { self.len() }
+
+    /// `ExactSizeIterator`: O(1).
+    const fn count(self) -> usize { self.len() }
+}
+
+impl<T> ExactSizeIterator for Chunks<T> {
+    const fn len(self) -> usize {
+        let n = self.s.len - self.i;
+        n / self.size + if n % self.size == 0 { 0 } else { 1 }
+    }
+}
+
+/// `s[i]`; panics out of bounds. Views are read-only (no `IndexSet`).
+impl<T> Index<usize> for Slice<T> {
+    type Output = T;
+    #[track_caller]
+    const fn index(self, i: usize) -> T {
+        unsafe {
+            if i >= self.len {
+                return index_oob("slice index", i, self.len);
+            }
+            self.buf[self.at(i)]
+        }
+    }
+}
+
+/// `s[a:b]`: a view of the view.
+impl<T> Sliceable<Range<usize>> for Slice<T> {
+    type Output = Slice<T>;
+    const fn slice(self, r: Range<usize>) -> Slice<T> {
+        let r = clamp_range(r, self.len);
+        let first = if r.start < self.len { self.at(r.start) } else { self.start };
+        Slice { buf: self.buf, start: first, len: r.end - r.start, stride: self.stride, whole: self.whole }
+    }
+}
+
+/// `xs[a:b]`: a view of the list's current buffer.
+impl<T> Sliceable<Range<usize>> for List<T> {
+    type Output = Slice<T>;
+    const fn slice(self, r: Range<usize>) -> Slice<T> {
+        view_of(self.buffer(), r, self.len())
+    }
+}
+
+/// `a[i:j]` on a fixed array: a view of a GC copy (arrays are values).
+impl<T, const N: usize> Sliceable<Range<usize>> for [T; N] {
+    type Output = Slice<T>;
+    const fn slice(self, r: Range<usize>) -> Slice<T> {
+        unsafe {
+            let r = clamp_range(r, N);
+            let buf: GcBuf<T> = buf_new(r.end - r.start);
+            for i in r.start..r.end {
+                buf[i - r.start] = self[i];
+            }
+            Slice { buf: buf, start: 0, len: r.end - r.start, stride: 1, whole: true }
+        }
+    }
+}
+
+impl AsBytes for str {
+    const fn byte_slice(self) -> Slice<u8> { self.as_bytes() }
+}
+
+impl AsBytes for List<u8> {
+    const fn byte_slice(self) -> Slice<u8> { self[0:self.len()] }
+}
+
+impl AsBytes for Slice<u8> {
+    const fn byte_slice(self) -> Slice<u8> { self }
+}
+
+/// `b"..."` and `include_bytes!` data: a view of a copy.
+impl<const N: usize> AsBytes for [u8; N] {
+    const fn byte_slice(self) -> Slice<u8> { self[:] }
+}
+
+impl Slice<u8> {
+    /// The offset of the first occurrence of `needle`, or `none`; an
+    /// empty needle is at 0.
+    // Naive O(n * m) scan.
+    #[must_use]
+    pub const fn find<B: AsBytes>(self, needle: B) -> usize | none {
+        let p = needle.byte_slice();
+        let m = p.len;
+        if m > self.len {
+            return none;
+        }
+        for i in 0..self.len - m + 1 {
+            let j: usize = 0;
+            while j < m && self[i + j] == p[j] {
+                j += 1;
+            }
+            if j == m {
+                return i;
+            }
+        }
+        none
+    }
+}
+
+impl List<u8> {
+    /// `self[:].find(needle)`.
+    #[must_use]
+    pub const fn find<B: AsBytes>(self, needle: B) -> usize | none {
+        self[:].find(needle)
+    }
+}
+
+/// Element-wise, in view order.
+impl<T: PartialEq> PartialEq for Slice<T> {
+    const fn eq(self, rhs: Slice<T>) -> bool {
+        if self.len != rhs.len { return false; }
+        for i in 0..self.len {
+            if self[i] != rhs[i] { return false; }
+        }
+        true
+    }
+    fn ne(self, rhs: Slice<T>) -> bool { !self.eq(rhs) }
+}
+
+/// `[a, b, c]` like a list.
+impl<T: Debug> Debug for Slice<T> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("[");
+        for i in 0..self.len {
+            try f.debug_entry("", self[i], i == 0, false);
+        }
+        try f.debug_close("]", self.len == 0, false)
+    }
+}
+
+/// A hand-off's copy: a view of a whole buffer views
+/// that buffer's one copy, which every other view of it and its list
+/// share. Any other view (a `str`'s bytes) copies only its elements into
+/// a buffer of their own; its buffer word is never read as an object, so
+/// the memo keys it with the range.
+impl<T> Transfer for Slice<T> {
+    const fn transfer_copy(self, m: Memo) -> Slice<T> {
+        if buf_is_null(self.buf) {
+            return self;
+        }
+        if self.whole {
+            let slots = unsafe { buf_slots(self.buf) };
+            let buf = copy_shared(self.buf, slots, slots, m);
+            return Slice { buf, start: self.start, len: self.len, stride: self.stride, whole: true };
+        }
+        let stride = self.stride as usize;
+        unsafe {
+            if let got: GcBuf<Slice<T>> = m.find_at::<T, Slice<T>>(self.buf, self.start, self.len, stride) {
+                return got[0];
+            }
+            let boxed: GcBuf<Slice<T>> = buf_new(1);
+            m.note_at::<T, Slice<T>>(self.buf, self.start, self.len, stride, boxed);
+            let slots = if self.len == 0 { 1 } else { self.len };
+            let buf = copy_buf(self.buf, self.start, self.len, self.stride, slots, m);
+            let s = Slice { buf, start: 0usize, len: self.len, stride: 1isize, whole: true };
+            boxed[0] = s;
+            s
+        }
+    }
+
+    const fn transfer_keep(self, m: Memo) -> Slice<T> {
+        if buf_is_null(self.buf) {
+            return self;
+        }
+        if self.whole {
+            m.keep(self.buf);
+            return self;
+        }
+        let stride = self.stride as usize;
+        unsafe {
+            if let _: GcBuf<Slice<T>> = m.find_at::<T, Slice<T>>(self.buf, self.start, self.len, stride) {
+                return self;
+            }
+            let boxed: GcBuf<Slice<T>> = buf_new(1);
+            boxed[0] = self;
+            m.note_at::<T, Slice<T>>(self.buf, self.start, self.len, stride, boxed);
+        }
+        self
+    }
+
+    /// Its range of the buffer, read only: slices of one list may share
+    /// it. Any other view (a `str`'s bytes) holds no collection.
+    const fn transfer_visit(self, m: Memo) -> Slice<T> {
+        if !buf_is_null(self.buf) && self.whole {
+            m.visit_span(self.buf, self.start, self.len, self.stride);
+        }
+        self
+    }
+}
+
+/// A writable view of a list's elements, like Rust's
+/// `&mut [T]`: `s[i] = x` writes the list. A `List<T>` passed where a
+/// `SliceMut<T>` is expected views the whole list, and `xs[a:b]` there
+/// views `xs[a:b]`. Element `i` is `buf[start + i]`.
+///
+/// A view lives as long as nothing resizes its list. Resizing it
+/// (`push`, `insert`, `clear`, ...) while a view is still used later is a
+/// compile error where the compiler can see both; elsewhere the view's
+/// methods (and each step of a walk over it) notice the list's new
+/// version and panic. Element reads and writes (`s[i]`, `get`) check
+/// nothing, so a loop over a view runs as fast as one over a list: on a
+/// stale view they reach the storage the view was made of, which no
+/// other thread can reach (freezing a list that had views copies it).
+pub struct SliceMut<T> {
+    pub(pkg) buf: GcBuf<T>;
+    pub(pkg) start: usize;
+    pub(pkg) len: usize;
+    /// The list viewed and its `version` when the view was made.
+    pub(pkg) owner: List<T>;
+    pub(pkg) ver: usize;
+}
+
+// Shares its buffer like `List`.
+impl<T> !Sync for SliceMut<T> {}
+
+/// A view of `xs[r]` (`r` clamped to the length).
+pub(pkg) const fn view_mut_of<T>(xs: List<T>, r: Range<usize>) -> SliceMut<T> {
+    let r = clamp_range(r, xs.len());
+    xs.mark_viewed();
+    SliceMut { buf: xs.buffer(), start: r.start, len: r.end - r.start, owner: xs, ver: xs.version() }
+}
+
+#[track_caller]
+const fn stale_view() -> ! {
+    panic("SliceMut used after its list was resized (push, insert, clear, ...): make the view again after the resize")
+}
+
+impl<T> SliceMut<T> {
+    /// Panics when the list was resized since the view was made.
+    #[track_caller]
+    pub(pkg) const fn live(self) {
+        if self.owner.version() != self.ver {
+            stale_view();
+        }
+    }
+
+    /// The number of elements.
+    pub const fn len(self) -> usize {
+        self.len
+    }
+
+    /// `true` when there are no elements.
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+
+    /// Element `i`, or `none` out of bounds.
+    pub const fn get(self, i: usize) -> T | none {
+        unsafe {
+            if i >= self.len {
+                return none;
+            }
+            return self.buf[self.start.wrapping_add(i)];
+        }
+    }
+
+    /// The first element; `none` when empty.
+    #[track_caller]
+    pub const fn first(self) -> T | none {
+        self.get(0)
+    }
+
+    /// The last element; `none` when empty.
+    #[track_caller]
+    pub const fn last(self) -> T | none {
+        if self.len == 0 {
+            return none;
+        }
+        self.get(self.len - 1)
+    }
+
+    /// Overwrite every element with `x`.
+    #[track_caller]
+    pub const fn fill(self, x: T) {
+        self.live();
+        unsafe {
+            for i in 0..self.len {
+                self.buf[self.start + i] = x;
+            }
+        }
+    }
+
+    /// Exchange elements `i` and `j`; panics out of bounds.
+    #[track_caller]
+    pub const fn swap(self, i: usize, j: usize) {
+        self.live();
+        if i >= self.len {
+            index_oob("SliceMut::swap index", i, self.len);
+        }
+        if j >= self.len {
+            index_oob("SliceMut::swap index", j, self.len);
+        }
+        unsafe {
+            let x = self.buf[self.start + i];
+            self.buf[self.start + i] = self.buf[self.start + j];
+            self.buf[self.start + j] = x;
+        }
+    }
+
+    /// The elements in reverse order, in place.
+    #[track_caller]
+    pub const fn reverse(self) {
+        self.live();
+        unsafe {
+            let n = self.len;
+            for i in 0..n / 2 {
+                let a = self.start + i;
+                let b = self.start + n - 1 - i;
+                let x = self.buf[a];
+                self.buf[a] = self.buf[b];
+                self.buf[b] = x;
+            }
+        }
+    }
+
+    /// Overwrite the elements with those of `src`, which must be as long
+    /// (`s.copy_from_slice(ys[:])`); panics otherwise.
+    #[track_caller]
+    pub const fn copy_from_slice(self, src: Slice<T>) {
+        self.live();
+        if src.len != self.len {
+            panic(f"copy_from_slice: source length {src.len} does not match the view's {self.len}");
+        }
+        // `src` may view this very buffer: copy out first when it does.
+        let tmp = src.to_list();
+        unsafe {
+            for i in 0..self.len {
+                self.buf[self.start + i] = tmp[i];
+            }
+        }
+    }
+
+    /// Views of `[0, mid)` and `[mid, len)`, both writable; panics if
+    /// `mid` is past the length.
+    #[track_caller]
+    pub const fn split_at(self, mid: usize) -> (SliceMut<T>, SliceMut<T>) {
+        self.live();
+        if mid > self.len {
+            index_oob("split_at index", mid, self.len);
+        }
+        (self.slice(0..mid), self.slice(mid..self.len))
+    }
+
+    /// Writable views of `size` elements in order, the last one
+    /// shorter (`size` > 0). They do not overlap, so `par::for_each` may
+    /// give each to its own worker.
+    #[track_caller]
+    pub const fn chunks_mut(self, size: usize) -> ChunksMut<T> {
+        self.live();
+        if size == 0 {
+            panic("chunks_mut: size is 0; pass a positive size, e.g. `chunks_mut(1024)`");
+        }
+        ChunksMut { s: self, size: size, i: 0 }
+    }
+
+    /// The same elements as a read-only `Slice`.
+    #[track_caller]
+    pub const fn as_slice(self) -> Slice<T> {
+        self.live();
+        Slice { buf: self.buf, start: self.start, len: self.len, stride: 1, whole: true }
+    }
+
+    /// The elements in order.
+    #[track_caller]
+    pub const fn iter(self) -> SliceMutIter<T> {
+        self.live();
+        SliceMutIter { s: self, i: 0, back: 0 }
+    }
+
+    /// A new list holding the viewed elements.
+    #[track_caller]
+    pub const fn to_list(self) -> List<T> {
+        self.as_slice().to_list()
+    }
+
+    /// Ascending by `key(x)`, stable; `key` runs twice per comparison.
+    #[track_caller]
+    pub const fn sort_by_key<K: Ord>(self, key: fn(T) -> K) {
+        self.sort_by(|a: T, b: T| key(a).cmp(key(b)));
+    }
+
+    /// Stable merge sort by `cmp`: O(n log n), n extra slots.
+    #[track_caller]
+    pub const fn sort_by(self, cmp: fn(T, T) -> core::cmp::Ordering) {
+        self.live();
+        unsafe {
+            core::collections::list::sort_region(self.buf, self.start, self.len, cmp);
+        }
+    }
+
+    /// `(buffer, start, len)` of the viewed elements, for runtime calls
+    /// that fill a buffer region.
+    #[track_caller]
+    pub const unsafe fn raw_parts(self) -> (GcBuf<T>, usize, usize) {
+        self.live();
+        (self.buf, self.start, self.len)
+    }
+}
+
+impl<T: Ord> SliceMut<T> {
+    /// Ascending, stable.
+    #[track_caller]
+    pub const fn sort(self) {
+        self.sort_by(|a: T, b: T| a.cmp(b));
+    }
+}
+
+impl<T: PartialEq> SliceMut<T> {
+    /// `true` when an element equals `x`.
+    #[track_caller]
+    pub const fn contains(self, x: T) -> bool {
+        self.as_slice().contains(x)
+    }
+}
+
+/// `xs.chunks_mut(size)`: each chunk is a writable view of its own part
+/// of the list, no copy.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or pass it to `par::for_each`")]
+pub struct ChunksMut<T> {
+    s: SliceMut<T>;
+    size: usize;
+    /// Start of the next chunk.
+    i: usize;
+}
+
+impl<T> Debug for ChunksMut<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("ChunksMut") }
+}
+
+impl<T> Iterator for ChunksMut<T> {
+    type Item = SliceMut<T>;
+    #[track_caller]
+    const fn next(ref self) -> SliceMut<T> | none {
+        if self.i >= self.s.len {
+            return none;
+        }
+        let end = self.i + self.size.min(self.s.len - self.i);
+        let c = self.s.slice(self.i..end);
+        self.i = end;
+        c
+    }
+
+    const fn exact_len(self) -> usize | none { self.len() }
+
+    /// `ExactSizeIterator`: O(1).
+    const fn count(self) -> usize { self.len() }
+}
+
+impl<T> ExactSizeIterator for ChunksMut<T> {
+    const fn len(self) -> usize {
+        let n = self.s.len - self.i;
+        n / self.size + if n % self.size == 0 { 0 } else { 1 }
+    }
+}
+
+/// `s.iter()` / `for x in s`: checks the view on every step.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct SliceMutIter<T> {
+    s: SliceMut<T>;
+    i: usize;
+    /// Items taken from the back (`next_back`).
+    back: usize = 0;
+}
+
+impl<T> Debug for SliceMutIter<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SliceMutIter") }
+}
+
+impl<T> Iterator for SliceMutIter<T> {
+    type Item = T;
+    #[track_caller]
+    const fn next(ref self) -> T | none {
+        self.s.live();
+        unsafe {
+            if self.i + self.back >= self.s.len {
+                return none;
+            }
+            self.i += 1;
+            return self.s.buf[self.s.start + self.i - 1];
+        }
+    }
+
+    const fn exact_len(self) -> usize | none { self.len() }
+
+    /// `ExactSizeIterator`: O(1).
+    const fn count(self) -> usize { self.len() }
+}
+
+impl<T> DoubleEndedIterator for SliceMutIter<T> {
+    #[track_caller]
+    const fn next_back(ref self) -> T | none {
+        self.s.live();
+        unsafe {
+            if self.i + self.back >= self.s.len {
+                return none;
+            }
+            self.back += 1;
+            return self.s.buf[self.s.start + self.s.len - self.back];
+        }
+    }
+}
+
+impl<T> ExactSizeIterator for SliceMutIter<T> {
+    const fn len(self) -> usize { self.s.len - self.i - self.back }
+}
+
+impl<T> IntoIterator for SliceMut<T> {
+    type IntoIter = SliceMutIter<T>;
+    type Item = T;
+    #[track_caller]
+    const fn into_iter(self) -> SliceMutIter<T> {
+        self.iter()
+    }
+}
+
+/// `s[i]`; panics out of bounds.
+impl<T> Index<usize> for SliceMut<T> {
+    type Output = T;
+    #[track_caller]
+    const fn index(self, i: usize) -> T {
+        unsafe {
+            if i >= self.len {
+                return index_oob("slice index", i, self.len);
+            }
+            self.buf[self.start.wrapping_add(i)]
+        }
+    }
+}
+
+/// `s[i] = x` writes element `i` of the list; panics out of bounds.
+// Element access checks no version: it stays one load and a bounds
+// check, and loops over it vectorize. A stale view reaches the buffer
+// it was made of, which only this thread reaches: `freeze` copies a
+// list that had views, a hand-off copies the view's list. Slot
+// `start + i` (`i < len`) is in the buffer: wrapping adds keep checked
+// arithmetic out of these `#[track_caller]` accessors, so they inline.
+impl<T> IndexSet<usize, T> for SliceMut<T> {
+    #[track_caller]
+    const fn index_set(self, i: usize, value: T) {
+        unsafe {
+            if i >= self.len {
+                index_oob("slice index", i, self.len);
+            }
+            self.buf[self.start.wrapping_add(i)] = value;
+        }
+    }
+}
+
+/// `s[a:b]`: a writable view of the view.
+impl<T> Sliceable<Range<usize>> for SliceMut<T> {
+    type Output = SliceMut<T>;
+    #[track_caller]
+    const fn slice(self, r: Range<usize>) -> SliceMut<T> {
+        self.live();
+        let r = clamp_range(r, self.len);
+        SliceMut { buf: self.buf, start: self.start + r.start, len: r.end - r.start, owner: self.owner, ver: self.ver }
+    }
+}
+
+/// Element-wise.
+impl<T: PartialEq> PartialEq for SliceMut<T> {
+    #[track_caller]
+    const fn eq(self, rhs: SliceMut<T>) -> bool {
+        self.as_slice() == rhs.as_slice()
+    }
+    #[track_caller]
+    fn ne(self, rhs: SliceMut<T>) -> bool { !self.eq(rhs) }
+}
+
+/// `[a, b, c]` like a list.
+impl<T: Debug> Debug for SliceMut<T> {
+    #[track_caller]
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try Debug::fmt(self.as_slice(), ref f)
+    }
+}
+
+/// A hand-off's copy: the list's copy, viewed at the
+/// same place, so the view still writes what the receiver's list holds.
+impl<T> Transfer for SliceMut<T> {
+    #[track_caller]
+    const fn transfer_copy(self, m: Memo) -> SliceMut<T> {
+        // The copy's buffer is as long as the list is now.
+        self.live();
+        let owner = self.owner.transfer_copy(m);
+        SliceMut { buf: owner.buffer(), start: self.start, len: self.len, owner, ver: self.ver }
+    }
+
+    const fn transfer_keep(self, m: Memo) -> SliceMut<T> {
+        let _ = self.owner.transfer_keep(m);
+        self
+    }
+
+    /// Its range of the list's buffer, written: views of one list may
+    /// go to different `par` workers when their ranges do not overlap
+    /// and no item holds the list itself.
+    #[track_caller]
+    const fn transfer_visit(self, m: Memo) -> SliceMut<T> {
+        // A stale view would race with the resize it missed.
+        self.live();
+        m.visit_span_mut(self.buf, self.start, self.len);
+        self
+    }
+}

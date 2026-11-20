@@ -1,0 +1,35 @@
+// `SampleRange` for the integer ranges `Rng::range` takes.
+
+use std::random::SampleRange;
+
+#[impl_macro(int_ranges)] @macro {
+    (@rep[sep = ","] { @t: ty }) => {
+        @for @t {
+            impl SampleRange for Range<@t> {
+                type Item = @t;
+                #[track_caller]
+                const fn outcomes(self) -> u64 {
+                    if self.end <= self.start {
+                        panic(f"Rng::range: {self.start}..{self.end} is empty; the end must be above the start");
+                    }
+                    (self.end as u64).wrapping_sub(self.start as u64)
+                }
+                const fn outcome(self, k: u64) -> @t { self.start.wrapping_add(k as @t) }
+            }
+
+            impl SampleRange for RangeInclusive<@t> {
+                type Item = @t;
+                #[track_caller]
+                const fn outcomes(self) -> u64 {
+                    if self.end < self.start {
+                        panic(f"Rng::range: {self.start}..={self.end} is empty; the end must not be below the start");
+                    }
+                    // 0 when the range is all 64 bits.
+                    (self.end as u64).wrapping_sub(self.start as u64).wrapping_add(1)
+                }
+                const fn outcome(self, k: u64) -> @t { self.start.wrapping_add(k as @t) }
+            }
+        }
+    }
+}
+int_ranges!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);

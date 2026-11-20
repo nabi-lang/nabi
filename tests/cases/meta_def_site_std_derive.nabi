@@ -1,0 +1,23 @@
+// expect-exit: 0
+// expect-stdout:
+// P { a: 1 }
+// 2
+
+// The `Nabion` derive's own names (`Dict`, ..) are the standard
+// library's: a type of that name here does not take their place.
+use std::nabion;
+
+struct Dict {
+    n: i32;
+}
+
+#[derive(Nabion, Debug)]
+struct P {
+    a: i32;
+}
+
+fn main() {
+    let back: P = try! nabion::from_str(try! nabion::to_str(P { a: 1 }));
+    println(f"{back:?}");
+    println(Dict { n: 2 }.n);
+}

@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout:
+// true true
+// 0 2
+// 2 1
+// 1 2
+// 1 -1
+
+// `Complex::sqrt` keeps a small imaginary part to full precision (the
+// larger part first, the other from it), on both half planes.
+use core::num::Complex;
+
+let r = Complex::new(0.7, 1e-20).sqrt();
+let want = 1e-20 / (2.0 * 0.7.sqrt());
+let l = Complex::new(-0.7, 1e-20).sqrt();
+println(f"{((r.im - want) / want).abs() < 1e-15} {(l.re - want).abs() / want < 1e-15}");
+for z in [Complex::new(-4.0, 0.0), Complex::new(3.0, 4.0), Complex::new(-3.0, 4.0), Complex::new(0.0, -2.0)] {
+    let s = z.sqrt();
+    println(f"{s.re} {s.im}");
+}

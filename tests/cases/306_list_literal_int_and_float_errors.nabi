@@ -1,0 +1,10 @@
+// expect-error: 9:17: mismatched types: list element expects `i64`, found `f64`
+
+// Only literals take the float type: an `i64` value beside a float
+// literal is still two types.
+fn main() {
+    let n: i64 = 2;
+    let a = [0, 1.5];
+    let ok = a[0];
+    let b = [n, 1.5];
+}

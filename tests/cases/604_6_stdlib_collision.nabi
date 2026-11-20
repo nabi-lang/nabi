@@ -1,0 +1,12 @@
+// expect-error: lang slot `add_trait` is already bound
+
+// Stdlib (ops.nabi) already binds Add to the add_trait slot, so a
+// user binding collides; the lang table covers bootstrap and user code.
+#[lang("add_trait")]
+trait MyAdd {
+    fn add(self, rhs: i32) -> i32;
+}
+
+fn main() -> i32 {
+    return 0;
+}

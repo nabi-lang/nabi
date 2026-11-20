@@ -1,0 +1,26 @@
+# Review routing: each area's team. A later line wins.
+*                              @nabi-lang/nabi
+
+/compiler/                     @nabi-lang/nabi-compiler
+/compiler/nabic_tools/          @nabi-lang/nabi-tooling
+/cc/                           @nabi-lang/nabi-compiler
+/link/                         @nabi-lang/nabi-compiler
+/lsp/                          @nabi-lang/nabi-tooling
+/pm/                           @nabi-lang/nabi-tooling
+/repl/                         @nabi-lang/nabi-tooling
+/install.sh                    @nabi-lang/nabi-tooling
+/install.ps1                   @nabi-lang/nabi-tooling
+
+/runtime/                      @nabi-lang/nabi-runtime
+
+/library/                      @nabi-lang/nabi-stdlib
+
+/tests/                        @nabi-lang/nabi-compiler
+
+/.github/                      @nabi-lang/nabi-infra
+/scripts/                      @nabi-lang/nabi-infra
+/targets/                      @nabi-lang/nabi-infra
+/nix/                          @nabi-lang/nabi-infra
+/flake.nix                     @nabi-lang/nabi-infra
+/release-targets.json          @nabi-lang/nabi-infra
+/justfile                      @nabi-lang/nabi-infra

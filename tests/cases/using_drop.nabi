@@ -1,0 +1,49 @@
+// expect-exit: 0
+// expect-stdout:
+// use 1 2
+// drop 2
+// drop 1
+// 3
+// early
+// drop 7
+// 70
+// drop 8
+// caught
+
+// `using` drops its resources in reverse order on every way
+// out of the block - normal end, `return`, and a propagating error.
+struct Res { id: i32; }
+
+impl Drop for Res {
+    fn drop(ref self) {
+        println(f"drop {self.id}");
+    }
+}
+
+fn open(id: i32) -> Res { return Res { id: id }; }
+
+fn early() -> i32 {
+    using r = open(7) {
+        println("early");
+        return 70;
+    }
+}
+
+fn fails(x: i32) throws (i32) -> i32 {
+    using r = open(8) {
+        if x > 0 { throw x; }
+        x
+    }
+}
+
+fn main() -> i32 {
+    let v = using a = open(1), b = open(2) {
+        println(f"use {a.id} {b.id}");
+        a.id + b.id
+    };
+    println(f"{v}");
+    println(f"{early()}");
+    let r = try fails(1) catch _ { println("caught"); 0 };
+    return r;
+}
+

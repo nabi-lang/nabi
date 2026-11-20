@@ -1,0 +1,12 @@
+// expect-error: is internal to the Nabi toolchain
+// expect-error: help: move the value into the closure (`[move x] || ..`), or pass it as the argument: `task::spawn_blocking_with_arg(x, |x| ..)`
+
+// `Handoff` is the toolchain's own: a program moves the value into the
+// closure or hands it over instead.
+use core::marker::Handoff;
+
+fn main() {
+    let xs: List<i32> = [1, 2];
+    let h = unsafe { Handoff::new(xs) };
+    println(f"{h.get().len()}");
+}

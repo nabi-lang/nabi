@@ -1,0 +1,23 @@
+[package]
+name = "nabir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+build = "../build.rs"
+
+[lib]
+name = "nabir"
+# staticlib only: a parallel rlib would inject a duplicate
+# `#[panic_handler]` into other binaries that already pull in std.
+crate-type = ["staticlib"]
+
+[dependencies]
+libc = { workspace = true }
+nabir_abi = { workspace = true }
+nabir_common = { workspace = true }
+nabir_gc = { workspace = true }
+
+[lints]
+workspace = true

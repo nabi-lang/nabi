@@ -1,0 +1,59 @@
+// expect-exit: 0
+// expect-stdout:
+// 0..3 true 6
+// i64 7 8 255
+// Point ["x", "y"]
+// bad | ValueError("bad")
+// ab c 1 none true
+// 5 [2, 4] 3 2s
+
+// Module paths the stdlib's mapping tables name.
+use core::iter::{Iterator, IntoIterator, DoubleEndedIterator, ExactSizeIterator, FromIterator};
+use core::range::Step;
+use core::range::Range;
+use core::reflect::{Reflect, Inspect, MethodInfo};
+use core::marker::NoneSentinel;
+use core::task::{spawn, join, race, timeout, Task};
+use core::time::{Duration, Instant};
+use core::future::{Future, IntoFuture};
+use core::par;
+
+#[derive(Inspect)]
+struct Point { x: i32; y: i32; }
+
+fn report<E: Display + Debug + Error>(e: E) -> str { f"{e} | {e:?}" }
+fn sum_all<I: IntoIterator<Item = i32>>(xs: I) -> i32 {
+    let t = 0;
+    for x in xs { t += x; }
+    t
+}
+
+async fn four() -> i32 { 4 }
+
+async fn main() {
+    let r: Range<i32> = 0..3;
+    let it = [1, 2, 3].iter();
+    println(f"{r.start}..{r.end} {it.len() == 3} {sum_all([1, 2, 3])}");
+    let wide: i64 = From::from(7i32);
+    let back: i32 = 8i64.wrapping_into();
+    let sat: u8 = 300i32.saturating_into();
+    println(f"{wide.type_name_of_val()} {wide} {back} {sat}");
+    let fields: List<str> = Point::field_names();
+    let methods: List<MethodInfo> = [];
+    println(f"{Point::type_name()} {fields:?}");
+    println(report(ValueError::new("bad")));
+    let buf = StrBuf::new();
+    buf.push_str("ab");
+    let ch: char = 'c';
+    let cc: c_char = c'a';
+    let n: NoneSentinel = none;
+    let s: str = buf.to_str();
+    println(f"{s} {ch} {cc as i32 - 96} {n.type_name_of_val()} {methods.is_empty()}");
+    let t: Task<i32> = spawn(four());
+    let got = (await t) + 1;
+    let doubled = par::map([1, 2], |x| x * 2);
+    let d = Duration::secs(2);
+    let start = Instant::now();
+    println(f"{got} {doubled:?} {par::fold([1, 1, 1], 0, |a, b| a + b)} {d}");
+    let _ = start;
+}

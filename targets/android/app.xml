@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app: the corpus programs as lib/arm64-v8a/lib<case>.so, which the
+     installer extracts to nativeLibraryDir, the one app directory the
+     sandbox lets it execute from. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.nabi_lang.corpus">
+  <uses-permission android:name="android.permission.INTERNET" />
+  <application android:label="Nabi corpus" android:extractNativeLibs="true"
+      android:hasCode="true">
+    <activity android:name=".Main" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>

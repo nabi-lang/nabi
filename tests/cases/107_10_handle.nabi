@@ -1,0 +1,60 @@
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// 3 row 2
+// 10
+// 42
+// 1
+
+// `Handle` carries a Nabi value through C's `void* user_data`: a `List`
+// comes back as the same object, a closure is a value like any other,
+// and the value stays alive (and in place) until the last `release`.
+use bare::ffi::Handle;
+use bare::ptr::CPtr;
+
+extern "C" {
+    fn nabi_gc_collect();
+}
+
+// Stands in for a C library that calls back with the `void*` it was given.
+extern "C" fn each(n: c_int, cb: extern "C" fn(CPtr<c_void>, c_int), ud: CPtr<c_void>) {
+    for i in 0..n {
+        unsafe { cb(ud, i) };
+        unsafe { nabi_gc_collect() };
+    }
+}
+
+extern "C" fn on_row(ud: CPtr<c_void>, i: c_int) {
+    let rows = unsafe { Handle::<List<str>>::from_ptr(ud) }.get();
+    rows.push(f"row {i}");
+}
+
+extern "C" fn call(ud: CPtr<c_void>, i: c_int) {
+    let f = unsafe { Handle::<fn(c_int)>::from_ptr(ud) }.get();
+    f(i);
+}
+
+fn main() {
+    let rows: List<str> = [];
+    let h = Handle::new(rows);
+    unsafe { each(3, on_row, h.as_ptr()) };
+    println(f"{rows.len()} {rows[2]}");
+    h.release();
+
+    let total = Cell::new(0);
+    let f = Handle::<fn(c_int)>::new(|x: c_int| {
+        let t = total.get();
+        total.set(t + x);
+    });
+    unsafe { each(5, call, f.as_ptr()) };
+    println(f"{total.get()}");
+    f.release();
+
+    let n = Handle::new(41);
+    n.set(n.get() + 1);
+    println(f"{n.get()}");
+    n.retain();
+    n.release();
+    println(f"{n.get() - 41}");
+    n.release();
+}

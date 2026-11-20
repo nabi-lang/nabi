@@ -1,0 +1,10 @@
+// expect-error: Blue
+
+// A variant is a bare name when imported (`use
+// Color::*`) or when the expected type is its enum; here there is none.
+enum Color { Red, Blue(i32) }
+
+fn main() -> i32 {
+    let c = Blue(3);
+    return 0;
+}

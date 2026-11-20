@@ -1,0 +1,21 @@
+// expect-error: 17:13: no associated function `fields` on `Point`
+// expect-error: help: add `#[derive(Inspect)]` to `Point` to use `fields`
+// expect-error: 18:13: no method `variant_name` found for type `Shape`
+// expect-error: help: add `#[derive(Inspect)]` to `Shape` to use `variant_name`
+// expect-error: 19:13: no method `get_field` found for type `Box<i64>`
+// expect-error: help: add `#[derive(Inspect)]` to `Box` to use `get_field`
+// expect-error: 20:13: no method `field_names_of_val` found for type `Point`
+// expect-error: help: add `#[derive(Inspect)]` to `Point` to use `field_names_of_val`
+
+// Field and variant introspection is opt-in; using it on a
+// type without `#[derive(Inspect)]` says to add the derive.
+struct Point { x: i32; }
+enum Shape { Dot, Line(i32) }
+struct Box<T> { v: T; }
+
+fn main() {
+    let a = Point::fields();
+    let b = Shape::Dot.variant_name();
+    let c = Box { v: 1 }.get_field("v");
+    let d = Point { x: 1 }.field_names_of_val();
+}

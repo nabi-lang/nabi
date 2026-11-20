@@ -1,0 +1,46 @@
+// only-pointer-width: 64
+// expect-exit: 0
+// expect-stdout:
+// 3 2 1 0
+// 0 1 2 3
+// 1 -1
+
+// Where `"system"` is `"C"`, the two fn pointer types are one type.
+use bare::alloc::{Layout, alloc};
+use bare::ptr::{CPtr, Ptr};
+
+extern "C" {
+    fn qsort(base: Ptr<i32>, n: usize, size: usize, cmp: extern "system" fn(Ptr<i32>, Ptr<i32>) -> i32);
+}
+
+extern "system" fn descending(a: Ptr<i32>, b: Ptr<i32>) -> i32 {
+    let (x, y) = unsafe { (a.read(), b.read()) };
+    if x < y { 1 } else if x > y { -1 } else { 0 }
+}
+
+extern "C" fn ascending(a: Ptr<i32>, b: Ptr<i32>) -> i32 {
+    -descending(a, b)
+}
+
+fn sorted(p: Ptr<i32>, cmp: extern "C" fn(Ptr<i32>, Ptr<i32>) -> i32) -> str {
+    unsafe { qsort(p, 4usize, 4usize, cmp) };
+    let out: List<str> = List::new();
+    for i in 0..4usize {
+        out.push(f"{unsafe { p.add(i).read() }}");
+    }
+    out.join(" ")
+}
+
+fn main() throws (bare::alloc::LayoutError) {
+    let raw: CPtr<u8> = unsafe { alloc(try Layout::array::<i32>(4usize)) };
+    let p = bare::ptr_cast::<i32>(raw.as_ptr() ?? panic("alloc failed"));
+    for i in 0..4usize {
+        unsafe { p.add(i).write([2, 0, 3, 1][i]) };
+    }
+    let sys: extern "system" fn(Ptr<i32>, Ptr<i32>) -> i32 = descending;
+    let c: extern "C" fn(Ptr<i32>, Ptr<i32>) -> i32 = sys;
+    println(sorted(p, c));
+    let back: extern "system" fn(Ptr<i32>, Ptr<i32>) -> i32 = ascending;
+    println(sorted(p, back));
+    println(f"{sys(p, p.add(1usize))} {back(p, p.add(1usize))}");
+}

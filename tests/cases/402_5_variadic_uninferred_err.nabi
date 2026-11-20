@@ -1,0 +1,9 @@
+// expect-error: cannot infer type parameter `T` of `count`
+
+// A variadic with an open generic `T` and no arguments
+// cannot determine `T`.
+fn count<T>(xs: ...T) -> usize { xs.len() }
+fn main() -> i32 {
+    let n = count();
+    return 0;
+}

@@ -1,0 +1,48 @@
+// expect-exit: 0
+// expect-stdout:
+// tasks 100000 sum 4999950000
+// fan-out 1000 x 20 yields: 20000
+// no slowdown: true
+
+// Executor cost does not grow with tasks already run. Load only adds time,
+// so the fastest batches are compared: 10x allowed, quadratic is 50x+.
+let fastest = [i64::MAX, i64::MAX];
+// In batches of 1000, so the live heap (and the GC's work) stays small.
+let sum: i64 = 0;
+let i: i64 = 0;
+while i < 100000 {
+    let t0 = Instant::now();
+    let tasks: List<Task<i64>> = [];
+    let b = 0;
+    while b < 1000 {
+        let v = i;
+        tasks.push(task::spawn(async { v }));
+        i = i + 1;
+        b = b + 1;
+    }
+    for t in tasks { sum = sum + await t; }
+    let half = if i <= 50000 { 0 } else { 1 };
+    let ns = t0.elapsed().as_ns();
+    if ns < fastest[half] { fastest[half] = ns; }
+}
+println(f"tasks 100000 sum {sum}");
+
+let hops = Atomic::new(0);
+let busy: List<Task<i32>> = [];
+let k = 0;
+while k < 1000 {
+    busy.push(task::spawn(async {
+        let j = 0;
+        while j < 20 {
+            await task::yield_now();
+            hops.fetch_add(1);
+            j = j + 1;
+        }
+        0
+    }));
+    k = k + 1;
+}
+await task::join(busy);
+println(f"fan-out 1000 x 20 yields: {hops.load()}");
+println(f"no slowdown: {fastest[1] < 10 * fastest[0] + 1000000}");
+

@@ -1,0 +1,1 @@
+pub struct Q<V, const L: i32> { pub v: V; }

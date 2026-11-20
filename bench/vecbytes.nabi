@@ -1,0 +1,50 @@
+// Byte scanning over 8 MB of text, 30 times: count the spaces, and walk
+// it line by line with a search for each newline (`memchr`-like), as a
+// tokenizer does. Vectorized search and count. Output matches
+// bench/c/vecbytes.c.
+fn count(bs: List<u8>, c: u8) -> i64 {
+    let k: i64 = 0;
+    for i in 0..bs.len() {
+        if bs[i] == c {
+            k += 1;
+        }
+    }
+    k
+}
+
+fn find(bs: List<u8>, c: u8, from: usize) -> usize {
+    for i in from..bs.len() {
+        if bs[i] == c {
+            return i;
+        }
+    }
+    bs.len()
+}
+
+fn main() -> i32 {
+    let n: usize = 8 << 20;
+    let bs: List<u8> = List::filled(n, 0u8);
+    let x: u64 = 7;
+    for i in 0..n {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        let r = (x >> 33) % 1000u64;
+        bs[i] = if r < 150 { 32u8 } else if r < 151 { 10u8 } else { 97u8 + (r % 26) as u8 };
+    }
+    let spaces: i64 = 0;
+    let lines: i64 = 0;
+    let longest: usize = 0;
+    for _ in 0..30 {
+        spaces += count(bs, 32u8);
+        let at: usize = 0;
+        while at < n {
+            let e = find(bs, 10u8, at);
+            if e - at > longest {
+                longest = e - at;
+            }
+            lines += 1;
+            at = e + 1;
+        }
+    }
+    println(f"{spaces} {lines} {longest}");
+    return 0;
+}

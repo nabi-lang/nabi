@@ -1,0 +1,28 @@
+// skip-target: s390x-unknown-linux-gnu
+// only-os: macos linux
+// expect-exit: 0
+// expect-stdout:
+// 5 0.9272952180016122 3.141592653589793 13
+// 4 2147483647
+
+// C complex types pass as two floats; small ints extend as the C ABI says.
+struct Cd { re: f64; im: f64; }
+struct Cf { re: f32; im: f32; }
+
+extern "C" {
+    fn cabs(z: Cd) -> f64;
+    fn carg(z: Cd) -> f64;
+    fn cabsf(z: Cf) -> f32;
+    fn abs(n: i32) -> i32;
+}
+
+fn main() -> i32 {
+    let a = unsafe { cabs(Cd { re: 3.0, im: -4.0 }) };
+    let t = unsafe { carg(Cd { re: 3.0, im: 4.0 }) };
+    let pi = unsafe { carg(Cd { re: -1.0, im: 0.0 }) };
+    let f = unsafe { cabsf(Cf { re: 5.0, im: 12.0 }) };
+    println(f"{a} {t} {pi} {f}");
+    let m: i32 = -2147483647;
+    println(f"{unsafe { abs(-4) }} {unsafe { abs(m) }}");
+    return 0;
+}

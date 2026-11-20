@@ -1,0 +1,19 @@
+// only-target: wasm32-unknown-unknown
+// expect-exit: 0
+// expect-stdout:
+// write: Unsupported
+// read: Unsupported
+// create_dir: Unsupported
+// read_dir: Unsupported
+// exists: false
+
+// A browser has no file system (`std::fs` is
+// missing on wasm32): every call reports `IoErrorKind::Unsupported` at run time.
+use std::fs;
+use core::io::{IoError, IoErrorKind};
+
+try fs::write("/data.txt", "x") catch e: IoError { println(f"write: {e.kind():?}"); };
+try fs::read_to_str("/data.txt") catch e: IoError { println(f"read: {e.kind():?}"); };
+try fs::create_dir("/d") catch e: IoError { println(f"create_dir: {e.kind():?}"); };
+try fs::read_dir("/") catch e: IoError { println(f"read_dir: {e.kind():?}"); };
+println(f"exists: {fs::exists("/data.txt")}");

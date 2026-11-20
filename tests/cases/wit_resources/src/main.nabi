@@ -1,0 +1,43 @@
+// only-target: wasm32-wasip2
+// wasm-plug: plug/main.nabi
+// expect-exit: 0
+// expect-stdout:
+// inc 8
+// merged 18 read 18
+// take 118
+// pair 1 2
+// tagged #t 7
+// untagged 7
+// rejected 9
+// moved
+// done
+
+// A resource across two components: owned, borrowed, handed back, dropped.
+ffi::wit::import { "../plug/counters.wit" }
+
+use test::res::counters;
+use test::res::counters::Counter;
+
+fn main() {
+    let c = Counter::new(5);
+    println(f"inc {c.inc(3)}");
+    let d = counters::make(10);
+    let m = Counter::merge(c, d);
+    println(f"merged {m.get()} read {counters::read(m)}");
+    println(f"take {counters::take(m)}");
+    let p = counters::pair(1, 2);
+    println(f"pair {p[0].get()} {p[1].get()}");
+    let t = counters::tag("t", counters::make(7));
+    println(f"tagged {t.name} {t.c.get()}");
+    let back = try! counters::untag(t);
+    println(f"untagged {back.get()}");
+    let bad = counters::tag("bad", counters::make(9));
+    try counters::untag(bad) catch e { println(e); };
+    let moved = Counter::new(1);
+    counters::take(moved);
+    println(if moved.handle.release() is none { "moved" } else { "kept" });
+    using x = counters::make(3) {
+        x.inc(1);
+    }
+    println("done");
+}

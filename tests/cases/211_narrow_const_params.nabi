@@ -1,0 +1,13 @@
+// expect-exit: 0
+// expect-stdout: 2 2
+
+// `i8` const parameters compute in signatures (`{ N + K }`); the
+// instance checks the range.
+pub struct Q<const L: i8> { v: f64; }
+fn add2<const N: i8, const K: i8>(q: Q<N>, r: Q<K>) -> Q<{ N + K }> { Q { v: q.v + r.v } }
+fn level<const L: i8>(q: Q<L>) -> i8 { L }
+
+fn main() {
+    let a: Q<1> = Q { v: 1.0 };
+    println(f"{add2(a, a).v} {level(add2(a, a))}");
+}

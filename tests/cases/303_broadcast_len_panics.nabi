@@ -1,0 +1,12 @@
+// Lists of different lengths: a run-time panic.
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/303_broadcast_len_panics.nabi:10:13:
+// expect-stderr: broadcast: lengths 3 and 2 differ; make both sides the same length
+// expect-stdout:
+
+fn main() -> i32 {
+    let p: List<i32> = [1, 2, 3];
+    let q: List<i32> = [1, 2];
+    let r = p .+ q;
+    r[0]
+}

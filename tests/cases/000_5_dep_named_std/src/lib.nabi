@@ -1,0 +1,5 @@
+//! A dependency its user names `std`.
+
+pub fn answer() -> i32 {
+    42
+}

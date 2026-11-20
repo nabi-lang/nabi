@@ -1,0 +1,39 @@
+// expect-exit: 0
+// expect-stdout:
+// 11 104 true
+// hello world
+// world
+// 0
+// error
+
+// `unsafe fn File::mmap` maps a file read-only; `unmap` (or `using`)
+// releases it.
+
+use core::marker::share;
+use std::fs;
+use std::fs::File;
+use std::env;
+use core::io::IoError;
+
+fn run() throws (IoError | str::Utf8Error) {
+    let path = f"{env::temp_dir()}/nabi_mmap_case.txt";
+    try fs::write(path, "hello world");
+    let f = try File::open(path);
+    let m_own = try unsafe { f.mmap(0, 11) };
+    let m = unsafe { share(m_own) };
+    println(f"{m.len()} {m.get(0) ?? 0} {m.get(11) is none}");
+    println(try str::from_utf8(m.to_list()));
+    println(try str::from_utf8(m.as_bytes()[6:100]));
+    m.unmap();
+    println(f"{m.len()}");
+    let bad = try? unsafe { f.mmap(0, 0) };
+    println(if bad is none { "error" } else { "mapped" });
+    try f.close();
+    try fs::remove_file(path);
+}
+
+fn main() -> i32 {
+    try run() catch _ { return 1; }
+    return 0;
+}
+// only-os: macos linux

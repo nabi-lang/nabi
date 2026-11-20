@@ -1,0 +1,15 @@
+[package]
+name = "nabi_manifest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+nabic_core = { workspace = true }
+nabic_nabion = { workspace = true }
+nabic_target = { workspace = true }
+
+[lints]
+workspace = true

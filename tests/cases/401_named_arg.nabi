@@ -1,0 +1,13 @@
+// expect-exit: 0
+// expect-stdout:
+// 5
+
+// Named argument call `f(name: 42)`.
+fn divmod(num: i32, den: i32) -> i32 {
+    return num / den;
+}
+
+fn main() -> i32 {
+    println(f"{divmod(num: 30, den: 6)}");
+    return 0;
+}

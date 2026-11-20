@@ -1,0 +1,20 @@
+// expect-exit: 0
+// needs: fs
+// run-env: TZ=CET-1CEST,M3.5.0,M10.5.0/3
+// expect-stdout:
+// local CET-1CEST,M3.5.0,M10.5.0/3 +02:00 CEST true +01:00 CET false
+// now ok
+
+// `$TZ` holds a POSIX rule, which is no database name, so
+// `TimeZone::local()` reads it as a rule on every system.
+use std::time::{SystemTime, TimeZone, Zoned};
+
+fn main() {
+    let local = TimeZone::local();
+    let t = SystemTime::from_unix(1720000000, 0);
+    let w = SystemTime::from_unix(1700000000, 0);
+    println(f"local {local} {local.offset_at(t)} {local.abbreviation_at(t)} {local.is_dst_at(t)} {local.offset_at(w)} {local.abbreviation_at(w)} {local.is_dst_at(w)}");
+    let now = Zoned::now(local);
+    let off = now.offset().secs();
+    println(if (off == 3600 || off == 7200) && now.to_system_time().elapsed() >= Duration::ZERO { "now ok" } else { f"now {now:?}" });
+}

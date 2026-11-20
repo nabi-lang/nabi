@@ -1,0 +1,11 @@
+// expect-error: extern function `nabi_gc_alloc_slow` is declared twice with different signatures: `fn(usize, usize, u32) -> usize` here, `fn(usize, usize, u32) -> GcBuf<u8>` elsewhere
+// `nabi_*` symbols are the runtime's, declared by the
+// toolchain; one with other types is an error, not a second declaration
+// of one symbol in the module.
+extern "C" {
+    fn nabi_gc_alloc_slow(size: usize, align: usize, type_id: u32) -> usize;
+}
+fn main() -> i32 {
+    let p = unsafe { nabi_gc_alloc_slow(usize::MAX / 2 + 1, 8usize, 0u32) };
+    return 0;
+}

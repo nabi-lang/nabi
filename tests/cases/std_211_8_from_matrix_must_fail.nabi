@@ -1,0 +1,13 @@
+// expect-error: 9:20: `isize::from`: no `From<u32>` impl for `isize`
+// expect-error: 10:20: `usize::from`: no `From<i8>` impl for `usize`
+// expect-error: 11:18: `i64::from`: no `From<usize>` impl for `i64`
+// expect-error: 12:18: `f32::from`: no `From<i32>` impl for `f32`
+
+// No `From` where some target or value loses: `u32` -> `isize` on 32
+// bits, negative `i8`s, `usize` -> `i64` on 64 bits, `i32` past 2^24.
+fn main() {
+    let a: isize = isize::from(1u32);
+    let b: usize = usize::from(1i8);
+    let c: i64 = i64::from(1usize);
+    let d: f32 = f32::from(1i32);
+}

@@ -1,0 +1,42 @@
+//! core tier (foundation) - safe, target-independent.
+//! Owns: List, Dict, Set, Tuple, Int, Float, ops, iter, sync (Atomic/Mutex),
+//!       task, time (Duration, Instant), par, fmt, reflect, future,
+//!       crypto (algorithms), encoding, io (byte streams, stdio).
+//! Bootstraps operator dispatch (`#[infix]`, `#[prefix]`, `#[postfix]`) and
+//! literal handlers (`#[literal]`).
+//! User code gets an implicit `use core::prelude::*;`,
+//! the library's own modules see all of `core::**`.
+
+pub mod array;
+pub mod bench;
+pub mod channel;
+pub mod cmp;
+pub mod collections;
+pub mod convert;
+pub mod crypto;
+pub mod encoding;
+pub mod error;
+pub mod fmt;
+pub mod future;
+pub mod hash;
+pub mod hint;
+pub mod index;
+pub mod io;
+pub mod iter;
+pub mod marker;
+pub mod num;
+pub mod ops;
+pub mod panic;
+pub mod par;
+pub mod prelude;
+pub mod print;
+pub mod range;
+pub mod reflect;
+pub(pkg) mod rt;
+pub mod simd;
+pub mod str;
+pub mod stream;
+pub mod sync;
+pub mod task;
+pub mod time;
+pub mod tuple;

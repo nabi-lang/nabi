@@ -1,0 +1,91 @@
+// expect-exit: 0
+// expect-stdout:
+// body
+// finally 1
+// handler
+// finally 2
+// early
+// finally 3
+// 30
+// loop
+// 0
+// finally 4
+// loop
+// 1
+// finally 4
+// finally 4
+// finally 5
+// inner finally
+// outer finally
+// propagated
+// 9
+// finally 6
+// caught
+// 9
+
+// `finally` runs on every way out: normal completion, after a
+// handled `catch`, on `return` / `break` / `continue` leaving it, and
+// while an error propagates.
+fn fail(x: i32) throws (i32) -> i32 {
+    if x > 0 { throw x; }
+    0
+}
+
+fn early() -> i32 {
+    try {
+        println("early");
+        return 30;
+    } finally {
+        println("finally 3");
+    };
+    return 0;
+}
+
+fn nested() throws (i32) {
+    try {
+        try {
+            let v = try fail(9);
+            println(f"{v}");
+        } finally {
+            println("inner finally");
+        };
+    } finally {
+        println("outer finally");
+    };
+}
+
+fn main() -> i32 {
+    try {
+        println("body");
+    } finally {
+        println("finally 1");
+    };
+    try fail(1) catch _ {
+        println("handler");
+    } finally {
+        println("finally 2");
+    };
+    println(f"{early()}");
+    for i in 0..5 {
+        try {
+            if i == 2 { break; }
+            println("loop");
+            println(f"{i}");
+            continue;
+        } finally {
+            println("finally 4");
+        };
+    }
+    loop {
+        try { break; } finally { println("finally 5"); };
+    };
+    try nested() catch e {
+        println("propagated");
+        println(f"{e}");
+    };
+    let c = try fail(9) catch e: i32 { e } finally { println("finally 6"); };
+    println("caught");
+    println(f"{c}");
+    return 0;
+}
+

@@ -1,0 +1,18 @@
+// expect-exit: 0
+// needs: threads
+// expect-lint: 15:1 this thread is never joined, so the program may end before it finishes
+// expect-lint: 16:5 `h` is never used: the thread is never joined, so the program may end before it finishes
+// expect-stdout:
+// 1
+
+// A `#[must_use]` type warns even through a `#[discardable]` function,
+// and so does a local of it that is never read.
+use std::thread;
+
+#[discardable]
+fn start() -> thread::JoinHandle<i32> { thread::spawn(|| 1) }
+
+start();
+let h = start();
+let j = start();
+println(f"{try! j.join()}");

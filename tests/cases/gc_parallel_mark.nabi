@@ -1,0 +1,45 @@
+// expect-exit: 0
+// gc-stress: 100
+// run-env: NABIR_GC_WORKERS=4
+// expect-stdout:
+// rows 300 cells 90000 ok
+// half 45000 ok
+
+// Stop-the-world marks of a wide graph run on several threads: every
+// reachable string survives each collection, young ones included, and
+// what was dropped is freed.
+use bare::gc;
+
+fn main() {
+    let rows: List<List<str>> = [];
+    for r in 0..300 {
+        let row: List<str> = [];
+        for c in 0..300 { row.push(f"{r}.{c}"); }
+        rows.push(row);
+    }
+    gc::collect_young();
+    gc::collect();
+    let ok = true;
+    let cells = 0;
+    for r in 0..300 {
+        for c in 0..300 {
+            if rows[r][c] != f"{r}.{c}" { ok = false; }
+            cells += 1;
+        }
+    }
+    println(f"rows {rows.len()} cells {cells} {if ok { "ok" } else { "bad" }}");
+    for r in 0..300 {
+        let kept: List<str> = [];
+        for c in 0..300 { if c % 2 == 0 { kept.push(rows[r][c]); } }
+        rows[r] = kept;
+    }
+    gc::collect();
+    let n = 0;
+    for r in 0..300 {
+        for c in 0..150 {
+            if rows[r][c] != f"{r}.{c * 2}" { ok = false; }
+            n += 1;
+        }
+    }
+    println(f"half {n} {if ok { "ok" } else { "bad" }}");
+}

@@ -1,0 +1,11 @@
+// expect-error: operator `&` cannot be applied to `f32`: it needs `impl ops::BitAnd for f32`
+// expect-error: cannot index into a value of type `str`
+// expect-error: cannot index into a value of type `(i64, i64)`
+
+// Floats have no bitwise traits, `str` has no
+// `Index<usize>` and a tuple no `Index` (`.0` only); an operation
+// with no trait impl is a compile error naming the impl it needs.
+fn bits() { let a = 1.0f32 & 2.0f32; }
+fn byte() { let s = "abc"; let c = s[0]; }
+fn slot() { let t = (1, 2); let i = 0; let c = t[i]; }
+fn main() { bits(); byte(); slot(); }

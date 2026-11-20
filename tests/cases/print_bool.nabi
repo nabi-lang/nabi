@@ -1,0 +1,10 @@
+// expect-exit: 0
+// expect-stdout:
+// truefalse
+
+// `print` has no trailing newline; a bool formats as `true` / `false`.
+fn main() -> i32 {
+    print(f"{true}");
+    print(f"{false}");
+    return 0;
+}

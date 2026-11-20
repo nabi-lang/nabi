@@ -1,0 +1,83 @@
+// needs: os
+// expect-exit: 0
+// expect-stdout:
+// ranges true
+// normal true exponential true
+// gamma true true beta true
+// poisson true true
+// binomial true true
+// edges 0 0 0 7
+// weighted 0 true
+// fill -1 -1 true true -1
+// fill_normal true
+// arrays [3, 4] true true true [2, 2, 2] true
+// one-call true true true [1, 2, 3] 7 none
+// distinct true
+
+// Rng: ranges of every integer type, f32, the distributions (moments of
+// 200000 draws against their means and variances), weighted choice,
+// arrays and slices filled, and the one-call forms.
+use std::random;
+use std::random::{Rng, Xoshiro256PlusPlus};
+
+let g = Xoshiro256PlusPlus::seed(2024);
+let ok = true;
+for _ in 0..2000 {
+    let a = g.range(-3i8..4);
+    let b = g.range(250u8..=255);
+    let c = g.range(0usize..7);
+    let d = g.range(i64::MIN..=i64::MAX);
+    let e = g.range(u64::MAX - 1..=u64::MAX);
+    let f = g.f32();
+    ok = ok && a >= -3 && a < 4 && b >= 250 && c < 7 && e >= u64::MAX - 1 && f >= 0.0f32 && f < 1.0f32;
+    _ = d;
+}
+println(f"ranges {ok}");
+let n = 200000;
+fn moments(xs: List<f64>) -> (f64, f64) {
+    let m = 0.0;
+    for x in xs { m += x; }
+    m /= xs.len() as f64;
+    let v = 0.0;
+    for x in xs { v += (x - m) * (x - m); }
+    (m, v / xs.len() as f64)
+}
+fn near(got: (f64, f64), mean: f64, var: f64) -> bool {
+    (got.0 - mean).abs() < 0.02 * var.sqrt() + 1e-3 && (got.1 / var - 1.0).abs() < 0.03
+}
+let normal: List<f64> = List::from_fn(n, [ref g] |_| g.normal(2.0, 3.0));
+let expo: List<f64> = List::from_fn(n, [ref g] |_| g.exponential(0.5));
+let gam: List<f64> = List::from_fn(n, [ref g] |_| g.gamma(2.5, 2.0));
+let gsmall: List<f64> = List::from_fn(n, [ref g] |_| g.gamma(0.3));
+let bet: List<f64> = List::from_fn(n, [ref g] |_| g.beta(2.0, 5.0));
+let poi: List<f64> = List::from_fn(n, [ref g] |_| g.poisson(4.0) as f64);
+let poibig: List<f64> = List::from_fn(n, [ref g] |_| g.poisson(250.0) as f64);
+let bin: List<f64> = List::from_fn(n, [ref g] |_| g.binomial(20, 0.3) as f64);
+let binbig: List<f64> = List::from_fn(n, [ref g] |_| g.binomial(5000, 0.4) as f64);
+println(f"normal {near(moments(normal), 2.0, 9.0)} exponential {near(moments(expo), 2.0, 4.0)}");
+println(f"gamma {near(moments(gam), 5.0, 10.0)} {near(moments(gsmall), 0.3, 0.3)} beta {near(moments(bet), 2.0 / 7.0, 10.0 / 392.0)}");
+println(f"poisson {near(moments(poi), 4.0, 4.0)} {near(moments(poibig), 250.0, 250.0)}");
+println(f"binomial {near(moments(bin), 6.0, 4.2)} {near(moments(binbig), 2000.0, 1200.0)}");
+println(f"edges {g.poisson(0.0)} {g.binomial(0, 0.5)} {g.binomial(7, 0.0)} {g.binomial(7, 1.0)}");
+let counts = [0, 0, 0];
+for _ in 0..30000 { counts[g.weighted([1.0, 0.0, 2.0])] += 1; }
+println(f"weighted {counts[1]} {(counts[2] as f64 / counts[0] as f64 - 2.0).abs() < 0.1}");
+let buf: List<f64> = List::filled(8, -1.0);
+g.fill_f64(buf[2:6]);
+println(f"fill {buf[0]} {buf[1]} {buf[2] >= 0.0} {buf[5] < 1.0} {buf[6]}");
+g.fill_normal(buf, mean: 100.0);
+println(f"fill_normal {buf[0] > 90.0 && buf[7] < 110.0}");
+let a = g.random_array([3, 4]);
+let z = g.normal_array([20000], mean: 1.0, std: 2.0);
+let u = g.uniform_array([2, 2, 2], -1.0, 1.0);
+println(f"arrays {a.shape():?} {(a.max() ?? 2.0) < 1.0} {(z.mean() - 1.0).abs() < 0.05} {(z.std() - 2.0).abs() < 0.05} {u.shape():?} {(u.min() ?? -2.0) >= -1.0}");
+let x = random::f64();
+let y = random::range(1..=6);
+let w = random::normal();
+let xs = [1, 2, 3];
+random::shuffle(xs);
+xs.sort();
+println(f"one-call {x >= 0.0 && x < 1.0} {y >= 1 && y <= 6} {w == w} {xs:?} {random::choice([7]):?} {random::choice(List::<i64>::new()):?}");
+let t1 = random::f64();
+let t2 = random::f64();
+println(f"distinct {t1 != t2}");

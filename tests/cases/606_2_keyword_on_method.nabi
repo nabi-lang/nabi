@@ -1,0 +1,11 @@
+// expect-error: 7:5: `#[keyword("frob")]` must be on a free function - its handler
+
+// A keyword handler is a free function, never a method or a
+// trait item.
+struct S {}
+impl S {
+    #[keyword("frob")]
+    fn h(self) {}
+}
+
+println("unreached");

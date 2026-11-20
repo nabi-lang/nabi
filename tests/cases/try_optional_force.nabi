@@ -1,0 +1,38 @@
+// expect-exit: 0
+// expect-stdout:
+// 8
+// none
+// 3
+// 9
+// dropped
+
+// `try? e` turns an error into `none` (`T | none`); `try! e` unwraps or
+// panics (the failing case is `try_force_panic.nabi`).
+fn half(x: i32) throws (i32) -> i32 {
+    if x % 2 == 1 { throw x; }
+    x / 2
+}
+
+fn maybe(x: i32) throws (i32) -> i32 | none {
+    if x < 0 { throw x; }
+    if x == 0 { return none; }
+    x
+}
+
+fn main() -> i32 {
+    let a = try? half(16);
+    println(f"{a ?? -1}");
+    let b: i32 | none = try? half(3);
+    match b {
+        v: i32 => println(f"{v}"),
+        none => println("none"),
+    };
+    // `try?` on an optional nests, `??` peels the outer layer; `try`
+    // covers all to its right, hence the parentheses.
+    println(f"{((try? maybe(3)) ?? -1) ?? -2}");
+    println(f"{try! half(18)}");
+    try? half(1);
+    println("dropped");
+    return 0;
+}
+

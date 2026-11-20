@@ -1,0 +1,15 @@
+// expect-error: 12:16: const block failed in `chunk::<0>`: chunk needs at least one element
+// expect-error: help: every instance of `chunk` must pass it: call it with other arguments, or change the check
+
+// A failing check in a `const { .. }` block is a compile error at the
+// call that made the instance, with the instance's arguments.
+fn chunk<const N: usize>(xs: [i32; N]) -> usize {
+    const { assert(N > 0, "chunk needs at least one element") };
+    N
+}
+fn main() {
+    let e: [i32; 0] = [];
+    println(f"{chunk(e)}");
+    let ok: [i32; 2] = [1, 2];
+    println(f"{chunk(ok)}");
+}

@@ -1,0 +1,486 @@
+//! bare::gc - the collector's controls, and keeping GC objects in place
+//! for raw pointers.
+//! `collect_young`, `set_pause_goal`, `no_collect`, `set_heap_limit` and
+//! `Arena` keep pauses out of a frame or a request. A `Pinned<T>` from
+//! `pin` keeps the object holding `T`'s data where it is (`nabi_gc_pin`,
+//! counted) until it is released, where its owner leaves scope.
+//! `GcPtr<T>` is a managed reference to one `T` on the GC heap; `Weak<T>`
+//! refers to a `GcPtr<T>`'s object without keeping it alive (a `WEAK_REF`
+//! word).
+
+use bare::mem::size_of;
+use bare::mem::transmute_unchecked;
+use bare::mem::{GcBuf, buf_get, buf_new, buf_same, buf_set};
+use bare::ptr::{ConstPtr, ManyPtr, Ptr};
+
+extern "nabi" {
+    fn nabi_gc_collect();
+    fn nabi_gc_collect_young();
+    fn nabi_gc_collect_young_within(ns: u64) -> u32;
+    fn nabi_gc_set_pause_goal(ns: u64);
+    fn nabi_gc_set_heap_limit(bytes: u64);
+    fn nabi_gc_no_collect(enter: u32);
+    fn nabi_gc_arena_epoch() -> u64;
+    fn nabi_gc_stats(out: GcBuf<u64>);
+    fn nabi_gc_pin(obj: GcBuf<u8>) -> GcBuf<u8>;
+    fn nabi_gc_unpin(obj: GcBuf<u8>);
+    fn nabi_gc_weak_new(obj: GcBuf<u8>) -> GcBuf<u8>;
+    fn nabi_gc_weak_get(cell: GcBuf<u8>) -> GcBuf<u8>;
+}
+
+/// Whether `T` holds no GC reference (its bytes are all plain data).
+#[intrinsic("nabi.transfer_plain")]
+const fn holds_no_refs<T>() -> bool;
+
+/// A full collection now (it may move every unpinned object). It
+/// stops every thread for the whole collection: to keep pauses short,
+/// leave collecting to the runtime, or call `collect_young` between
+/// frames.
+pub fn collect() { unsafe { nabi_gc_collect() } }
+
+/// A minor collection now: only the objects allocated since the last
+/// collection are looked at, so it costs about what survived of them,
+/// not the heap. The cheap moment to collect, between two frames or two
+/// requests. While a concurrent full mark runs, it does nothing (the
+/// mark finishes on its own, without a long pause).
+pub fn collect_young() { unsafe { nabi_gc_collect_young() } }
+
+/// `collect_young` if the last minor collections say it takes at most
+/// `ms` milliseconds (whatever time is left of the frame); whether it
+/// ran. When it would take longer, nothing runs and the next collection
+/// comes when the young budget is spent.
+pub fn collect_young_within(ms: f64) -> bool {
+    unsafe { nabi_gc_collect_young_within(ms_to_ns(ms)) != 0 }
+}
+
+/// Ask the collector to keep its pauses near `ms` milliseconds (0: no
+/// goal, the default). It sizes the young generation so a minor
+/// collection fits the goal (from what the last ones cost), marks every
+/// full collection concurrently and never compacts the heap on its own
+/// (call `collect` for that). A goal, not a promise: a pause can still
+/// be longer, for example while the heap grows fast.
+pub fn set_pause_goal(ms: f64) { unsafe { nabi_gc_set_pause_goal(ms_to_ns(ms)) } }
+
+/// Keep the heap at most `bytes` (0: no limit, the default). Collections
+/// come sooner as the heap nears it and are full ones once it is
+/// reached. Live data beyond the limit is not an error: the heap then
+/// grows past it a little at a time, collecting fully at each step.
+pub fn set_heap_limit(bytes: u64) { unsafe { nabi_gc_set_heap_limit(bytes) } }
+
+/// `f()`, with allocation never starting a collection meanwhile, on any
+/// thread: for a frame or a request that must not pause. When the young
+/// budget runs out inside, the heap grows instead (`GcStats::grown_bytes`
+/// counts it) and the collection comes after the region. A concurrent
+/// mark keeps running and finishes after the region. The heap limit
+/// still holds: past it, a region collects. `collect` and `collect_young`
+/// inside still collect.
+pub fn no_collect<R>(f: fn() -> R) -> R {
+    unsafe { nabi_gc_no_collect(1) };
+    let _open = NoCollect { open: true };
+    f()
+}
+
+/// An open `no_collect` region; closes where it leaves scope.
+struct NoCollect {
+    open: bool;
+}
+
+impl Drop for NoCollect {
+    fn drop(ref self) {
+        if self.open {
+            unsafe { nabi_gc_no_collect(0) };
+        }
+    }
+}
+
+const fn ms_to_ns(ms: f64) -> u64 {
+    if ms <= 0.0 {
+        return 0;
+    }
+    (ms * 1000000.0) as u64
+}
+
+/// The collector's counters since the program started (`stats`).
+pub struct GcStats {
+    /// Collections of every kind.
+    pub collections: u64;
+    /// Minor collections (the young objects only).
+    pub minor: u64;
+    /// Full collections that stopped the world throughout.
+    pub full: u64;
+    /// Full collections marked concurrently (two short pauses each).
+    pub concurrent: u64;
+    /// Time every thread stood stopped, all pauses together, and the
+    /// longest pause, in nanoseconds.
+    pub pause_total_ns: u64;
+    pub pause_max_ns: u64;
+    /// Bytes of objects alive at the last collection, plus those
+    /// allocated since.
+    pub live_bytes: u64;
+    /// Bytes the heap holds from the operating system.
+    pub heap_bytes: u64;
+    /// Bytes evacuation has moved.
+    pub moved_bytes: u64;
+    /// Times an allocating thread helped a concurrent mark instead of
+    /// stopping the world to finish it.
+    pub assists: u64;
+    /// Bytes `no_collect` regions grew the heap by instead of collecting.
+    pub grown_bytes: u64;
+    /// Collections the heap limit (`set_heap_limit`) brought forward.
+    pub limit_collections: u64;
+    /// Bytes that may be allocated between two minor collections now (a
+    /// pause goal changes it).
+    pub young_budget: u64;
+}
+
+/// The collector's counters now. Takes the collector's lock for a
+/// moment: read it now and then (a metrics export, once per frame), not
+/// in a hot loop.
+pub fn stats() -> GcStats {
+    let w: GcBuf<u64> = unsafe { buf_new(13) };
+    unsafe { nabi_gc_stats(w) };
+    let at = |i: usize| unsafe { buf_get(w, i) };
+    GcStats {
+        collections: at(0),
+        minor: at(1),
+        full: at(2),
+        concurrent: at(3),
+        pause_total_ns: at(4),
+        pause_max_ns: at(5),
+        live_bytes: at(6),
+        heap_bytes: at(7),
+        moved_bytes: at(8),
+        assists: at(9),
+        grown_bytes: at(10),
+        limit_collections: at(11),
+        young_budget: at(12),
+    }
+}
+
+/// Values for one frame (or one request) in one buffer the collector
+/// neither allocates nor traces object by object: `alloc` appends a
+/// value in place and `reset` empties the arena at once, keeping its
+/// memory for the next frame. Copies of an `Arena` share it.
+///
+/// A value is reached through its `ArenaRef`, which is plain data (keep
+/// it anywhere, a GC object included). Every `reset` starts a new
+/// generation, and a reference from an earlier one (or from another
+/// arena) panics when used: it can never read what the next frame put in
+/// its place. The buffer is an ordinary GC object, so what the values
+/// reference stays alive while they are in the arena.
+pub struct Arena<T> {
+    items: List<T>;
+    /// The generation `ArenaRef`s must name: unique to this arena and
+    /// this `reset`.
+    epoch: GcPtr<u64>;
+}
+
+impl<T> Debug for Arena<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"Arena(len {self.len()})") }
+}
+
+impl<T> !Sync for Arena<T> {}
+
+/// A value in an `Arena`, valid until the arena's next `reset`.
+pub struct ArenaRef<T> {
+    at: usize;
+    epoch: u64;
+}
+
+impl<T> Clone for ArenaRef<T> {
+    const fn clone(self) -> ArenaRef<T> { self }
+}
+
+impl<T> Copy for ArenaRef<T> {}
+
+impl<T> Debug for ArenaRef<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"ArenaRef({self.at})") }
+}
+
+impl<T> Arena<T> {
+    /// An empty arena.
+    pub fn new() -> Arena<T> { Arena::with_capacity(0) }
+
+    /// An empty arena with room for `n` values before its buffer grows.
+    pub fn with_capacity(n: usize) -> Arena<T> {
+        Arena { items: List::with_capacity(n), epoch: GcPtr::new(unsafe { nabi_gc_arena_epoch() }) }
+    }
+
+    /// Append `value`; its reference.
+    pub fn alloc(self, value: T) -> ArenaRef<T> {
+        self.items.push(value);
+        ArenaRef { at: self.items.len() - 1, epoch: self.epoch.get() }
+    }
+
+    /// The value `r` names.
+    #[track_caller]
+    pub fn get(self, r: ArenaRef<T>) -> T {
+        self.check(r);
+        self.items[r.at]
+    }
+
+    /// The value `r` names, `none` once the arena was reset since (or for
+    /// another arena's reference).
+    pub fn try_get(self, r: ArenaRef<T>) -> T | none {
+        if r.epoch != self.epoch.get() {
+            return none;
+        }
+        self.items[r.at]
+    }
+
+    /// Replace the value `r` names.
+    #[track_caller]
+    pub fn set(self, r: ArenaRef<T>, value: T) {
+        self.check(r);
+        self.items[r.at] = value;
+    }
+
+    /// Whether `r` names a value of this arena's current generation.
+    pub fn holds(self, r: ArenaRef<T>) -> bool { r.epoch == self.epoch.get() }
+
+    /// Values allocated since the last `reset`.
+    pub fn len(self) -> usize { self.items.len() }
+
+    /// Whether nothing was allocated since the last `reset`.
+    pub fn is_empty(self) -> bool { self.items.is_empty() }
+
+    /// Values the buffer holds before it grows.
+    pub fn capacity(self) -> usize { self.items.capacity() }
+
+    /// Empty the arena at once (its buffer stays for the next frame):
+    /// every `ArenaRef` handed out so far is invalid from now on.
+    pub fn reset(self) {
+        self.epoch.set(unsafe { nabi_gc_arena_epoch() });
+        if holds_no_refs::<T>() {
+            // Nothing to let go of: the slots are overwritten in place.
+            unsafe { self.items.set_len(0) };
+        } else {
+            self.items.clear();
+        }
+    }
+
+    /// Every value since the last `reset`, in allocation order, in a new
+    /// list.
+    pub fn values(self) -> List<T> {
+        let out: List<T> = List::with_capacity(self.items.len());
+        for v in self.items { out.push(v); }
+        out
+    }
+
+    #[track_caller]
+    fn check(self, r: ArenaRef<T>) {
+        if r.epoch != self.epoch.get() {
+            panic("Arena: this ArenaRef is from before the arena's last reset (or from another arena); keep values that outlive a frame in a List or a GcPtr");
+        }
+    }
+}
+
+/// What `pin` keeps in place for a value: the GC object holding its
+/// data, `none` when nothing can move (an empty list; a `str`, which
+/// stays in place while the `Pinned` holding it is in scope). A pinned
+/// `List` or `StrBuf` cannot grow: its buffer would move.
+#[sealed]
+pub trait Pinnable {
+    /// The GC object holding the value's data; `none` when nothing can
+    /// move.
+    #[internal("write `pin(x)` to keep a value in place")]
+    fn gc_object(self) -> GcBuf<u8> | none;
+}
+
+impl<T> Pinnable for List<T> {
+    #[internal("write `pin(x)` to keep a value in place")]
+    fn gc_object(self) -> GcBuf<u8> | none {
+        if self.is_empty() {
+            return none;
+        }
+        let (buf, _, _) = unsafe { self[0:self.len()].raw_parts() };
+        let erased: GcBuf<u8> = unsafe { transmute_unchecked(buf) };
+        erased
+    }
+}
+
+impl<T> Pinnable for Slice<T> {
+    #[internal("write `pin(x)` to keep a value in place")]
+    fn gc_object(self) -> GcBuf<u8> | none {
+        if self.len() == 0 {
+            return none;
+        }
+        let (buf, _, _) = unsafe { self.raw_parts() };
+        let erased: GcBuf<u8> = unsafe { transmute_unchecked(buf) };
+        erased
+    }
+}
+
+impl Pinnable for str {
+    #[internal("write `pin(x)` to keep a value in place")]
+    const fn gc_object(self) -> GcBuf<u8> | none { none }
+}
+
+impl<T> Pinnable for GcPtr<T> {
+    #[internal("write `pin(x)` to keep a value in place")]
+    fn gc_object(self) -> GcBuf<u8> | none {
+        let erased: GcBuf<u8> = unsafe { transmute_unchecked(self.obj) };
+        erased
+    }
+}
+
+/// A reference to a GC object holding one `T`. Copies share the
+/// object. The collector traces it from every frame and object that
+/// holds it and updates it when the object moves; a raw `Ptr<T>` to the
+/// value exists only under a pin (`Pinned<GcPtr<T>>::as_value_ptr`).
+pub struct GcPtr<T> {
+    obj: GcBuf<T>;
+}
+
+impl<T> Debug for GcPtr<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("GcPtr") }
+}
+
+// Shares its object like `List`.
+impl<T> !Sync for GcPtr<T> {}
+
+impl<T> GcPtr<T> {
+    /// A new object holding `value`.
+    pub const fn new(value: T) -> GcPtr<T> {
+        let obj: GcBuf<T> = unsafe { buf_new(1) };
+        unsafe { buf_set(obj, 0, value) };
+        GcPtr { obj }
+    }
+
+    /// The value.
+    pub const fn get(self) -> T { unsafe { buf_get(self.obj, 0) } }
+
+    /// Replace the value; every copy sees it.
+    pub const fn set(self, value: T) { unsafe { buf_set(self.obj, 0, value) }; }
+
+    /// Whether `self` and `other` are one object (identity, not value).
+    pub const fn same(self, other: GcPtr<T>) -> bool { buf_same(self.obj, other.obj) }
+}
+
+/// A reference to a `GcPtr<T>`'s object that does not keep it alive:
+/// once a collection finds the object unreachable
+/// except through weak references, it frees it and every `Weak` to it
+/// reads `none` from then on. For caches and observers.
+pub struct Weak<T> {
+    /// A runtime weak cell: its one word is a `WEAK_REF`.
+    cell: GcBuf<GcPtr<T>>;
+}
+
+impl<T> Debug for Weak<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Weak") }
+}
+
+impl<T> !Sync for Weak<T> {}
+// A hand-off cannot copy what a weak reference names,
+// so it stays with its thread.
+impl<T> !Send for Weak<T> {}
+
+impl<T> Weak<T> {
+    /// A weak reference to `target`'s object.
+    pub fn new(target: GcPtr<T>) -> Weak<T> {
+        let obj: GcBuf<u8> = unsafe { transmute_unchecked(target.obj) };
+        let cell: GcBuf<GcPtr<T>> = unsafe { transmute_unchecked(nabi_gc_weak_new(obj)) };
+        Weak { cell }
+    }
+
+    /// The object, `none` once it was collected.
+    pub fn get(self) -> GcPtr<T> | none {
+        let erased: GcBuf<u8> = unsafe { transmute_unchecked(self.cell) };
+        let obj = unsafe { nabi_gc_weak_get(erased) };
+        let at: usize = unsafe { transmute_unchecked(obj) };
+        if at == 0 {
+            return none;
+        }
+        let typed: GcBuf<T> = unsafe { transmute_unchecked(obj) };
+        GcPtr { obj: typed }
+    }
+}
+
+/// `obj`'s data held in place.
+pub struct Pinned<T> {
+    obj: T;
+    held: GcBuf<u8> | none;
+}
+
+impl<T> Debug for Pinned<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Pinned") }
+}
+
+/// Pin `obj`'s data until the returned guard is released, where its
+/// owner leaves scope.
+pub fn pin<T: Pinnable>(obj: T) -> Pinned<T> {
+    let held = obj.gc_object();
+    if let b: GcBuf<u8> = held {
+        unsafe { nabi_gc_pin(b) };
+    }
+    Pinned { obj, held }
+}
+
+impl<T> Pinned<T> {
+    /// The pinned object.
+    pub fn obj(self) -> T { self.obj }
+}
+
+impl<T> Pinned<List<T>> {
+    /// The list's first element; dangling for an empty list.
+    pub fn as_data_ptr(self) -> Ptr<T> {
+        match self.held {
+            b: GcBuf<u8> => {
+                let (_, start, _) = unsafe { self.obj[0:self.obj.len()].raw_parts() };
+                let at: usize = unsafe { transmute_unchecked(b) };
+                // The payload follows the 16-byte object header.
+                Ptr::<T>::dangling().with_addr(at + 16 + start * size_of::<T>())
+            }
+            none => Ptr::<T>::dangling(),
+        }
+    }
+
+    /// `as_data_ptr` as a pointer to the run of elements.
+    pub fn as_data_many_ptr(self) -> ManyPtr<T> { self.as_data_ptr().as_many() }
+}
+
+impl<T> Pinned<Slice<T>> {
+    /// The slice's first element; dangling for an empty slice.
+    pub fn as_data_ptr(self) -> Ptr<T> {
+        match self.held {
+            b: GcBuf<u8> => {
+                let (_, start, _) = unsafe { self.obj.raw_parts() };
+                let at: usize = unsafe { transmute_unchecked(b) };
+                // The payload follows the 16-byte object header.
+                Ptr::<T>::dangling().with_addr(at + 16 + start * size_of::<T>())
+            }
+            none => Ptr::<T>::dangling(),
+        }
+    }
+
+    /// `as_data_ptr` as a pointer to the run of elements.
+    pub fn as_data_many_ptr(self) -> ManyPtr<T> { self.as_data_ptr().as_many() }
+}
+
+impl<T> Pinned<GcPtr<T>> {
+    /// The value in the pinned object.
+    pub fn as_value_ptr(self) -> Ptr<T> {
+        let at: usize = unsafe { transmute_unchecked(self.obj.obj) };
+        // The payload follows the 16-byte object header.
+        Ptr::<T>::dangling().with_addr(at + 16)
+    }
+}
+
+impl Pinned<str> {
+    /// The UTF-8 bytes (no NUL promised).
+    pub fn as_bytes_ptr(self) -> ConstPtr<u8> { self.obj.as_ptr() }
+
+    /// The bytes as `c_char`s; NUL termination is not promised (use
+    /// `ffi::CString`).
+    pub fn as_c_ptr(self) -> ConstPtr<c_char> {
+        ConstPtr::<c_char>::dangling().with_addr(self.obj.as_ptr().addr())
+    }
+}
+
+impl<T> Drop for Pinned<T> {
+    fn drop(ref self) {
+        if let b: GcBuf<u8> = self.held {
+            unsafe { nabi_gc_unpin(b) };
+        }
+    }
+}

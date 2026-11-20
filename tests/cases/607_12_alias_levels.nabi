@@ -1,0 +1,11 @@
+// expect-error: 7:5: operator aliases of `before` must share one precedence level
+
+// Aliases of one method are tokens of one level (`<` is a
+// comparison, `+` an additive level).
+trait Order {
+    #[infix("⊲", like = "<")]
+    #[infix("⊳", like = "+")]
+    fn before(self, rhs: Self) -> bool;
+}
+
+println("unreached");

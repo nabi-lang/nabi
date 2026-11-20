@@ -1,0 +1,123 @@
+// expect-exit: 0
+// expect-stdout:
+// hello
+// world
+// atomic!
+// len=7 file=true dir=false
+// atomic! more
+// read 3: 109 105 99
+// InvalidInput
+// copied 12, mode kept: true
+// bin 3 255
+// walk [] dir=true
+// walk [a] dir=true
+// walk [a/b] dir=true
+// walk [a/b/d.txt] dir=false
+// walk [a/hello.txt] dir=false
+// walk [z.bin] dir=false
+// read_dir: b hello.txt
+// early-stopped read_dir under using: 20000
+// NotFound BASE/nope: No such file or directory
+// AlreadyExists
+// escape: PermissionDenied PermissionDenied
+// atomic! more
+// lock: true
+// exists after remove: false
+
+// Files (`File`'s open functions, seek, `using` closes), the
+// convenience functions over `Dir::root()` (write / write_atomic /
+// copy / rename / walk / remove_dir_all), and a confined `Dir`.
+
+use core::marker::share;
+use std::fs;
+use std::fs::{Dir, File, Permissions};
+use core::io::SeekFrom;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
+use core::io::{IoError, IoErrorKind};
+use std::path::Path;
+use std::env;
+
+fn fd_of(d: Dir, p: str) throws (IoError) -> str {
+    using f = try d.open(p) { f"{f.as_raw_fd()}" }
+}
+
+fn main() throws (IoError) {
+    let base = env::temp_dir() / "nabi_std_fs";
+    try fs::create_dir_all(base / "a" / "b");
+    try fs::create_dir_all(base / "a"); // already there: fine
+    let f = base / "a" / "hello.txt";
+    try fs::write(f, "hello\nworld\n");
+    print(try fs::read_to_str(f));
+    try fs::write_atomic(f, "atomic!");
+    println(try fs::read_to_str(f));
+    let m = try fs::metadata(f);
+    println(f"len={m.len()} file={m.is_file()} dir={m.is_dir()}");
+
+    using h = try File::open(f, Append) {
+        try h.write_all(" more");
+    }
+    println(try fs::read_to_str(f));
+
+    let g = try File::open(f);
+    try g.seek(SeekFrom::Start(3u64));
+    let buf: List<u8> = [0u8, 0u8, 0u8];
+    let n = try g.read(buf);
+    println(f"read {n}: {buf[0]} {buf[1]} {buf[2]}");
+    let closed = unsafe { share(g) };
+    try g.close();
+    println(try closed.read_to_str() catch e { f"{e.kind():?}" });
+
+    let c = base / "a" / "b" / "c.txt";
+    let perm = Permissions::from_mode(0o640u32);
+    using pf = try File::open(f) { try pf.set_permissions(perm); }
+    let copied = try fs::copy(f, c);
+    println(f"copied {copied}, mode kept: {(try fs::metadata(c)).permissions().mode() == 0o640u32}");
+    try fs::rename(c, base / "a" / "b" / "d.txt");
+    try fs::write(base / "z.bin", [1u8, 2u8, 255u8]);
+    let bytes = try fs::read(base / "z.bin");
+    println(f"bin {bytes.len()} {bytes[2]}");
+
+    try for e in fs::walk(base) {
+        let rel = e.path().strip_prefix(base) ?? Path::empty();
+        println(f"walk [{rel}] dir={e.is_dir()}");
+    }
+
+    // read_dir order is the OS's: report it sorted.
+    let names: List<str> = List::new();
+    try for e in fs::read_dir(base / "a") { names.push(e.file_name()); }
+    if names.len() == 2 && names[0] != "b" { names = [names[1], names[0]]; }
+    println(f"read_dir: {names[0]} {names[1]}");
+
+    // Each `using` closes its stream although the loop stops early;
+    // leaking them would hit the fd limit long before 20000.
+    let opened = 0;
+    while opened < 20000 {
+        using rd = try fs::read_dir(base / "a") {
+            try for e in rd { break; }
+        }
+        opened += 1;
+    }
+    println(f"early-stopped read_dir under using: {opened}");
+
+    let missing = try fs::read_to_str(base / "nope") catch e { f"{e.kind():?}" + " " + f"{e}" };
+    println(missing.replace(base.as_str(), "BASE"));
+    try fs::create_dir(base / "a") catch e { println(f"{e.kind():?}"); };
+
+    let d = try Dir::root().open_dir(base);
+    let up = try fd_of(d, "../x") catch e { f"{e.kind():?}" };
+    let abs = try fd_of(d, "/etc/hosts") catch e { f"{e.kind():?}" };
+    println(f"escape: {up} {abs}");
+    using inner = try d.open("a/hello.txt") {
+        println(try inner.read_to_str());
+        try inner.lock_exclusive();
+        println(f"lock: {try inner.try_lock_exclusive()}");
+        try inner.unlock();
+    }
+    try d.close();
+
+    try fs::remove_dir_all(base);
+    println(f"exists after remove: {fs::exists(base)}");
+}
+
+// only-os: macos linux

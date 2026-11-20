@@ -1,0 +1,25 @@
+// needs: objc
+// expect-exit: 0
+// expect-stdout:
+// alive true rc 1
+// gone true
+
+// A `WeakId` reads the object while something else keeps it, and `none`
+// once it is deallocated.
+use bare::ffi::objc;
+use bare::ffi::objc::{Id, NSObject, WeakId};
+
+fn main() {
+    let o = objc::new::<NSObject>();
+    let w = WeakId::new(o);
+    let back = w.load() ?? panic("deallocated too early");
+    println(f"alive {back.isEqual(o)} rc {o.retainCount() - 1}");
+    back.release_now();
+    o.release_now();
+    let gone = match w.load() {
+        x: Id<NSObject> => false,
+        none => true,
+    };
+    println(f"gone {gone}");
+    w.release_now();
+}

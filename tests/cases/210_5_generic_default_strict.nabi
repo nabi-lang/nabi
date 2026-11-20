@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout:
+// 4
+
+// T appears only in the return type, so only the default `i32` can fill it:
+// the default must not depend on argument inference.
+fn make_one<T: Default = i32>() -> T {
+    return T::default();
+}
+
+fn main() -> i32 {
+    let n = make_one();
+    println(f"{n + 4}");
+    return 0;
+}

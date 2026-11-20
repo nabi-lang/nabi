@@ -1,0 +1,13 @@
+// expect-exit: 0
+// expect-stdout: 2
+
+// A `[ref x]` capture list captures by reference; assignment
+// in the closure body reaches the outer variable.
+fn main() -> i32 {
+    let count = 0;
+    let inc = [ref count] || { count = count + 1 };
+    inc();
+    inc();
+    println(f"{count}");
+    return 0;
+}

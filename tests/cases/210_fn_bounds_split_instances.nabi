@@ -1,0 +1,28 @@
+// expect-exit: 0
+// expect-stdout: q 2 3 4
+
+// `fn` types differing only in `unsafe` or `+ Send` are two type
+// arguments: `H<fn() + Send>` and `H<fn()>` are two structs, and
+// `id::<unsafe extern "C" fn(..)>` and `id::<extern "C" fn(..)>` two
+// instances, each with its own field and parameter types.
+struct H<F> { f: F; }
+
+fn id<F>(f: F) -> F { f }
+
+extern "C" fn f(x: usize) -> usize { x + 1 }
+
+fn main() {
+    let a: unsafe extern "C" fn(usize) -> usize = f;
+    let b: extern "C" fn(usize) -> usize = f;
+    let ha = H { f: a };
+    let hb = H { f: b };
+    let p: fn() + Send = || {};
+    let q: fn() = || { print("q "); };
+    let hp = H { f: p };
+    let hq = H { f: q };
+    (hq.f)();
+    (hp.f)();
+    let c = id(a);
+    let d = id(b);
+    println(f"{unsafe { (ha.f)(1) }} {(hb.f)(2)} {unsafe { c(1) } + d(1)}");
+}

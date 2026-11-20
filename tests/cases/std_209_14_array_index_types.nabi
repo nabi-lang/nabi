@@ -1,0 +1,38 @@
+// An array position may be any integer type, the default `i64` of a
+// literal-typed variable or loop counter too; ranks 1 to 3, read and
+// written.
+// expect-exit: 0
+// expect-stdout:
+// 6 3 2
+// 1 4
+// [9.0, 6.0] 7
+// 28
+
+use core::array::Array;
+
+fn main() {
+    let m: Array<f64, 2> = [[1, 2], [3, 4]];
+    let v: Array<f64, 1> = [5, 6];
+    let i = 1;
+    let j: u8 = 0;
+    let k: i32 = -1;
+    println(f"{v[i]} {m[i, j]} {m[0, k]}");
+    for t in 0..2 {
+        print(f"{m[t, t]}");
+        if t == 0 { print(" "); }
+    }
+    println("");
+    v[i - 1] = 9.0;
+    let c: Array<i64, 3> = Array::full([2, 2, 2], 3);
+    c[1, 1, 1] = 7;
+    println(f"{v:?} {c[i, i, i]}");
+    let s = 0;
+    for a in 0..2 {
+        for b in 0..2 {
+            for d in 0..2 {
+                s += c[a, b, d];
+            }
+        }
+    }
+    println(f"{s}");
+}

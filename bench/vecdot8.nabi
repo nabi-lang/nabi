@@ -1,0 +1,44 @@
+// Dot products of bytes over 1M elements, 300 times: `i8` into a
+// checked `i32` sum, `u8` into a wrapping `u32`. Vector loops of byte
+// lanes summing four products to a lane (`sdot` / `udot` on arm64 with
+// `dotprod`), else widened ones.
+fn dot(a: List<i8>, b: List<i8>) -> i32 {
+    let n = a.len().min(b.len());
+    let s: i32 = 0;
+    for i in 0..n {
+        s += (a[i] as i32) * (b[i] as i32);
+    }
+    s
+}
+
+fn udot(a: List<u8>, b: List<u8>) -> u32 {
+    let n = a.len().min(b.len());
+    let s: u32 = 0;
+    for i in 0..n {
+        s = s.wrapping_add((a[i] as u32) * (b[i] as u32));
+    }
+    s
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 20;
+    let a: List<i8> = List::filled(n, 0i8);
+    let b: List<i8> = List::filled(n, 0i8);
+    let c: List<u8> = List::filled(n, 0u8);
+    let d: List<u8> = List::filled(n, 0u8);
+    let x: u64 = 9;
+    for i in 0..n {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        a[i] = (x >> 40) as i8;
+        b[i] = (x >> 48) as i8;
+        c[i] = (x >> 32) as u8;
+        d[i] = (x >> 56) as u8;
+    }
+    let t: i64 = 0;
+    for r in 0..300 {
+        a[r] = r as i8;
+        t += dot(a, b) as i64 + udot(c, d) as i64;
+    }
+    println(f"{t}");
+    return 0;
+}

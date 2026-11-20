@@ -1,0 +1,36 @@
+// gc-stress: 50
+// expect-exit: 0
+// expect-stdout:
+// 2 hi true
+// 4 WideCString("hé€!") hé€! 5
+// astral: 😀 true
+// eq: true false
+// nul at 2: nul byte found at position 2
+
+// `WideCString` is a `str` as `wchar_t` units and a NUL (UTF-16 on
+// Windows, one unit per char elsewhere); `as_ptr` points at them while
+// the value lives, also across collections. A NUL in the `str` throws.
+use bare::ffi::{NulError, WideCString};
+
+#[cfg(target_os = "windows")]
+const ASTRAL_UNITS: usize = 2;
+#[cfg(not(target_os = "windows"))]
+const ASTRAL_UNITS: usize = 1;
+
+fn main() {
+    let w = try! WideCString::new("hi");
+    println(f"{w.len()} {w.to_str()} {w.as_units().len() == 2}");
+    let w = try! WideCString::new("h\u{E9}\u{20AC}!");
+    let junk: List<List<i64>> = [];
+    for i in 0..2000 {
+        junk.push([i, i + 1]);
+    }
+    let p = w.as_ptr();
+    println(f"{w.len()} {w:?} {w.to_str()} {w.as_wide_cstr().as_units_with_nul().len()}");
+    assert_eq(unsafe { p.add(1).read() }, 0xE9 as c_wchar);
+    assert_eq(unsafe { p.add(4).read() }, 0 as c_wchar);
+    let a = try! WideCString::new("\u{1F600}");
+    println(f"astral: {try! a.as_wide_cstr().to_str()} {a.len() == ASTRAL_UNITS}");
+    println(f"eq: {w == w.clone()} {w == a}");
+    try WideCString::new("ab\0c") catch e: NulError { println(f"nul at {e.position()}: {e}"); };
+}

@@ -1,0 +1,18 @@
+// A type spliced into a message takes "a" or "an" as it is read.
+// expect-error: 8:9: `other` returns `u8`, but `Num` is `i64` (from `make`)
+// expect-error: help: `Num` is one concrete type: return an `i64` here too, or call `make` for it
+// expect-error: `break` with an `i64` value, but an earlier `break` of this loop has no value
+mod m {
+    pub type Num = some Clone;
+    pub fn make() -> Num { 1i64 }
+    pub fn other() -> Num { 2u8 }
+}
+
+fn main() {
+    let v = loop {
+        if true { break; }
+        break 1i64;
+    };
+    let _ = m::make();
+    let _ = v;
+}

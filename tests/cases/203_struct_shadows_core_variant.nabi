@@ -1,0 +1,18 @@
+// expect-exit: 0
+// expect-stdout:
+// 1 2
+// Sha384
+
+// A program's own struct named like a core enum variant is the struct,
+// with or without an expected type that has the variant
+// (`core::crypto::HashAlgorithm::Sha256`).
+struct Sha256 { x: i32; }
+struct P256 { y: i32; }
+
+fn main() {
+    let s = Sha256 { x: 1 };
+    let p = P256 { y: 2 };
+    println(f"{s.x} {p.y}");
+    println(f"{core::crypto::HashAlgorithm::Sha384:?}");
+}
+

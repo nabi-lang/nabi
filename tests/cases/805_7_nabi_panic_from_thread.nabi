@@ -1,0 +1,40 @@
+// needs: threads
+// expect-exit: 101
+// expect-stderr: thread '<unnamed>' panicked:
+// expect-stderr: stop here
+// expect-stdout:
+// worker started 1
+
+// `nabi_panic` is `thread-safe`: called on any thread
+// it prints the message (no location) and ends the whole process with
+// exit code 101 at once; `finally` does not run. An unnamed thread is
+// `<unnamed>`.
+use std::thread;
+use bare::ptr::ConstPtr;
+
+extern "C" {
+    fn nabi_panic(msg: ConstPtr<u8>, msg_len: usize);
+}
+
+fn ready(x: i32) throws (str) -> i32 {
+    if x < 0 { throw "not ready"; }
+    x
+}
+
+fn work() throws (str) {
+    try {
+        let k = try ready(1);
+        println(f"worker started {k}");
+        let m = "stop here";
+        unsafe { nabi_panic(m.as_ptr(), m.len()); }
+    } finally {
+        println("finally ran");
+    }
+}
+
+fn main() -> i32 {
+    let h = thread::spawn(|| { try! work(); });
+    try! h.join();
+    println("main resumed");
+    return 0;
+}

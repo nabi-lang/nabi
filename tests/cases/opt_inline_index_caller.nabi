@@ -1,0 +1,37 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/opt_inline_index_caller.nabi:35:13:
+// expect-stderr: slice index 9 out of bounds for length 9
+// expect-stdout:
+// 6 12 true
+
+// A slice index inlined into a large function outside any loop still
+// reports its panic at the index in the caller.
+
+fn scan(b: Slice<u8>, at: usize) -> (usize, u64, bool) {
+    let n = b.len();
+    let neg = b[at] == 0x2Du8;
+    let j = if neg { at + 1 } else { at };
+    let m: u64 = 0;
+    while j < n {
+        let c = b[j];
+        if c < 0x30u8 || c > 0x39u8 { break; }
+        m = m * 10u64 + (c - 0x30u8) as u64;
+        j += 1;
+    }
+    if j < n && b[j] == 0x2Eu8 { j += 1; }
+    if j < n && (b[j] == 0x65u8 || b[j] == 0x45u8) { j += 1; }
+    if j < n && (b[j] == 0x2Bu8 || b[j] == 0x2Du8) { j += 1; }
+    let ok = b[at] == 0x2Du8 || b[at] == 0x31u8;
+    (j, m, ok)
+}
+
+fn main() {
+    let s = "-12.e+9";
+    let (j, m, ok) = scan(s.as_bytes(), 0);
+    println(f"{j} {m} {ok}");
+    let t = "123456789";
+    let b = t.as_bytes();
+    let (k, _, _) = scan(b, 0);
+    let x = b[k];
+    println(f"{x}");
+}

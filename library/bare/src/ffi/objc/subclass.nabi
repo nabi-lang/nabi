@@ -1,0 +1,67 @@
+//! bare::ffi::objc::subclass - classes made at run time
+//! (`objc_allocateClassPair`): Nabi functions as an Objective-C class's
+//! methods, for delegates and the classes an API wants subclassed.
+//!
+//! A method's implementation is an `extern "C" fn(this: CPtr<u8>, cmd:
+//! Sel, ..)` with the arguments its selector takes; `types` is its
+//! Objective-C type encoding (`"v@:@"`: returns `void`, takes `self`,
+//! `_cmd` and an object).
+
+use bare::ffi::objc::{Class, Sel};
+use bare::ptr::CPtr;
+
+extern "C" {
+    fn objc_allocateClassPair(sup: Class, name: str, extra: usize) -> CPtr<u8>;
+    fn objc_registerClassPair(c: CPtr<u8>);
+    fn class_addMethod(c: CPtr<u8>, sel: Sel, imp: usize, types: str) -> bool;
+    fn class_addProtocol(c: CPtr<u8>, p: CPtr<u8>) -> bool;
+    fn objc_getProtocol(name: str) -> CPtr<u8>;
+}
+
+/// A class being made: add its methods and protocols, then `register`.
+pub struct ClassBuilder {
+    c: CPtr<u8>;
+}
+
+impl ClassBuilder {
+    /// A new class `name` whose superclass is `sup`; `none` when a class
+    /// of that name exists.
+    pub fn new(name: str, sup: Class) -> ClassBuilder | none {
+        let c = unsafe { objc_allocateClassPair(sup, name, 0) };
+        if c.is_null() {
+            return none;
+        }
+        ClassBuilder { c }
+    }
+
+    /// Method `sel` running `imp`, the address of an `extern "C" fn`
+    /// taking the receiver, the selector and `sel`'s arguments, of type
+    /// encoding `types`. A method of the superclass it overrides must
+    /// have its signature.
+    ///
+    /// Safety: `imp` is such a function, and `types` says its signature.
+    pub unsafe fn method(self, sel: Sel, imp: usize, types: str) -> ClassBuilder {
+        if !unsafe { class_addMethod(self.c, sel, imp, types) } {
+            panic(f"the class has a method `{sel.name()}` already; add each selector once");
+        }
+        self
+    }
+
+    /// Conform to protocol `name` (`NSApplicationDelegate`), which a
+    /// linked framework declares.
+    pub fn protocol(self, name: str) -> ClassBuilder {
+        let p = unsafe { objc_getProtocol(name) };
+        if p.is_null() {
+            panic(f"no protocol `{name}` is loaded: link the framework that declares it");
+        }
+        unsafe { class_addProtocol(self.c, p) };
+        self
+    }
+
+    /// Register the class with the runtime; its class object, whose
+    /// `alloc`/`new` make instances.
+    pub fn register(self) -> Class {
+        unsafe { objc_registerClassPair(self.c) };
+        unsafe { bare::mem::transmute_unchecked(self.c) }
+    }
+}

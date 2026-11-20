@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The instrumentation: runs in the app's process, so the programs it
+     starts have the app's uid and sandbox. assets/cases/ holds what each
+     run expects. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.nabi_lang.corpus.tests">
+  <application android:label="Nabi corpus tests" android:hasCode="true" />
+  <instrumentation android:name=".Corpus"
+      android:targetPackage="org.nabi_lang.corpus"
+      android:label="Nabi corpus" />
+</manifest>

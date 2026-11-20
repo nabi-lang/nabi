@@ -1,0 +1,8 @@
+// expect-error: 7:5: type annotations needed: cannot infer the type of `w` (`W<_>`) from its initializer or later uses - add an annotation naming its arguments (`let w: W<..> = ..`)
+
+// An open argument of a generic struct: the help shows the known part.
+struct W<T> { c: List<T>; }
+
+fn main() {
+    let w = W { c: [] };
+}

@@ -1,0 +1,49 @@
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// len 1000 x 300 holds true
+// names p7 p999
+// reset len 0 holds false gone true
+// reused 3 capacity true
+// frames 60 sum 1770
+
+// `bare::gc::Arena`: values appended in place, reached through plain
+// `ArenaRef`s, emptied at once by `reset`; a reference from before a
+// reset is refused.
+use bare::gc::{Arena, ArenaRef};
+
+struct Particle { x: f64; y: f64; }
+
+fn main() {
+    let parts: Arena<Particle> = Arena::with_capacity(1024);
+    let names: Arena<str> = Arena::new();
+    let keep: List<ArenaRef<Particle>> = [];
+    let named: List<ArenaRef<str>> = [];
+    for i in 0..1000 {
+        let r = parts.alloc(Particle { x: i as f64, y: 0.5 });
+        if i % 100 == 0 { keep.push(r); }
+        named.push(names.alloc(f"p{i}"));
+    }
+    let p = parts.get(keep[3]);
+    println(f"len {parts.len()} x {p.x} holds {parts.holds(keep[3])}");
+    println(f"names {names.get(named[7])} {names.get(named[999])}");
+    let cap = parts.capacity();
+    parts.reset();
+    names.reset();
+    println(f"reset len {parts.len()} holds {parts.holds(keep[3])} gone {parts.try_get(keep[3]) == none}");
+    _ = parts.alloc(Particle { x: 1.0, y: 1.0 });
+    _ = parts.alloc(Particle { x: 2.0, y: 2.0 });
+    let last = parts.alloc(Particle { x: 3.0, y: 3.0 });
+    parts.set(last, Particle { x: 4.0, y: 4.0 });
+    println(f"reused {parts.len()} capacity {parts.capacity() == cap}");
+    // A frame loop: one arena, reset each frame.
+    let frame: Arena<i64> = Arena::new();
+    let sum: i64 = 0;
+    for f in 0..60 {
+        let r = frame.alloc(f);
+        for i in 0..100 { _ = frame.alloc(i); }
+        sum += frame.get(r);
+        frame.reset();
+    }
+    println(f"frames 60 sum {sum}");
+}

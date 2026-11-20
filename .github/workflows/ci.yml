@@ -1,0 +1,820 @@
+name: CI / Build and test
+
+# Three tiers:
+#   fast     pull request: linux-x64 and windows-x64, -O0
+#   main     merge queue, push to main: every gate host at -O0; a push
+#            the merge queue already passed runs lint only
+#   nightly  schedule, manual run: every host at -O0 and -O2, cross
+#            targets, bindgen, dist; a manual run's inputs pick a subset
+on:
+  # Push runs on main only; a branch is covered by its PR, not twice. No
+  # paths filter: CI gate is required, so a docs-only PR must still report
+  # it (plan runs lint only there).
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  schedule:
+    - cron: "0 21 * * *" # 06:00 KST
+  workflow_dispatch:
+    inputs:
+      hosts:
+        description: "Hosts: all, or some of linux-x64 linux-arm64 macos-arm64 windows-x64 windows-arm64"
+        default: all
+      jobs:
+        description: "Jobs after plan: all, or some of gate cross bindgen dist (none: plan only)"
+        default: all
+      filter:
+        description: "NABI_TEST_FILTER: the integration cases to run (empty: all)"
+        default: ""
+
+# A newer run of the same branch and event cancels the older one.
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Shell/PowerShell hygiene via the justfile recipes, so CI and local `just`
+  # match. Cheap, runs on every event.
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+      - name: Check shell format with shfmt 3.14.0
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/shfmt \
+            https://github.com/mvdan/sh/releases/download/v3.14.0/shfmt_v3.14.0_linux_amd64
+          echo "fe42021c7272ef2d67ea36cbc3031683c625d0badec733ef3a57b567246a0b66  /usr/local/bin/shfmt" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/shfmt
+          just fmt-check-sh
+      - name: Lint shell scripts with shellcheck
+        run: just lint-sh
+      - name: Lint workflows with actionlint 1.7.12
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          # SC2015 (A && B || C): the sha-tool fallbacks are intentional.
+          "$RUNNER_TEMP/actionlint" -shellcheck="shellcheck -e SC2015"
+      - name: Check version consistency
+        run: just version-check
+      - name: Check target consistency
+        run: just check-targets
+      - name: Install minisign
+        uses: ./.github/actions/setup-minisign
+      - name: Test release/publish.sh against a stubbed gh
+        run: just test-release
+      # Licenses, advisories, bans and sources of Cargo.lock (deny.toml).
+      - name: Check dependencies with cargo-deny 0.22.0
+        run: |
+          a=cargo-deny-0.22.0-x86_64-unknown-linux-musl
+          curl -fsSL -o "$RUNNER_TEMP/$a.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.22.0/$a.tar.gz"
+          echo "98c56e6a408bfa5c3c60744b6015aaa6aa08f743fdeb88386d06fca035bb1786  $RUNNER_TEMP/$a.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$a.tar.gz" -C "$RUNNER_TEMP" "$a/cargo-deny"
+          PATH=$RUNNER_TEMP/$a:$PATH cargo deny --locked check
+      - name: Test the release and changelog scripts against fixtures
+        run: just test-release-prep
+      - name: Check for stray gitlinks and .claude/
+        run: just check-tree
+      - name: Lint PowerShell with PSScriptAnalyzer 1.25.0
+        shell: pwsh
+        run: |
+          # The PSGallery download fails intermittently; retry before giving up.
+          for ($i = 1; $i -le 3; $i++) {
+            try {
+              Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser -SkipPublisherCheck
+              break
+            } catch {
+              if ($i -eq 3) { throw }
+              Start-Sleep ($i * 10)
+            }
+          }
+          just lint-ps
+
+  # Every commit of a pull request carries a Signed-off-by (CONTRIBUTING.md).
+  dco:
+    name: DCO
+    uses: nabi-lang/.github/.github/workflows/reusable-dco.yml@v1.0.0
+    permissions:
+      contents: read
+      pull-requests: read
+
+  # Decide what runs. Outputs: hosts (gate hosts), runners (host -> runs-on;
+  # a repo variable can pick a self-hosted runner, never for a fork PR),
+  # cross (target + host).
+  # The artifact expected-jobs names every job the run must
+  # pass (scripts/release/jobs.sh); release/ready.sh checks a run against it.
+  plan:
+    name: Plan jobs
+    # Gate the whole build on lint: a formatting or lint failure skips plan and
+    # everything downstream, so no build runs for code that would not merge.
+    needs: [lint]
+    # The nightly schedule runs only where the repository variable NABI_NIGHTLY is `on`.
+    if: github.event_name != 'schedule' || vars.NABI_NIGHTLY == 'on'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # The merge queue's runs of this commit (a push it already tested).
+      actions: read
+    outputs:
+      hosts: ${{ steps.plan.outputs.hosts }}
+      bindgen: ${{ steps.plan.outputs.bindgen }}
+      dist: ${{ steps.plan.outputs.dist }}
+      runners: ${{ steps.plan.outputs.runners }}
+      opts: ${{ steps.plan.outputs.opts }}
+      cross: ${{ steps.plan.outputs.cross }}
+      jobs: ${{ steps.plan.outputs.jobs }}
+      filter: ${{ steps.plan.outputs.filter }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Plan hosts and jobs
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          IN_HOSTS: ${{ inputs.hosts }}
+          IN_JOBS: ${{ inputs.jobs }}
+          IN_FILTER: ${{ inputs.filter }}
+          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          LINUX_RUNNER: ${{ vars.NABI_LINUX_RUNNER }}
+          WINDOWS_RUNNER: ${{ vars.NABI_WINDOWS_RUNNER }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          all='[
+            {"name": "linux-x64", "os": "ubuntu-24.04", "gate": true},
+            {"name": "linux-arm64", "os": "ubuntu-24.04-arm", "gate": true},
+            {"name": "macos-arm64", "os": "macos-26", "gate": true},
+            {"name": "windows-x64", "os": "windows-2022", "gate": true},
+            {"name": "windows-arm64", "os": "windows-11-arm", "gate": true}
+          ]'
+          # windows-arm64 is a gate host only nightly (no tier lists it);
+          # its cross runs an x64 nabic (emulated).
+          # Only targets the native backend generates code for.
+          cross='[
+            {"target": "x86_64-unknown-linux-musl", "host": "linux-x64"},
+            {"target": "aarch64-unknown-linux-musl", "host": "linux-arm64"},
+            {"target": "aarch64-pc-windows-msvc", "host": "windows-arm64"}
+          ]'
+          case $EVENT:$REF in
+          schedule:* | workflow_dispatch:*) tier=nightly ;;
+          merge_group:* | push:refs/heads/main) tier=main ;;
+          *) tier=fast ;;
+          esac
+          filter=
+          case $tier in
+          fast) hosts="linux-x64 windows-x64" jobs=gate opts='["-O0"]' ;;
+          main) hosts="linux-x64 linux-arm64 macos-arm64 windows-x64" jobs=gate opts='["-O0"]' ;;
+          nightly)
+            hosts=${IN_HOSTS:-all} jobs=${IN_JOBS:-all} opts='["-O0", "-O2"]' filter=$IN_FILTER
+            [ "$hosts" = all ] && hosts=$(echo "$all" | jq -r '.[].name')
+            [ "$jobs" = all ] && jobs="gate cross bindgen dist"
+            ;;
+          esac
+          # Skip the gate (blank hosts/jobs, lint only) for changes that cannot
+          # affect the build (docs, *.md, CI config) and for draft PRs. Never
+          # skip nightly, the merge queue, or a new branch's first push, and run
+          # when the diff is unavailable.
+          if [ "$tier" != nightly ] && [ "$EVENT" != merge_group ]; then
+            changed=""
+            if [ "$EVENT" = pull_request ]; then
+              changed=$(git diff --name-only "$PR_BASE...$PR_HEAD" 2> /dev/null) || changed=""
+            elif [ "$EVENT" = push ] && [ "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]; then
+              changed=$(git diff --name-only "$PUSH_BEFORE" "$PUSH_AFTER" 2> /dev/null) || changed=""
+            fi
+            skip=""
+            if [ "$DRAFT" = true ]; then
+              skip="draft PR"
+            elif [ "$EVENT" = push ] &&
+              [ -n "$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$PUSH_AFTER&event=merge_group&status=success" --jq '.workflow_runs[0].id // empty')" ]; then
+              skip="the merge queue passed this commit"
+            elif [ -n "$changed" ]; then
+              # A here-string, not a pipe: the loop stops early and pipefail
+              # would fail the writer on a long list.
+              relevant=$(while IFS= read -r f; do
+                [ -n "$f" ] || continue
+                case $f in
+                docs/* | *.md | LICENSE* | assets/* | .gitignore | .github/ISSUE_TEMPLATE/* | .github/dependabot.yml | .github/CODEOWNERS | .github/workflows/*) ;;
+                *)
+                  echo relevant
+                  break
+                  ;;
+                esac
+              done <<< "$changed")
+              [ -z "$relevant" ] && skip="inert change (docs / CI config only)"
+            fi
+            [ -z "$skip" ] || {
+              hosts="" jobs=""
+              echo "gate skipped: $skip -- lint only"
+            }
+          fi
+          picked=$(echo "$all" | jq -c --arg h "$hosts" '[.[] | select(.name | IN($h | splits("[\\s,]+")))]')
+          gate='[]'
+          case " $jobs " in *" gate "*) gate=$(echo "$picked" | jq -c '[.[] | select(.gate) | .name]') ;; esac
+          case " $jobs " in
+          *" cross "*) cross=$(echo "$cross" | jq -c --argjson p "$picked" '[.[] | select(.host | IN($p[].name))]') ;;
+          *) cross='[]' ;;
+          esac
+          bindgen='[]' dist='[]'
+          case " $jobs " in *" bindgen "*) bindgen=$(echo "$picked" | jq -c '[.[] | select(.name | IN("linux-x64", "windows-x64")) | .name]') ;; esac
+          case " $jobs " in *" dist "*) dist=$(echo "$picked" | jq -c '[.[] | select(.name | IN("linux-x64", "windows-x64", "windows-arm64")) | .name]') ;; esac
+          sh_linux=false sh_windows=false
+          if [ "$FORK" != true ]; then
+            [ "$LINUX_RUNNER" = self-hosted ] && sh_linux=true
+            [ "$WINDOWS_RUNNER" = self-hosted ] && sh_windows=true
+          fi
+          runners=$(echo "$all" | jq -c --argjson l "$sh_linux" --argjson w "$sh_windows" '
+            map({key: .name, value: [.os]}) | from_entries
+            | if $l then .["linux-x64"] = ["self-hosted", "linux", "x64"] else . end
+            | if $w then .["windows-x64"] = ["self-hosted", "windows", "x64"] else . end')
+          {
+            echo "hosts=$gate"
+            echo "bindgen=$bindgen"
+            echo "dist=$dist"
+            echo "runners=$runners"
+            echo "opts=$opts"
+            echo "cross=$cross"
+            echo "jobs=$jobs"
+            echo "filter=$filter"
+          } | tee -a "$GITHUB_OUTPUT"
+          echo "tier: $tier"
+          TIER=$tier JOBS=$jobs FILTER=$filter ALL=$all PICKED=$picked GATE=$gate CROSS=$cross \
+            OPTS=$opts BINDGEN=$bindgen DIST=$dist \
+            scripts/release/jobs.sh > "$RUNNER_TEMP/expected-jobs.json"
+          jq -r '.names[]' "$RUNNER_TEMP/expected-jobs.json" | sed 's/^/expected: /'
+      # The jobs release/ready.sh requires of this run.
+      - name: Upload the expected-jobs artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: expected-jobs
+          path: ${{ runner.temp }}/expected-jobs.json
+          if-no-files-found: error
+
+  # fmt, clippy and the tests but the corpora, every step even
+  # after a failure; then the corpora's test binaries, archived for corpus.
+  check:
+    needs: [plan]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.hosts != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ${{ fromJSON(needs.plan.outputs.hosts) }}
+    name: Check and build tests (${{ matrix.host }})
+    runs-on: ${{ fromJSON(needs.plan.outputs.runners)[matrix.host] }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write # OIDC -> nabi-ci-sccache
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
+      # unset, the cache is read-only.
+      - name: Configure AWS credentials for sccache writes
+        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Install cargo-nextest
+        uses: ./.github/actions/setup-nextest
+      # A Linux build, native too, links the toolchain's C library.
+      - name: Build the host C library (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
+      - name: Check format with cargo fmt
+        run: cargo fmt --all --check
+      - name: Check layout
+        run: cargo run -q -p layout -- --deny ABDE
+      - name: Lint with cargo clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+      # Every test binary, with nabic, nabi and nabils, for the test and
+      # corpus jobs, which run it without a build. Its compile-time paths
+      # (CARGO_BIN_EXE_*, CARGO_MANIFEST_DIR) hold because every job
+      # checks out at the same path on a GitHub-hosted runner.
+      - name: Build the test archive with cargo nextest
+        if: ${{ !cancelled() }}
+        run: cargo nextest archive --workspace --archive-file "$RUNNER_TEMP/tests.tar.zst"
+      # nextest does not run doctests.
+      - name: Run doctests
+        if: ${{ !cancelled() }}
+        run: cargo test --doc
+      - name: Check library format with nabi fmt
+        if: ${{ !cancelled() }}
+        run: '"${CARGO_TARGET_DIR:-target}/debug/nabi" fmt --check library'
+      # nabir_abi, the layouts and pure functions both sides share, aside.
+      # Crate names only: the paths in `cargo tree` hold `nabi` too. The
+      # toolchain side is nabic*, nabicc*, nabild, nabils*, nabirepl* and
+      # nabi / nabi_*.
+      - name: Check compiler and runtime isolation
+        if: ${{ !cancelled() }}
+        run: |
+          names() { cargo tree -p "$1" -e normal --prefix none --format '{p}' | awk '{print $1}' | sort -u; }
+          if names nabic | grep -E '^nabir(_[a-z]+)?$' | grep -vx nabir_abi; then
+            echo "nabic depends on runtime crates"; exit 1
+          fi
+          if names nabir | grep -E '^(nabi|nabic|nabicc|nabild|nabils|nabirepl)(_[a-z]+)?$'; then
+            echo "nabir depends on compiler crates"; exit 1
+          fi
+      - name: Upload the test archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tests-${{ matrix.host }}
+          path: ${{ runner.temp }}/tests.tar.zst
+          retention-days: 1
+          compression-level: 0
+      - name: Show sccache stats
+        if: ${{ !cancelled() }}
+        run: '"$SCCACHE" --show-stats'
+
+  # The integration and differential corpora from check's archive, a job
+  # per host, level and shard (NABI_TEST_SHARD).
+  corpus:
+    needs: [plan, check]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.check.result == 'success' && needs.plan.outputs.hosts != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ${{ fromJSON(needs.plan.outputs.hosts) }}
+        opt: ${{ fromJSON(needs.plan.outputs.opts) }}
+        shard: [1, 2, 3, 4] # scripts/release/jobs.sh names these
+    name: Test corpus (${{ matrix.host }}, ${{ matrix.opt }}, ${{ matrix.shard }}/4)
+    runs-on: ${{ fromJSON(needs.plan.outputs.runners)[matrix.host] }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write # OIDC -> nabi-ci-sccache
+    env:
+      NABI_TEST_OPT: ${{ matrix.opt != '-O0' && matrix.opt || '' }}
+      NABI_TEST_SHARD: ${{ matrix.shard }}/4
+      NABI_TEST_FILTER: ${{ needs.plan.outputs.filter }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Build the host C library (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
+      # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
+      # unset, the cache is read-only.
+      - name: Configure AWS credentials for sccache writes
+        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Install cargo-nextest
+        uses: ./.github/actions/setup-nextest
+      - name: Download the test archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tests-${{ matrix.host }}
+          path: ${{ runner.temp }}
+      # Into the workspace, where check built it (the baked paths); only
+      # libnabir.a is built here.
+      - name: Run the integration and differential corpora
+        run: |
+          cargo build -p nabir
+          NABI_TEST_PREBUILT=1 cargo nextest run --archive-file "$RUNNER_TEMP/tests.tar.zst" \
+            --workspace-remap . --extract-to . --extract-overwrite --no-fail-fast --no-tests=fail \
+            -E 'binary_id(nabic::main) & test(/^(integration|differential)::/)'
+
+  # Every other test from check's archive, split over three jobs per host
+  # (nextest --partition).
+  test:
+    needs: [plan, check]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.check.result == 'success' && needs.plan.outputs.hosts != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ${{ fromJSON(needs.plan.outputs.hosts) }}
+        part: [1, 2, 3] # scripts/release/jobs.sh names these
+    name: Test workspace (${{ matrix.host }}, ${{ matrix.part }}/3)
+    runs-on: ${{ fromJSON(needs.plan.outputs.runners)[matrix.host] }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write # OIDC -> nabi-ci-sccache
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Build the host C library (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
+      # Seven tests build C with clang, which windows-2022 has on PATH
+      # (C:\Program Files\LLVM). windows-11-arm gets an arm64 one when
+      # the image's clang is missing or does not target aarch64.
+      - name: Install arm64 clang (windows-arm64)
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        shell: pwsh
+        run: |
+          $triple = if (Get-Command clang -ErrorAction SilentlyContinue) { clang -print-target-triple } else { '' }
+          if ($triple -like 'aarch64-*') { clang --version; exit 0 }
+          $msi = "$env:RUNNER_TEMP\llvm-woa64.msi"
+          Invoke-WebRequest -Uri https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.6/LLVM-23.1.6-woa64.msi -OutFile $msi
+          $want = '18b5b93305262760e107178de218f17fdd487642d34e1502e3a6dc8231e5a50d'
+          if ((Get-FileHash $msi -Algorithm SHA256).Hash -ne $want) { throw 'LLVM-23.1.6-woa64.msi: SHA-256 mismatch' }
+          $p = Start-Process msiexec -ArgumentList '/i', $msi, '/qn', '/norestart' -Wait -PassThru
+          if ($p.ExitCode) { throw "msiexec failed: $($p.ExitCode)" }
+          $bin = "$env:ProgramFiles\LLVM\bin"
+          & "$bin\clang.exe" --version
+          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
+      # unset, the cache is read-only.
+      - name: Configure AWS credentials for sccache writes
+        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Install cargo-nextest
+        uses: ./.github/actions/setup-nextest
+      - name: Download the test archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tests-${{ matrix.host }}
+          path: ${{ runner.temp }}
+      # libnabir.a built once before the tests: a test process running its
+      # own `cargo build` relinks it under the others (NABI_TEST_PREBUILT,
+      # compiler/nabic/tests/main/common.rs).
+      - name: Run the tests
+        run: |
+          cargo build -p nabir
+          NABI_TEST_PREBUILT=1 cargo nextest run --archive-file "$RUNNER_TEMP/tests.tar.zst" \
+            --workspace-remap . --extract-to . --extract-overwrite --no-fail-fast --no-tests=fail \
+            --partition hash:${{ matrix.part }}/3 -E 'not (binary_id(nabic::main) & test(/^(integration|differential)::/))'
+
+  # The sysroot link check of the Linux targets, from Linux x86_64.
+  cross-link:
+    name: Link cross targets from the sysroot (linux-x64)
+    needs: [plan, check]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.check.result != 'failure' && contains(needs.plan.outputs.cross, '"linux-x64"') }}
+    runs-on: ${{ fromJSON(needs.plan.outputs.runners)['linux-x64'] }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write # OIDC -> nabi-ci-sccache
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
+      # unset, the cache is read-only.
+      - name: Configure AWS credentials for sccache writes
+        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Build the Linux target sysroots with targets/build.sh
+        run: |
+          targets/build.sh x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl \
+            aarch64-unknown-linux-musl
+      - name: Test linking from the sysroot
+        run: scripts/test/filter.sh -p nabic --test main -- cli::targets::cross_targets_link_from_the_sysroot --exact
+
+  # The corpora of a cross target on a host that runs it: musl static,
+  # arm64 Windows natively.
+  cross:
+    needs: [plan, check]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.check.result != 'failure' && needs.plan.outputs.cross != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJSON(needs.plan.outputs.cross) }}
+        opt: ${{ fromJSON(needs.plan.outputs.opts) }}
+    name: Test corpus (${{ matrix.entry.host }}, ${{ matrix.entry.target }}, ${{ matrix.opt }})
+    runs-on: ${{ fromJSON(needs.plan.outputs.runners)[matrix.entry.host] }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      id-token: write # OIDC -> nabi-ci-sccache
+    env:
+      NABI_TEST_TARGET: ${{ matrix.entry.target }}
+      NABI_TEST_OPT: ${{ matrix.opt != '-O0' && matrix.opt || '' }}
+      NABI_TEST_FILTER: ${{ needs.plan.outputs.filter }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+        with:
+          arch: ${{ matrix.entry.host == 'windows-arm64' && 'x64' || '' }}
+      - name: Install Rust from rust-toolchain.toml
+        if: matrix.entry.host != 'windows-arm64'
+        run: rustup toolchain install && rustc -vV
+      - name: Install x64 Rust from rust-toolchain.toml (windows-arm64)
+        if: matrix.entry.host == 'windows-arm64'
+        run: |
+          t=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)-x86_64-pc-windows-msvc
+          rustup toolchain install "$t" --profile minimal --force-non-host
+          echo "RUSTUP_TOOLCHAIN=$t" >>"$GITHUB_ENV"
+          RUSTUP_TOOLCHAIN=$t rustc -vV
+      # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
+      # unset, the cache is read-only.
+      - name: Configure AWS credentials for sccache writes
+        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Build the target sysroot with targets/build.sh
+        run: targets/build.sh "$NABI_TEST_TARGET"
+      - name: Run the corpora on the target
+        run: scripts/test/filter.sh -p nabic --test main -- "integration::" "differential::" "native::abi::" "native::ffi::"
+
+  # nabi bindgen against the host's system headers, nightly on linux-x64
+  # and windows-x64.
+  bindgen:
+    needs: [plan, check]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.check.result != 'failure' && needs.plan.outputs.bindgen != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ${{ fromJSON(needs.plan.outputs.bindgen) }}
+    name: Test bindgen (${{ matrix.host }})
+    runs-on: ${{ fromJSON(needs.plan.outputs.runners)[matrix.host] }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write # OIDC -> nabi-ci-sccache
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
+      # unset, the cache is read-only.
+      - name: Configure AWS credentials for sccache writes
+        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
+          aws-region: us-east-1
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+      - name: Build the host C library (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
+      - name: Run the bindgen tests
+        run: scripts/test/filter.sh -p nabi --test main -- "tools::bindgen::"
+
+  # The release archive, nightly on linux-x64 (dist/gnu.sh), windows-x64
+  # and windows-arm64 (dist/native.sh). Windows installs it (install.ps1
+  # -NoModifyPath into a scratch NABI_HOME): a program, and a package's
+  # build / run / test, with nothing but the installed toolchain on PATH.
+  # Both then update the release in NABI_UPDATE_FROM to it, when set
+  # (test/update.sh / test/update.ps1).
+  dist:
+    needs: [plan, check, corpus, cross]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.check.result != 'failure' && needs.corpus.result != 'failure' && needs.cross.result != 'failure' && needs.plan.outputs.dist != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ${{ fromJSON(needs.plan.outputs.dist) }}
+    name: Build and install archive (${{ matrix.host }})
+    runs-on: ${{ fromJSON(needs.plan.outputs.runners)[matrix.host] }}
+    timeout-minutes: 150
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up the host environment
+        uses: ./.github/actions/setup-host-env
+        if: runner.os == 'Windows'
+      - name: Install Rust from rust-toolchain.toml
+        if: runner.os == 'Windows'
+        run: rustup toolchain install && rustc -vV
+      - name: Build the archive with dist/native.sh
+        if: runner.os == 'Windows'
+        run: scripts/dist/native.sh --out "$RUNNER_TEMP/dist"
+      # In a container, as release.yml builds it.
+      - name: Build the archive with dist/gnu.sh
+        if: runner.os == 'Linux'
+        run: scripts/dist/gnu.sh --out "$RUNNER_TEMP/dist"
+      # NABI_UPDATE_FROM: the release to update from; unset until there is one.
+      - name: Install minisign
+        uses: ./.github/actions/setup-minisign
+        if: vars.NABI_UPDATE_FROM != ''
+      - name: Test update from the last release with update.sh
+        if: runner.os == 'Linux' && vars.NABI_UPDATE_FROM != ''
+        env:
+          NABI_UPDATE_FROM: ${{ vars.NABI_UPDATE_FROM }}
+        run: scripts/test/update.sh "$RUNNER_TEMP/dist"
+      - name: Test update from the last release with update.ps1
+        if: runner.os == 'Windows' && vars.NABI_UPDATE_FROM != ''
+        shell: pwsh
+        env:
+          NABI_UPDATE_FROM: ${{ vars.NABI_UPDATE_FROM }}
+        run: ./scripts/test/update.ps1 -Dist "$env:RUNNER_TEMP\dist"
+      - name: Install with install.ps1 and run nabi alone
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:NABI_HOME = "$env:RUNNER_TEMP\nabi-home"
+          $triple = (rustc -vV | Select-String '^host: (.*)').Matches[0].Groups[1].Value
+          $zip = Get-ChildItem "$env:RUNNER_TEMP\dist" -Filter "nabi-*-$triple.zip" | Select-Object -First 1
+          if (-not $zip) { throw "no $triple archive in $env:RUNNER_TEMP\dist" }
+          & ./install.ps1 -Archive $zip.FullName -NoModifyPath
+          if ($LASTEXITCODE) { throw 'install.ps1 failed' }
+          $env:PATH = "$env:NABI_HOME\bin;$env:SystemRoot\System32"
+          function Must { nabi.exe @args; if ($LASTEXITCODE) { throw "nabi $args failed" } }
+          Set-Location $env:RUNNER_TEMP
+          Set-Content hello.nabi 'fn main() { println("hello"); }'
+          $out = nabi.exe run hello.nabi
+          if ($LASTEXITCODE -or $out -ne 'hello') { throw "nabi run hello.nabi: $out" }
+          Must new --lib --bin demo
+          Set-Location demo
+          Must build
+          Must run
+          Must build --release
+          Must test
+
+  # A PR pushed again after it was queued must not merge its older head.
+  # Each commit of the queue group must have the tree its PR's current head
+  # merges to; else fail, and the PR goes back in with the new head.
+  queue-head:
+    name: Check queued PR heads
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check queued commits against PR heads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          # refs/heads/gh-readonly-queue/<base>/pr-<n>-<sha>
+          last=$(echo "$REF" | sed -n 's|^refs/heads/gh-readonly-queue/.*/pr-\([0-9][0-9]*\)-[0-9a-f]*$|\1|p')
+          [ -n "$last" ] || {
+            echo "::error::no PR number in $REF"
+            exit 1
+          }
+          commits=$(git rev-list --first-parent "$BASE..HEAD")
+          for c in $commits; do
+            subject=$(git log -1 --format=%s "$c")
+            n=$(echo "$subject" | sed -n -e 's/.*(#\([0-9][0-9]*\))$/\1/p' -e 's/^Merge pull request #\([0-9][0-9]*\) .*/\1/p')
+            if [ -z "$n" ]; then
+              [ "$(echo "$commits" | wc -l)" -eq 1 ] || {
+                echo "::error::no PR number in the subject of queued commit $c: $subject"
+                exit 1
+              }
+              n=$last
+            fi
+            head=$(gh api "repos/$GH_REPO/pulls/$n" --jq .head.sha)
+            git fetch -q --no-tags origin "$head"
+            if ! out=$(git merge-tree --write-tree "$c^1" "$head"); then
+              echo "::error::PR #$n head $head no longer merges onto the queue; update it and queue it again"
+              exit 1
+            fi
+            if [ "$(echo "$out" | head -n 1)" != "$(git rev-parse "$c^{tree}")" ]; then
+              echo "::error::PR #$n was pushed after it was queued: $c is not its head $head; it must be queued again with that head"
+              exit 1
+            fi
+            echo "PR #$n: queued $c matches head $head"
+          done
+
+  # bench/bench.py's gates, nightly on macos-arm64 (instructions retired
+  # without perf): a cold standard library build within its instruction
+  # budget and bench/threads.nabi's speedups on 1-8 threads
+  # (bench/budgets.json). The record is uploaded, not committed.
+  bench:
+    name: Bench instruction budgets (macos-arm64)
+    needs: [plan, check]
+    if: ${{ !cancelled() && github.event_name == 'schedule' && needs.plan.result == 'success' && needs.check.result != 'failure' }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install && rustc -vV
+      - name: Run the bench gates with bench.py
+        run: python3 bench/bench.py --compile --scaling --only
+      - name: Upload the bench history
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: bench-history
+          path: bench/history.jsonl
+
+  # A failing nightly opens one issue, or comments on it while it stays
+  # open; the next passing nightly closes it.
+  nightly-report:
+    name: Report nightly result
+    needs: [lint, plan, check, test, corpus, cross-link, cross, bindgen, dist, bench]
+    if: always() && github.event_name == 'schedule' && vars.NABI_NIGHTLY == 'on'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open, update or close the nightly issue
+        run: |
+          title="Nightly CI is failing"
+          failed=$(gh api --paginate "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | .name')
+          issue=$(gh issue list --state open --label "type: bug" --limit 200 --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$failed" ]; then
+            body=$(printf 'Nightly run %s failed on %s.\n\nFailed jobs:\n\n%s\n' "$RUN" "$GITHUB_SHA" "- ${failed//$'\n'/$'\n- '}")
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "$body"
+            else
+              gh issue create --title "$title" --label "type: bug" --body "$body"
+            fi
+          elif [ -n "$issue" ]; then
+            gh issue close "$issue" --comment "Nightly run $RUN passed on $GITHUB_SHA."
+          fi
+
+  # The one required check: passes when every job passed or was skipped,
+  # fails if any failed or was cancelled. A skipped matrix job cannot block
+  # the merge, and a lint failure (which skips the rest) cannot pass it.
+  ci-gate:
+    name: CI gate
+    needs: [lint, dco, plan, check, test, corpus, queue-head]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the job results
+        run: |
+          echo "lint=${{ needs.lint.result }} dco=${{ needs.dco.result }} plan=${{ needs.plan.result }} check=${{ needs.check.result }} test=${{ needs.test.result }} corpus=${{ needs.corpus.result }} queue-head=${{ needs['queue-head'].result }}"
+          for r in "${{ needs.lint.result }}" "${{ needs.dco.result }}" "${{ needs.plan.result }}" "${{ needs.check.result }}" "${{ needs.test.result }}" "${{ needs.corpus.result }}" "${{ needs['queue-head'].result }}"; do
+            case "$r" in
+              success | skipped) ;;
+              *)
+                echo "::error::a gate job did not pass: $r"
+                exit 1
+                ;;
+            esac
+          done
+          echo "gate passed"

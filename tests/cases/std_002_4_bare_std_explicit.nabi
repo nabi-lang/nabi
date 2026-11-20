@@ -1,0 +1,12 @@
+// expect-error: cannot find function `Path::new` in this scope
+// expect-error: cannot find type `Ptr` in this scope
+// expect-error: function `core::num::bigint::gcd_u64` is private
+// Only `core` is imported implicitly -
+// `std` and `bare` items need a `use` - and `**` exposes no
+// private item.
+fn main() {
+    let path = Path::new("a");
+    let p: Ptr<u8> = Ptr::null();
+    core::num::bigint::gcd_u64(1u64, 1u64);
+}
+// expect-error: cannot find function `Ptr::null` in this scope

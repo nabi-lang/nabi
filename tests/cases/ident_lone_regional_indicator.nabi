@@ -1,0 +1,7 @@
+// expect-error: unexpected character
+// A lone regional indicator does not start a name.
+fn main() -> i32 {
+    let 🇰x = 1;
+    return 0;
+}
+

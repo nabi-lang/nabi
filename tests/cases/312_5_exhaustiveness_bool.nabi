@@ -1,0 +1,11 @@
+// expect-error: `false` not covered
+
+// A bool match must cover both true and false.
+fn main() -> i32 {
+    let x = true;
+    let r = match x {
+        true => 1,
+        // false missing
+    };
+    return r;
+}

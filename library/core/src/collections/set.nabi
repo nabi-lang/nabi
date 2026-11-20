@@ -1,0 +1,312 @@
+//! core::collections::set - `Set<T, S>`, a hash set
+//! over `Dict<T, bool, S>`, so it iterates in insertion order.
+
+use core::hash::{BuildHasher, RandomState};
+
+/// `S` builds the hashers (`RandomState`: the process key).
+pub struct Set<T, S = RandomState> {
+    d: Dict<T, bool, S>;
+}
+
+// Shares its buffer like `List`.
+impl<T, S> !Sync for Set<T, S> {}
+
+impl<T: Hash + Send + Sync, S: BuildHasher + Send + Sync> Set<T, S> {
+    /// The set as a `FrozenSet`, which threads share without a lock or
+    /// a copy. O(1): the frozen set takes the members over, and using
+    /// `self` after is a compile error (`to_set()` gives a set to change
+    /// again; freeze a `clone()` to keep this one).
+    pub fn freeze(self) -> FrozenSet<T, S> {
+        FrozenSet { d: self.d.move_out() }
+    }
+}
+
+impl<T: Hash> Set<T> {
+    /// An empty set.
+    pub const fn new() -> Set<T> {
+        Set { d: Dict::new() }
+    }
+}
+
+impl<T: Hash, S: BuildHasher> Set<T, S> {
+    /// An empty set hashing with `state`'s hashers.
+    pub const fn with_hasher(state: S) -> Set<T, S> {
+        Set { d: Dict::with_hasher(state) }
+    }
+
+    /// Room for `cap` members, hashing with `state`'s hashers.
+    pub const fn with_capacity_and_hasher(cap: usize, state: S) -> Set<T, S> {
+        Set { d: Dict::with_capacity_and_hasher(cap, state) }
+    }
+
+    /// What builds the set's hashers.
+    pub const fn hasher(self) -> S {
+        self.d.hasher()
+    }
+
+    /// The number of members.
+    pub const fn len(self) -> usize {
+        self.d.len()
+    }
+
+    /// `true` when the set has no member.
+    pub const fn is_empty(self) -> bool {
+        self.d.is_empty()
+    }
+
+    /// `true` when `x` was not there yet.
+    #[discardable]
+    pub const fn insert(self, x: T) -> bool {
+        self.d.insert(x, true) is none
+    }
+
+    /// `true` when `x` was there.
+    #[discardable]
+    pub const fn remove(self, x: T) -> bool {
+        !(self.d.remove(x) is none)
+    }
+
+    /// `true` when `x` is a member.
+    pub const fn contains(self, x: T) -> bool {
+        self.d.contains_key(x)
+    }
+
+    /// Drop every member.
+    pub const fn clear(self) {
+        self.d.clear();
+    }
+
+    /// Keep only the members `keep` accepts, in place; O(n).
+    pub const fn retain(self, keep: fn(T) -> bool) {
+        self.d.retain(|x: T, _: bool| keep(x));
+    }
+
+    /// Insert every item of `items`.
+    pub const fn extend<I: IntoIterator<Item = T>>(self, items: I) {
+        for x in items {
+            self.insert(x);
+        }
+    }
+
+    /// The members of either set: those of `self` in its order, then
+    /// those only in `other` in its order.
+    #[must_use]
+    pub const fn union(self, other: Set<T, S>) -> Set<T, S> {
+        let out: Set<T, S> = Set::with_hasher(self.hasher());
+        for x in self.d.keys() {
+            out.insert(x);
+        }
+        for x in other.d.keys() {
+            out.insert(x);
+        }
+        out
+    }
+
+    /// The members of both sets, in `self`'s order.
+    #[must_use]
+    pub const fn intersection(self, other: Set<T, S>) -> Set<T, S> {
+        let out: Set<T, S> = Set::with_hasher(self.hasher());
+        for x in self.d.keys() {
+            if other.contains(x) {
+                out.insert(x);
+            }
+        }
+        out
+    }
+
+    /// The members of `self` not in `other`, in `self`'s order.
+    #[must_use]
+    pub const fn difference(self, other: Set<T, S>) -> Set<T, S> {
+        let out: Set<T, S> = Set::with_hasher(self.hasher());
+        for x in self.d.keys() {
+            if !other.contains(x) {
+                out.insert(x);
+            }
+        }
+        out
+    }
+
+    /// The members of exactly one set: those only in `self` in its
+    /// order, then those only in `other` in its order.
+    #[must_use]
+    pub const fn symmetric_difference(self, other: Set<T, S>) -> Set<T, S> {
+        self.difference(other).union(other.difference(self))
+    }
+
+    /// `true` when every member of `self` is in `other`.
+    pub const fn is_subset(self, other: Set<T, S>) -> bool {
+        for x in self.d.keys() {
+            if !other.contains(x) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// `true` when every member of `other` is in `self`.
+    pub const fn is_superset(self, other: Set<T, S>) -> bool {
+        other.is_subset(self)
+    }
+
+    /// `true` when no member is in both sets.
+    pub const fn is_disjoint(self, other: Set<T, S>) -> bool {
+        self.intersection(other).is_empty()
+    }
+
+    /// Remove and return the member inserted last, or `none` when the
+    /// set is empty. Python: `s.pop()` (which takes any member).
+    ///
+    /// ```nabi
+    /// let s = {1, 2, 3};
+    /// assert((s.pop() ?? 0) == 3 && s.len() == 2);
+    /// assert(s.drain() == [1, 2] && s.is_empty());
+    /// ```
+    #[discardable]
+    pub const fn pop(self) -> T | none {
+        if let (k, _): (T, bool) = self.d.pop_last() {
+            return k;
+        }
+        none
+    }
+
+    /// Remove every member and return them, in insertion order.
+    pub const fn drain(self) -> List<T> {
+        let out = self.to_list();
+        self.clear();
+        out
+    }
+
+    /// The members in a new list, in iteration order.
+    pub const fn to_list(self) -> List<T> {
+        self.d.keys().collect()
+    }
+
+    /// The members, lazily (insertion order).
+    pub const fn iter(self) -> SetIter<T, S> {
+        SetIter { it: self.d.keys() }
+    }
+}
+
+/// The members of a set, in insertion order.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct SetIter<T, S = RandomState> {
+    it: Keys<T, bool, S>;
+}
+
+impl<T, S> Debug for SetIter<T, S> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SetIter") }
+}
+
+impl<T: Hash, S: BuildHasher> Iterator for SetIter<T, S> {
+    type Item = T;
+    const fn next(ref self) -> T | none {
+        self.it.next()
+    }
+}
+
+impl<T: Hash, S: BuildHasher + Default> Default for Set<T, S> {
+    fn default() -> Set<T, S> { Set::with_hasher(S::default()) }
+}
+
+/// A new set with every element cloned.
+impl<T: Hash + Clone, S: BuildHasher> Clone for Set<T, S> {
+    const fn clone(self) -> Set<T, S> {
+        let r: Set<T, S> = Set::with_hasher(self.hasher());
+        for x in self {
+            r.insert(x.clone());
+        }
+        r
+    }
+}
+
+/// `for x in s`.
+impl<T: Hash, S: BuildHasher> IntoIterator for Set<T, S> {
+    type IntoIter = SetIter<T, S>;
+    type Item = T;
+    const fn into_iter(self) -> SetIter<T, S> {
+        self.iter()
+    }
+}
+
+/// `it.collect()` into a set.
+impl<T: Hash, S: BuildHasher + Default> FromIterator<T> for Set<T, S> {
+    const fn from_iter<I: IntoIterator<Item = T>>(it: I) -> Set<T, S> {
+        let out: Set<T, S> = Set::with_hasher(S::default());
+        for x in it {
+            out.insert(x);
+        }
+        out
+    }
+}
+
+/// The items of a list (duplicates dropped).
+impl<T: Hash, S: BuildHasher + Default> From<List<T>> for Set<T, S> {
+    const fn from(items: List<T>) -> Set<T, S> {
+        let s: Set<T, S> = Set::with_capacity_and_hasher(items.len(), S::default());
+        for x in items {
+            s.insert(x);
+        }
+        s
+    }
+}
+
+/// `s += x`: insert `x`.
+impl<T: Hash, S: BuildHasher> AddAssign<T> for Set<T, S> {
+    const fn add_assign(ref self, rhs: T) {
+        self.insert(rhs);
+    }
+}
+
+/// Same members.
+impl<T: Hash, S: BuildHasher> PartialEq for Set<T, S> {
+    const fn eq(self, rhs: Set<T, S>) -> bool {
+        if self.len() != rhs.len() { return false; }
+        for x in self {
+            if !rhs.contains(x) { return false; }
+        }
+        true
+    }
+    fn ne(self, rhs: Set<T, S>) -> bool { !self.eq(rhs) }
+}
+
+impl<T: Hash, S: BuildHasher> Eq for Set<T, S> {}
+
+/// Order-independent, as `==`: each member hashed alone with the
+/// process key (the same for every `S`), the results summed; then the
+/// length and the sum.
+impl<T: Hash, S: BuildHasher> Hash for Set<T, S> {
+    const fn hash<H: Hasher>(self, ref h: H) {
+        let st = RandomState::new();
+        let sum = 0u64;
+        for x in self {
+            let e = st.build_hasher();
+            x.hash(ref e);
+            sum = sum.wrapping_add(e.finish());
+        }
+        h.write_length_prefix(self.len());
+        h.write_u64(sum);
+    }
+}
+
+/// `{a, b, ..}` with each member's `Debug`, in iteration order.
+impl<T: Hash + Debug, S: BuildHasher> Debug for Set<T, S> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("{");
+        let first = true;
+        for x in self {
+            try f.debug_entry("", x, first, false);
+            first = false;
+        }
+        try f.debug_close("}", first, false)
+    }
+}
+
+/// `{a, b}` / `{a,}` (`{ a }` is a block).
+#[literal("{" {expr} % "," + "}")]
+pub(pkg) const fn set_literal<T: Hash>(items: ...T) -> Set<T> {
+    let s: Set<T> = Set::new();
+    for x in items {
+        s.insert(x);
+    }
+    return s;
+}

@@ -1,0 +1,766 @@
+// std::net::socket: `Socket`, the socket as the OS has it, and its
+// domain, type and protocol.
+
+use bare::mem::{GcBuf, buf_new};
+use core::convert::AsBytes;
+use core::io::{AsyncClose, AsyncRead, AsyncWrite, Close, IoError, IoErrorKind, Read, Write};
+use core::time::Duration;
+use std::fs::off;
+use std::net::addr::{ADDR_WORDS, SocketAddr, addr_at, number, words_of};
+use std::sys::{check, mut_region, region, take_handle, use_begin, use_close, use_end, word_at, would_block};
+
+/// `[fd, calls in flight]` (`io::use_begin`) shared by copies of a
+/// handle, plus `[nonblocking, read timeout ns, write timeout ns]`
+/// (timeouts -1: none).
+pub(pkg) struct Sock {
+    pub(pkg) fd: GcBuf<i32>;
+    pub(pkg) opts: GcBuf<i64>;
+}
+
+pub(pkg) const fn sock_of(fd: i32) -> Sock {
+    unsafe {
+        let cell: GcBuf<i32> = buf_new(2);
+        cell[0] = fd;
+        let opts: GcBuf<i64> = buf_new(3);
+        opts[1] = -1i64;
+        opts[2] = -1i64;
+        Sock { fd: cell, opts: opts }
+    }
+}
+
+pub(pkg) fn new_sock(family: i32, kind: i32, proto: i32) throws (IoError) -> Sock {
+    let fd = try check(unsafe { nabi_net_socket(family, kind, proto) } as i64, "socket");
+    sock_of(fd as i32)
+}
+
+pub(pkg) const fn timed_out(what: str) -> IoError {
+    IoError::new(IoErrorKind::TimedOut, what + ": timed out")
+}
+
+/// The chunk `read_to_end` grows its list by.
+const CHUNK: usize = 16384;
+
+impl Sock {
+    /// The fd for `io::copy`'s kernel path: only without timeouts or
+    /// non-blocking mode, which the kernel copy would not keep (`-1`;
+    /// also on Windows, where a socket is no file handle).
+    pub(pkg) const fn copy_fd(self) -> i32 {
+        unsafe {
+            if cfg!(target_os = "windows") || self.opts[0] != 0i64 || self.opts[1] >= 0i64 || self.opts[2] >= 0i64 { return -1; }
+            self.fd()
+        }
+    }
+
+    /// The fd (`-1` once closed).
+    pub(pkg) const fn fd(self) -> i32 {
+        unsafe {
+            if (self.fd[1] & 1) != 0 { return -1; }
+            self.fd[0]
+        }
+    }
+
+    /// The fd to wait on for readiness (no call on it), or of a sock not
+    /// shared yet.
+    pub(pkg) const fn live(self) throws (IoError) -> i32 {
+        let fd = self.fd();
+        if fd < 0 { throw IoError::new(IoErrorKind::InvalidInput, "socket is closed"); }
+        fd
+    }
+
+    /// The fd for one call, which `done` ends. A `close` meanwhile
+    /// leaves the fd open until then.
+    pub(pkg) fn enter(self) throws (IoError) -> i32 {
+        let fd = unsafe { self.fd[0] };
+        if fd < 0 || !use_begin(self.fd, 1) {
+            throw IoError::new(IoErrorKind::InvalidInput, "socket is closed");
+        }
+        fd
+    }
+
+    pub(pkg) fn done(self) {
+        if use_end(self.fd, 1) { self.release(); }
+    }
+
+    pub(pkg) fn release(self) {
+        unsafe {
+            let fd = take_handle(self.fd, 0, -1);
+            if fd >= 0 {
+                _ = nabi_os_close(fd);
+                task::wake_io(fd);
+            }
+        }
+    }
+
+    /// Close the fd, dropping the OS's error (`Drop`, error paths); a
+    /// task waiting on its readiness wakes and finds it closed (the
+    /// kernel sends no event for a closed fd). With calls in flight
+    /// through other copies, the last of them releases the fd.
+    pub(pkg) fn discard(self) {
+        let fd = unsafe { self.fd[0] };
+        if use_close(self.fd, 1) == 0 {
+            self.release();
+        } else if fd >= 0 {
+            task::wake_io(fd);
+        }
+    }
+
+    /// `discard`, throwing the OS's error. Released by a call in
+    /// flight, or closed already: nothing to report.
+    pub(pkg) fn close(self) throws (IoError) {
+        let fd = unsafe { self.fd[0] };
+        if use_close(self.fd, 1) != 0 {
+            if fd >= 0 { task::wake_io(fd); }
+            return;
+        }
+        let h = take_handle(self.fd, 0, -1);
+        if h < 0 { return; }
+        let r = unsafe { nabi_os_close(h) };
+        task::wake_io(h);
+        try check(r as i64, "close");
+    }
+
+    /// `close` that suspends the task: on a blocking thread when
+    /// `SO_LINGER` makes it wait for unsent data, else at once.
+    pub(pkg) async fn close_async(self) throws (IoError) {
+        if (try self.getopt(13) catch _ { -1i64 }) <= 0i64 {
+            try self.close();
+            return;
+        }
+        try await off(|| try self.close());
+    }
+
+    /// `shutdown(2)`; waiting tasks wake to see the end of stream or the
+    /// write error.
+    pub(pkg) fn shutdown(self, how: Shutdown) throws (IoError) {
+        let h = match how { Shutdown::Read => 0, Shutdown::Write => 1, Shutdown::Both => 2 };
+        let fd = try self.enter();
+        let r = unsafe { nabi_net_shutdown(fd, h) };
+        self.done();
+        try check(r as i64, "shutdown");
+        task::wake_io(fd);
+    }
+
+    /// After a `WouldBlock`: throw it (non-blocking mode) or wait for
+    /// readiness within the timeout.
+    pub(pkg) fn block(self, write: i32, what: str) throws (IoError) {
+        unsafe {
+            if self.opts[0] != 0i64 {
+                throw IoError::new(IoErrorKind::WouldBlock, what + ": operation would block");
+            }
+            let fd = try self.enter();
+            let r = nabi_net_wait(fd, write, self.opts[1 + write as usize]);
+            self.done();
+            if r == 0 { throw timed_out(what); }
+            try check(r as i64, what);
+        }
+    }
+
+    pub(pkg) const fn set_timeout(self, write: usize, dur: Duration | none) {
+        unsafe {
+            self.opts[1 + write] = match dur {
+                d: Duration => d.as_ns(),
+                none => -1i64,
+            };
+        }
+    }
+
+    pub(pkg) const fn timeout(self, write: usize) -> Duration | none {
+        unsafe {
+            let ns = self.opts[1 + write];
+            if ns < 0i64 { return none; }
+            Duration::ns(ns)
+        }
+    }
+
+    pub(pkg) fn addr(self, peer: i32) throws (IoError) -> SocketAddr {
+        unsafe {
+            let out: GcBuf<i64> = buf_new(ADDR_WORDS);
+            let fd = try self.enter();
+            let r = nabi_net_addr(fd, out, peer);
+            self.done();
+            try check(r as i64, "getsockname");
+            addr_at(out, 0)
+        }
+    }
+
+    pub(pkg) fn setopt(self, opt: i32, val: i64) throws (IoError) {
+        let fd = try self.enter();
+        let r = unsafe { nabi_net_setopt(fd, opt, val) };
+        self.done();
+        try check(r as i64, "setsockopt");
+    }
+
+    pub(pkg) fn getopt(self, opt: i32) throws (IoError) -> i64 {
+        unsafe {
+            let out: GcBuf<i64> = buf_new(1);
+            let fd = try self.enter();
+            let r = nabi_net_getopt(fd, opt, out);
+            self.done();
+            try check(r as i64, "getsockopt");
+            out[0]
+        }
+    }
+
+    pub(pkg) const fn set_nonblocking(self, nb: bool) {
+        unsafe {
+            self.opts[0] = if nb { 1i64 } else { 0i64 };
+        }
+    }
+
+    /// Bind `addr`, then listen when `backlog >= 0`; the sock is closed
+    /// on failure.
+    pub(pkg) fn bind_listen(self, addr: SocketAddr, backlog: i32) throws (IoError) {
+        let r = unsafe { nabi_net_bind(try self.live(), words_of(addr)) };
+        if r >= 0 && backlog >= 0 { r = unsafe { nabi_net_listen(try self.live(), backlog) }; }
+        if r < 0 {
+            self.discard();
+            throw IoError::from_os_code(-r, f"bind {addr}");
+        }
+    }
+
+    /// One accepted connection and its peer, or `none` on `WouldBlock`.
+    pub(pkg) fn accept_once(self) throws (IoError) -> (Sock, SocketAddr) | none {
+        unsafe {
+            let out: GcBuf<i64> = buf_new(ADDR_WORDS);
+            let l = try self.enter();
+            let fd = nabi_net_accept(l, out) as i64;
+            self.done();
+            if would_block(fd) { return none; }
+            try check(fd, "accept");
+            (sock_of(fd as i32), addr_at(out, 0))
+        }
+    }
+
+    pub(pkg) fn accept(self) throws (IoError) -> (Sock, SocketAddr) {
+        loop {
+            if let c: (Sock, SocketAddr) = try self.accept_once() { return c; }
+            try self.block(0, "accept");
+        }
+    }
+
+    pub(pkg) async fn accept_async(self) throws (IoError) -> (Sock, SocketAddr) {
+        loop {
+            if let c: (Sock, SocketAddr) = try self.accept_once() { return c; }
+            await task::readable(try self.live());
+        }
+    }
+
+    /// One datagram from `buf[at..at + n]` to `addr`: the count, or
+    /// `none` on `WouldBlock`.
+    pub(pkg) fn send_to_once(self, buf: GcBuf<u8>, at: usize, n: usize, addr: SocketAddr) throws (IoError) -> usize | none {
+        let fd = try self.enter();
+        let r = unsafe { nabi_net_send_to(fd, buf, at, n, words_of(addr)) } as i64;
+        self.done();
+        if would_block(r) { return none; }
+        (try check(r, f"send_to {addr}")) as usize
+    }
+
+    /// One datagram into `buf`: its length and sender, or `none` on
+    /// `WouldBlock`.
+    pub(pkg) fn recv_from_once(self, buf: SliceMut<u8>) throws (IoError) -> (usize, SocketAddr) | none {
+        unsafe {
+            let out: GcBuf<i64> = buf_new(ADDR_WORDS);
+            let (b, at, n) = mut_region(buf);
+            let fd = try self.enter();
+            let r = nabi_net_recv_from(fd, b, at, n, out) as i64;
+            self.done();
+            if would_block(r) { return none; }
+            ((try check(r, "recv_from")) as usize, addr_at(out, 0))
+        }
+    }
+
+    pub(pkg) fn send_to(self, data: Slice<u8>, addr: SocketAddr) throws (IoError) -> usize {
+        let (b, at, n) = unsafe { data.raw_parts() };
+        loop {
+            if let k: usize = try self.send_to_once(b, at, n, addr) { return k; }
+            try self.block(1, "send_to");
+        }
+    }
+
+    pub(pkg) async fn send_to_async(self, data: Slice<u8>, addr: SocketAddr) throws (IoError) -> usize {
+        let (b, at, n) = unsafe { data.raw_parts() };
+        loop {
+            if let k: usize = try self.send_to_once(b, at, n, addr) { return k; }
+            await task::writable(try self.live());
+        }
+    }
+
+    pub(pkg) fn recv_from(self, buf: SliceMut<u8>) throws (IoError) -> (usize, SocketAddr) {
+        loop {
+            if let r: (usize, SocketAddr) = try self.recv_from_once(buf) { return r; }
+            try self.block(0, "recv_from");
+        }
+    }
+
+    pub(pkg) async fn recv_from_async(self, buf: SliceMut<u8>) throws (IoError) -> (usize, SocketAddr) {
+        loop {
+            if let r: (usize, SocketAddr) = try self.recv_from_once(buf) { return r; }
+            await task::readable(try self.live());
+        }
+    }
+
+    /// The fd, given up: the cell keeps -1, so nothing closes it (`-1`
+    /// once closed).
+    pub(pkg) fn give_up(self) -> i32 {
+        if (word_at(self.fd, 1) & 1) != 0 { return -1; }
+        take_handle(self.fd, 0, -1)
+    }
+
+    /// The handle in a new cell: `self` and its copies see it closed.
+    pub(pkg) const fn moved(self) -> Sock {
+        unsafe {
+            let s = sock_of(take_handle(self.fd, 0, -1));
+            for i in 0..3usize { s.opts[i] = self.opts[i]; }
+            s
+        }
+    }
+
+    pub(pkg) fn try_clone(self) throws (IoError) -> Sock {
+        unsafe {
+            let old = try self.enter();
+            let r = nabi_os_dup(old);
+            self.done();
+            let fd = try check(r as i64, "dup");
+            let s = sock_of(fd as i32);
+            for i in 0..3usize { s.opts[i] = self.opts[i]; }
+            s
+        }
+    }
+
+    /// One read into `buf[at..at + n]`: the count, or `none` on `WouldBlock`.
+    pub(pkg) fn read_once(self, buf: GcBuf<u8>, at: usize, n: usize) throws (IoError) -> usize | none {
+        let fd = try self.enter();
+        let r = unsafe { nabi_net_recv(fd, buf, at, n) } as i64;
+        self.done();
+        if would_block(r) { return none; }
+        (try check(r, "read")) as usize
+    }
+
+    /// One write of `buf[at..at + n]`: the count, or `none` on `WouldBlock`.
+    pub(pkg) fn write_once(self, buf: GcBuf<u8>, at: usize, n: usize) throws (IoError) -> usize | none {
+        let fd = try self.enter();
+        let r = unsafe { nabi_net_send(fd, buf, at, n) } as i64;
+        self.done();
+        if would_block(r) { return none; }
+        (try check(r, "write")) as usize
+    }
+
+    pub(pkg) fn read_into(self, buf: GcBuf<u8>, at: usize, n: usize) throws (IoError) -> usize {
+        loop {
+            if let k: usize = try self.read_once(buf, at, n) { return k; }
+            try self.block(0, "read");
+        }
+    }
+
+    pub(pkg) async fn read_into_async(self, buf: GcBuf<u8>, at: usize, n: usize) throws (IoError) -> usize {
+        loop {
+            if let k: usize = try self.read_once(buf, at, n) { return k; }
+            await task::readable(try self.live());
+        }
+    }
+
+    pub(pkg) fn read(self, buf: SliceMut<u8>) throws (IoError) -> usize {
+        let (b, at, n) = mut_region(buf);
+        try self.read_into(b, at, n)
+    }
+
+    pub(pkg) async fn read_async(self, buf: SliceMut<u8>) throws (IoError) -> usize {
+        let (b, at, n) = mut_region(buf);
+        try await self.read_into_async(b, at, n)
+    }
+
+    pub(pkg) fn read_to_end(self) throws (IoError) -> List<u8> {
+        let out: List<u8> = List::new();
+        loop {
+            let m = out.len();
+            out.reserve(CHUNK);
+            unsafe { out.set_len(m + CHUNK) };
+            let (b, at, _) = region(out);
+            let k = try self.read_into(b, at + m, CHUNK) catch e { unsafe { out.set_len(m) }; throw e; };
+            unsafe { out.set_len(m + k) };
+            if k == 0 { return out; }
+        }
+    }
+
+    pub(pkg) async fn read_to_end_async(self) throws (IoError) -> List<u8> {
+        let out: List<u8> = List::new();
+        loop {
+            let m = out.len();
+            out.reserve(CHUNK);
+            unsafe { out.set_len(m + CHUNK) };
+            let (b, at, _) = region(out);
+            let k = try await self.read_into_async(b, at + m, CHUNK) catch e { unsafe { out.set_len(m) }; throw e; };
+            unsafe { out.set_len(m + k) };
+            if k == 0 { return out; }
+        }
+    }
+
+    pub(pkg) fn write(self, data: Slice<u8>) throws (IoError) -> usize {
+        let (b, at, n) = unsafe { data.raw_parts() };
+        loop {
+            if let k: usize = try self.write_once(b, at, n) { return k; }
+            try self.block(1, "write");
+        }
+    }
+
+    pub(pkg) async fn write_async(self, data: Slice<u8>) throws (IoError) -> usize {
+        let (b, at, n) = unsafe { data.raw_parts() };
+        loop {
+            if let k: usize = try self.write_once(b, at, n) { return k; }
+            await task::writable(try self.live());
+        }
+    }
+
+    pub(pkg) fn write_all(self, data: Slice<u8>) throws (IoError) {
+        let (b, at, n) = unsafe { data.raw_parts() };
+        let done = 0usize;
+        while done < n {
+            match try self.write_once(b, at + done, n - done) {
+                k: usize => {
+                    if k == 0 { throw IoError::new(IoErrorKind::Other, "failed to write whole buffer"); }
+                    done += k;
+                }
+                none => try self.block(1, "write"),
+            }
+        }
+    }
+
+    pub(pkg) async fn write_all_async(self, data: Slice<u8>) throws (IoError) {
+        let (b, at, n) = unsafe { data.raw_parts() };
+        let done = 0usize;
+        while done < n {
+            match try self.write_once(b, at + done, n - done) {
+                k: usize => {
+                    if k == 0 { throw IoError::new(IoErrorKind::Other, "failed to write whole buffer"); }
+                    done += k;
+                }
+                none => await task::writable(try self.live()),
+            }
+        }
+    }
+}
+
+/// An address family.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Domain {
+    /// `AF_INET`.
+    Ipv4,
+    /// `AF_INET6`.
+    Ipv6,
+}
+
+impl Domain {
+    /// The family of `addr`.
+    pub const fn for_address(addr: SocketAddr) -> Domain {
+        if addr.is_ipv4() { Domain::Ipv4 } else { Domain::Ipv6 }
+    }
+
+    const fn code(self) -> i32 {
+        match self {
+            Domain::Ipv4 => 4,
+            Domain::Ipv6 => 6,
+        }
+    }
+}
+
+/// A socket type.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum SocketType {
+    /// `SOCK_STREAM`: TCP over IP.
+    Stream,
+    /// `SOCK_DGRAM`: UDP over IP.
+    Datagram,
+    /// `SOCK_RAW`: IP packets of one protocol (privileged; not on WASI).
+    Raw,
+}
+
+impl SocketType {
+    const fn code(self) -> i32 {
+        match self {
+            SocketType::Stream => 1,
+            SocketType::Datagram => 2,
+            SocketType::Raw => 3,
+        }
+    }
+}
+
+/// An IP protocol number (the IANA registry).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Protocol {
+    number: i32;
+}
+
+impl Protocol {
+    /// ICMP for IPv4.
+    pub const ICMPV4: Protocol = Protocol { number: 1 };
+    /// TCP.
+    pub const TCP: Protocol = Protocol { number: 6 };
+    /// UDP.
+    pub const UDP: Protocol = Protocol { number: 17 };
+    /// ICMP for IPv6.
+    pub const ICMPV6: Protocol = Protocol { number: 58 };
+
+    /// The protocol numbered `number` (IANA).
+    pub const fn new(number: i32) -> Protocol { Protocol { number } }
+    /// The IANA protocol number.
+    pub const fn number(self) -> i32 { self.number }
+}
+
+/// A socket as the OS has it: any domain, type and protocol, its
+/// options, and each call one system call (`bind` does not set
+/// `SO_REUSEADDR`, `connect` does not resolve). `TcpStream::from(s)`,
+/// `TcpListener::from(s)` and `UdpSocket::from(s)` take it over once it
+/// is set up, and `Socket::from` goes back. It has one owner: `let b = a`
+/// moves it.
+pub struct Socket {
+    pub(pkg) sock: Sock;
+}
+
+impl Debug for Socket {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Socket") }
+}
+
+impl Socket {
+    /// A new socket (non-blocking underneath, not inherited by child
+    /// processes); `protocol` none is the default for `ty`.
+    pub fn new(domain: Domain, ty: SocketType, protocol: Protocol | none = none) throws (IoError) -> Socket {
+        let p = match protocol {
+            p: Protocol => p.number,
+            none => 0,
+        };
+        Socket { sock: try new_sock(domain.code(), ty.code(), p) }
+    }
+
+    /// Bind to `addr`.
+    pub fn bind(self, addr: SocketAddr) throws (IoError) {
+        let fd = try self.sock.enter();
+        let r = unsafe { nabi_net_bind(fd, words_of(addr)) };
+        self.sock.done();
+        if r < 0 { throw IoError::from_os_code(-r, f"bind {addr}"); }
+    }
+
+    /// Listen for connections, queueing at most `backlog` pending ones.
+    pub fn listen(self, backlog: i32) throws (IoError) {
+        let fd = try self.sock.enter();
+        let r = unsafe { nabi_net_listen(fd, backlog) };
+        self.sock.done();
+        try check(r as i64, "listen");
+    }
+
+    /// Connect, blocking until the handshake is done (in non-blocking
+    /// mode, `WouldBlock` while it is in progress).
+    pub fn connect(self, addr: SocketAddr) throws (IoError) {
+        try self.connect_within(addr, -1i64);
+    }
+
+    /// `connect` that throws `TimedOut` after `dur`.
+    pub fn connect_timeout(self, addr: SocketAddr, dur: Duration) throws (IoError) {
+        try self.connect_within(addr, dur.as_ns());
+    }
+
+    fn connect_within(self, addr: SocketAddr, limit: i64) throws (IoError) {
+        let fd = try self.sock.enter();
+        let r = unsafe { nabi_net_connect(fd, words_of(addr)) };
+        self.sock.done();
+        if r < 0 { throw IoError::from_os_code(-r, f"connect {addr}"); }
+        if r == 0 { return; }
+        if unsafe { self.sock.opts[0] } != 0i64 {
+            throw IoError::new(IoErrorKind::WouldBlock, f"connect {addr}: in progress");
+        }
+        let w = unsafe { nabi_net_wait(try self.sock.live(), 1, limit) };
+        if w == 0 { throw timed_out(f"connect {addr}"); }
+        if w < 0 { throw IoError::from_os_code(-w, f"connect {addr}"); }
+        let e = unsafe { nabi_net_sock_error(try self.sock.live()) };
+        if e < 0 { throw IoError::from_os_code(-e, f"connect {addr}"); }
+    }
+
+    /// `connect` that suspends the task during the handshake.
+    pub async fn connect_async(ref self, addr: SocketAddr) throws (IoError) {
+        let r = unsafe { nabi_net_connect(try self.sock.live(), words_of(addr)) };
+        if r < 0 { throw IoError::from_os_code(-r, f"connect {addr}"); }
+        if r == 0 { return; }
+        await task::writable(try self.sock.live());
+        while unsafe { nabi_net_wait(try self.sock.live(), 1, 0i64) } == 0 {
+            await task::writable(try self.sock.live());
+        }
+        let e = unsafe { nabi_net_sock_error(try self.sock.live()) };
+        if e < 0 { throw IoError::from_os_code(-e, f"connect {addr}"); }
+    }
+
+    /// The next connection and its peer, blocking until one arrives.
+    pub fn accept(self) throws (IoError) -> (Socket, SocketAddr) {
+        let (s, a) = try self.sock.accept();
+        (Socket { sock: s }, a)
+    }
+
+    /// `accept` that suspends the task until a connection arrives.
+    pub async fn accept_async(ref self) throws (IoError) -> (Socket, SocketAddr) {
+        let (s, a) = try await self.sock.accept_async();
+        (Socket { sock: s }, a)
+    }
+
+    /// The address this socket is bound to.
+    pub fn local_addr(self) throws (IoError) -> SocketAddr { try self.sock.addr(0) }
+    /// The address of the connected peer.
+    pub fn peer_addr(self) throws (IoError) -> SocketAddr { try self.sock.addr(1) }
+
+    /// Shut down reading, writing or both.
+    pub fn shutdown(self, how: Shutdown) throws (IoError) { try self.sock.shutdown(how); }
+
+    /// As `shutdown`, which never waits.
+    pub async fn shutdown_async(ref self, how: Shutdown) throws (IoError) { try self.sock.shutdown(how); }
+
+    /// Send the datagram `buf` to `addr`; bytes sent.
+    pub fn send_to<B: AsBytes>(self, buf: B, addr: SocketAddr) throws (IoError) -> usize {
+        try self.sock.send_to(buf.byte_slice(), addr)
+    }
+
+    /// `send_to` that suspends the task while the socket is full.
+    pub async fn send_to_async<B: AsBytes>(ref self, buf: B, addr: SocketAddr) throws (IoError) -> usize {
+        try await self.sock.send_to_async(buf.byte_slice(), addr)
+    }
+
+    /// The next datagram into `buf[0..n]` (truncated to `buf.len()`)
+    /// and its sender.
+    pub fn recv_from(self, buf: SliceMut<u8>) throws (IoError) -> (usize, SocketAddr) { try self.sock.recv_from(buf) }
+
+    /// `recv_from` that suspends the task until a datagram arrives.
+    pub async fn recv_from_async(ref self, buf: SliceMut<u8>) throws (IoError) -> (usize, SocketAddr) {
+        try await self.sock.recv_from_async(buf)
+    }
+
+    /// Make the blocking calls throw `WouldBlock` instead of waiting.
+    pub const fn set_nonblocking(self, nb: bool) { self.sock.set_nonblocking(nb); }
+    /// Limit blocking reads to `dur`, then `TimedOut`; `none` waits
+    /// forever.
+    pub const fn set_read_timeout(self, dur: Duration | none) { self.sock.set_timeout(0, dur); }
+    /// Limit blocking writes to `dur`, then `TimedOut`; `none` waits
+    /// forever.
+    pub const fn set_write_timeout(self, dur: Duration | none) { self.sock.set_timeout(1, dur); }
+    /// The read timeout; `none` for none.
+    pub const fn read_timeout(self) -> Duration | none { self.sock.timeout(0) }
+    /// The write timeout; `none` for none.
+    pub const fn write_timeout(self) -> Duration | none { self.sock.timeout(1) }
+
+    /// `SO_REUSEADDR`.
+    pub fn set_reuse_address(self, on: bool) throws (IoError) { try self.sock.setopt(7, flag(on)); }
+    /// `SO_REUSEADDR`.
+    pub fn reuse_address(self) throws (IoError) -> bool { (try self.sock.getopt(7)) != 0i64 }
+
+    /// `SO_REUSEPORT`; `Unsupported` off Unix.
+    pub fn set_reuse_port(self, on: bool) throws (IoError) { try self.sock.setopt(8, flag(on)); }
+    /// `SO_REUSEPORT`.
+    pub fn reuse_port(self) throws (IoError) -> bool { (try self.sock.getopt(8)) != 0i64 }
+
+    /// `TCP_NODELAY`.
+    pub fn set_nodelay(self, on: bool) throws (IoError) { try self.sock.setopt(1, flag(on)); }
+    /// `TCP_NODELAY`.
+    pub fn nodelay(self) throws (IoError) -> bool { (try self.sock.getopt(1)) != 0i64 }
+
+    /// Keepalive probes after `alive` idle (whole seconds); `none` = off.
+    pub fn set_keepalive(self, alive: Duration | none) throws (IoError) {
+        match alive {
+            d: Duration => try self.sock.setopt(2, d.as_secs()),
+            none => try self.sock.setopt(2, -1i64),
+        }
+    }
+
+    /// `SO_BROADCAST`.
+    pub fn set_broadcast(self, on: bool) throws (IoError) { try self.sock.setopt(3, flag(on)); }
+    /// `SO_BROADCAST`.
+    pub fn broadcast(self) throws (IoError) -> bool { (try self.sock.getopt(3)) != 0i64 }
+
+    /// `SO_RCVBUF` (the OS may round it, and Linux doubles it).
+    pub fn set_recv_buffer_size(self, size: usize) throws (IoError) { try self.sock.setopt(9, size as i64); }
+    /// `SO_RCVBUF`, as the OS reports it.
+    pub fn recv_buffer_size(self) throws (IoError) -> usize { (try self.sock.getopt(9)) as usize }
+
+    /// `SO_SNDBUF`.
+    pub fn set_send_buffer_size(self, size: usize) throws (IoError) { try self.sock.setopt(10, size as i64); }
+    /// `SO_SNDBUF`, as the OS reports it.
+    pub fn send_buffer_size(self) throws (IoError) -> usize { (try self.sock.getopt(10)) as usize }
+
+    /// `IP_TTL` of an IPv4 socket.
+    pub fn set_ttl(self, ttl: u32) throws (IoError) { try self.sock.setopt(11, ttl as i64); }
+    /// `IP_TTL`.
+    pub fn ttl(self) throws (IoError) -> u32 { (try self.sock.getopt(11)) as u32 }
+
+    /// `IPV6_V6ONLY`: an IPv6 socket that takes no IPv4 traffic.
+    pub fn set_only_v6(self, on: bool) throws (IoError) { try self.sock.setopt(12, flag(on)); }
+    /// `IPV6_V6ONLY`.
+    pub fn only_v6(self) throws (IoError) -> bool { (try self.sock.getopt(12)) != 0i64 }
+
+    /// `SO_LINGER` (whole seconds): `close` waits that long for unsent
+    /// data; `none` = off.
+    pub fn set_linger(self, dur: Duration | none) throws (IoError) {
+        match dur {
+            d: Duration => try self.sock.setopt(13, d.as_secs()),
+            none => try self.sock.setopt(13, -1i64),
+        }
+    }
+
+    /// `SO_LINGER` in whole seconds; `none` when off.
+    pub fn linger(self) throws (IoError) -> Duration | none {
+        let s = try self.sock.getopt(13);
+        if s < 0i64 { return none; }
+        Duration::secs(s)
+    }
+
+    /// A second handle to the same socket.
+    pub fn try_clone(self) throws (IoError) -> Socket { Socket { sock: try self.sock.try_clone() } }
+
+    /// Close now, throwing the OS's error; later calls fail with
+    /// `InvalidInput`.
+    pub fn close(self) throws (IoError) { try self.sock.close(); }
+}
+
+pub(pkg) const fn flag(on: bool) -> i64 { if on { 1i64 } else { 0i64 } }
+
+impl Read for Socket {
+    fn read(ref self, buf: SliceMut<u8>) throws (IoError) -> usize { try self.sock.read(buf) }
+    fn read_to_end(ref self) throws (IoError) -> List<u8> { try self.sock.read_to_end() }
+}
+
+impl Write for Socket {
+    fn write<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize { try self.sock.write(buf.byte_slice()) }
+    /// Nothing to flush: writes go straight to the socket.
+    const fn flush(ref self) throws (IoError) {}
+    fn write_all<B: AsBytes>(ref self, buf: B) throws (IoError) { try self.sock.write_all(buf.byte_slice()); }
+}
+
+impl AsyncRead for Socket {
+    async fn read_async(ref self, buf: SliceMut<u8>) throws (IoError) -> usize { try await self.sock.read_async(buf) }
+    async fn read_to_end_async(ref self) throws (IoError) -> List<u8> { try await self.sock.read_to_end_async() }
+}
+
+impl AsyncWrite for Socket {
+    async fn write_async<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize {
+        try await self.sock.write_async(buf.byte_slice())
+    }
+    async fn flush_async(ref self) throws (IoError) {}
+    async fn write_all_async<B: AsBytes>(ref self, buf: B) throws (IoError) {
+        try await self.sock.write_all_async(buf.byte_slice());
+    }
+}
+
+impl Close for Socket {
+    fn close(self) throws (IoError) { try self.sock.close(); }
+}
+
+impl AsyncClose for Socket {
+    async fn close_async(self) throws (IoError) { try await self.sock.close_async(); }
+}
+
+impl Drop for Socket {
+    fn drop(ref self) { self.sock.discard(); }
+}
+
+/// Which half of a connection `shutdown` closes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Shutdown {
+    Read,
+    Write,
+    Both,
+}

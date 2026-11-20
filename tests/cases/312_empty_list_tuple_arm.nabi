@@ -1,0 +1,16 @@
+// expect-exit: 0
+// expect-stdout: ([], []) ([1.0], [2.0]) 0 0
+
+// `[]` inside a tuple arm takes the other arm's element type; a `= []`
+// default keeps its declared type in a generic function too.
+fn pick(k: i64) -> (List<f64>, List<f64>) {
+    let (a, b) = match k {
+        0 => ([1.0], [2.0]),
+        _ => ([], []),
+    };
+    (a, b)
+}
+fn e(_z: i64, levels: List<f64> = []) -> usize { levels.len() }
+fn d<G>(_z: G, levels: List<f64> = []) -> usize { levels.len() }
+
+fn main() { println(f"{pick(1):?} {pick(0):?} {e(1)} {d(1)}"); }

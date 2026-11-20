@@ -1,0 +1,560 @@
+//! core::fmt - `Formatter`, `Display` / `Debug`, `FormatSpec` and the
+//! f-string lowering targets.
+//!
+//! Every rendering writes into a `Formatter`: the runtime's growing text
+//! plus the spec of the value being written. HIR lowers `f"..."` to one
+//! such text: literal pieces and primitive holes go to the runtime
+//! directly, any other hole through `Display::fmt` / `Debug::fmt`
+//! (`fstr_*` below), and `nabi_fmt_finish` hands the text over as the
+//! `str` without a copy. A formatter made by `from_sink` instead hands its
+//! text out in chunks as it grows (`io::Write::write_display`).
+
+use core::collections::raw::{GcBuf, buf_new};
+
+/// A failed write. Writing to memory never fails.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FmtError;
+
+impl FmtError {
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { "an error occurred when formatting" }
+}
+
+impl Display for FmtError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for FmtError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("FmtError") }
+}
+
+impl Error for FmtError {}
+
+/// `x` as `{x:?}` shows it, or `<T>` (its type name) when `T` has no
+/// `Debug`: for messages about a value of any type.
+#[intrinsic("nabi.shown")]
+pub(pkg) fn shown<T>(x: T) -> str;
+
+/// The spec's `align`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Alignment {
+    Left,
+    Right,
+    Center,
+    Equal,
+}
+
+/// The spec's `sign`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Sign {
+    Plus,
+    Minus,
+    Space,
+}
+
+// The packed spec's align / sign bytes (`'\0'`: absent).
+
+const fn align_of_byte(a: char) -> Alignment | none {
+    if a == '<' { return Alignment::Left; }
+    if a == '>' { return Alignment::Right; }
+    if a == '^' { return Alignment::Center; }
+    if a == '=' { Alignment::Equal } else { none }
+}
+
+const fn align_byte(a: Alignment | none) -> char {
+    let k: Alignment = a else { return '\0'; };
+    match k {
+        Alignment::Left => '<',
+        Alignment::Right => '>',
+        Alignment::Center => '^',
+        Alignment::Equal => '=',
+    }
+}
+
+const fn sign_of_byte(s: char) -> Sign | none {
+    if s == '+' { return Sign::Plus; }
+    if s == '-' { return Sign::Minus; }
+    if s == ' ' { Sign::Space } else { none }
+}
+
+const fn sign_byte(s: Sign | none) -> char {
+    let k: Sign = s else { return '\0'; };
+    match k {
+        Sign::Plus => '+',
+        Sign::Minus => '-',
+        Sign::Space => ' ',
+    }
+}
+
+impl Default for FormatSpec {
+    const fn default() -> FormatSpec { FormatSpec::new() }
+}
+
+/// Renderings of a value a notebook front end shows (an image, a table,
+/// a formula): `nabi jupyter` sends them for a cell whose value has
+/// them, and `display(x)` sends them mid-cell. The terminal REPL and a
+/// program use `text/plain` only.
+///
+/// ```nabi
+/// struct Dot {}
+/// impl RichDisplay for Dot {
+///     fn mime_bundle(self) -> Dict<str, str> {
+///         let b: Dict<str, str> = Dict::new();
+///         b["image/svg+xml"] = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+///         b["text/plain"] = "a dot";
+///         b
+///     }
+/// }
+/// display(Dot {});    // prints `a dot` outside a notebook
+/// ```
+pub trait RichDisplay {
+    /// MIME type to content: `image/svg+xml`, `text/html`,
+    /// `text/markdown`, `text/latex` and `application/json` as text,
+    /// `image/png` and other binary types base64-encoded, `text/plain`
+    /// for front ends that show none of the others.
+    fn mime_bundle(self) -> Dict<str, str>;
+}
+
+/// What `f"{x}"` writes.
+#[lang("display_trait")]
+pub trait Display {
+    /// Writes `self` for display to `f`; throws `FmtError` when `f` fails.
+    fn fmt(self, ref f: Formatter) throws (FmtError);
+}
+
+/// `x.to_str()`: a `Display` value's text, as `f"{x}"`. Python:
+/// `str(x)`. Every `Display` type has it; a type's own `to_str` wins.
+pub trait ToStr {
+    /// The `Display` text of `self`.
+    fn to_str(self) -> str;
+}
+
+impl<T: Display> ToStr for T {
+    const fn to_str(self) -> str { f"{self}" }
+}
+
+/// What `f"{x:?}"` writes.
+#[lang("debug_trait")]
+pub trait Debug {
+    /// Writes `self` for debugging to `f`; throws `FmtError` when `f` fails.
+    fn fmt(self, ref f: Formatter) throws (FmtError);
+}
+
+/// An f-string spec, `[[fill]align][sign][#][0][width][.precision][type]`.
+/// An absent `ty` is `'\0'`; the Display letters
+/// `s d` read as absent. Build one with `parse`, read it with the
+/// getters.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct FormatSpec {
+    fill: char;
+    align: Alignment | none;
+    sign: Sign | none;
+    alt: bool;
+    zero: bool;
+    width: usize | none;
+    precision: usize | none;
+    ty: char;
+}
+
+impl FormatSpec {
+    /// The fill character (`' '` when none is given).
+    pub const fn fill(self) -> char { self.fill }
+    /// `none` when the spec names no alignment.
+    pub const fn align(self) -> Alignment | none { self.align }
+    /// `+` or `-`; `none` when the spec names no sign.
+    pub const fn sign(self) -> Sign | none { self.sign }
+    /// `#`.
+    pub const fn alternate(self) -> bool { self.alt }
+    /// `0`.
+    pub const fn zero_pad(self) -> bool { self.zero }
+    /// The minimum width; `none` when not given.
+    pub const fn width(self) -> usize | none { self.width }
+    /// The precision; `none` when not given.
+    pub const fn precision(self) -> usize | none { self.precision }
+    /// The type letter (`'\0'` for none or `s d`).
+    pub const fn ty(self) -> char { self.ty }
+
+    /// The empty spec (`FormatSpec::default()` too).
+    pub const fn new() -> FormatSpec {
+        FormatSpec {
+            fill: ' ', align: none, sign: none, alt: false, zero: false,
+            width: none, precision: none, ty: '\0',
+        }
+    }
+
+    /// `text` parsed by the runtime with the parser the compiler checks
+    /// static specs with; throws on a malformed spec.
+    #[must_use]
+    pub const fn parse(text: str) throws (ValueError) -> FormatSpec {
+        let why = unsafe { nabi_fmt_spec_error(text) };
+        if !why.is_empty() {
+            throw ValueError::new(why);
+        }
+        unsafe {
+            let w: GcBuf<i64> = buf_new(8);
+            nabi_fmt_spec_parse(text, w);
+            let s = FormatSpec::new();
+            s.fill = char::from_u32(w[0] as u32) ?? ' ';
+            s.align = align_of_byte((w[1] as u8) as char);
+            s.sign = sign_of_byte((w[2] as u8) as char);
+            s.alt = w[3] != 0;
+            s.zero = w[4] != 0;
+            if w[5] >= 0 { s.width = w[5] as usize; }
+            if w[6] >= 0 { s.precision = w[6] as usize; }
+            s.ty = (w[7] as u8) as char;
+            s
+        }
+    }
+}
+
+/// Where a value's text goes, with the spec it is written by:
+/// the runtime's growing text (`nabi_fmt_*`) and the spec packed in two
+/// words - `flags`: fill (bits 0..32), align, sign, type (a byte each
+/// from bit 32), `#` (bit 56), `0` (bit 57); `counts`: width, precision
+/// (32 bits each, all ones when absent).
+pub struct Formatter {
+    pub(pkg) t: str;
+    pub(pkg) flags: u64;
+    pub(pkg) counts: u64;
+    /// Where full chunks go (`from_sink`); `none` keeps all the text.
+    sink: (fn(str) -> bool) | none;
+}
+
+impl Debug for Formatter {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Formatter") }
+}
+
+/// The text a sink formatter holds before handing it on.
+const SINK_CHUNK: usize = 4096;
+
+/// The packed words of no spec.
+const PLAIN_FLAGS: u64 = 32;
+const PLAIN_COUNTS: u64 = 0xFFFFFFFFFFFFFFFF;
+/// `#` in the packed flags.
+const ALT_FLAG: u64 = 0x100000000000000;
+/// The packed flags a value's own `Display` takes: sign, type letter,
+/// `#`, `,` and `_`.
+const OWN_FLAGS: u64 = 0xDFFFF0000000000;
+
+/// A packed count: all ones when absent.
+const fn count_bits(v: usize | none) -> u64 {
+    match v {
+        n: usize => if n < 0xFFFFFFFF { n as u64 } else { 0xFFFFFFFEu64 },
+        none => 0xFFFFFFFFu64,
+    }
+}
+
+impl Formatter {
+    /// An empty formatter with the plain spec, room for 16 bytes.
+    pub const fn new() -> Formatter { Formatter::with_capacity(16) }
+
+    /// Empty, with room for `cap` bytes.
+    pub const fn with_capacity(cap: usize) -> Formatter {
+        Formatter { t: unsafe { nabi_fmt_new(cap) }, flags: PLAIN_FLAGS, counts: PLAIN_COUNTS, sink: none }
+    }
+
+    /// Empty, handing its text to `sink` in chunks as it is written, so
+    /// the whole text is never held at once. `sink` returns `false` when
+    /// it cannot take a chunk; the write then fails with `FmtError`.
+    /// Call `flush` after the last write.
+    pub fn from_sink(sink: fn(str) -> bool) -> Formatter {
+        Formatter { t: unsafe { nabi_fmt_new(SINK_CHUNK) }, flags: PLAIN_FLAGS, counts: PLAIN_COUNTS, sink: sink }
+    }
+
+    /// Hand what a `from_sink` formatter holds to its sink; nothing for
+    /// any other.
+    pub const fn flush(ref self) throws (FmtError) {
+        let k: fn(str) -> bool = self.sink else { return; };
+        if unsafe { nabi_fmt_len(self.t) } == 0 { return; }
+        let chunk = unsafe { nabi_fmt_finish(self.t) };
+        self.t = unsafe { nabi_fmt_new(SINK_CHUNK) };
+        if !k(chunk) { throw FmtError; }
+    }
+
+    /// Flush a sink formatter that holds a full chunk. Only between
+    /// writes: `pad` measures from where its own text starts.
+    #[inline]
+    const fn spill(ref self) throws (FmtError) {
+        if unsafe { nabi_fmt_len(self.t) } >= SINK_CHUNK { try self.flush(); }
+    }
+
+    /// Empty, writing values per `spec`.
+    pub const fn with_spec(spec: FormatSpec) -> Formatter {
+        let f = Formatter::new();
+        let ty = if spec.ty == 's' || spec.ty == 'd' { '\0' } else { spec.ty };
+        let alt = if spec.alt { 1u64 } else { 0u64 };
+        let zero = if spec.zero { 1u64 } else { 0u64 };
+        f.flags = (spec.fill as u64) + ((align_byte(spec.align) as u64) << 32u64)
+            + ((sign_byte(spec.sign) as u64) << 40u64)
+            + ((ty as u64) << 48u64) + (alt << 56u64) + (zero << 57u64);
+        let p: usize | none = none;
+        if let n: usize = spec.precision { p = if n > 500 { 500 } else { n }; }
+        f.counts = count_bits(spec.width) + (count_bits(p) << 32u64);
+        f
+    }
+
+    /// The text written, as a `str` (no copy); the formatter is spent.
+    pub const fn finish(self) -> str { unsafe { nabi_fmt_finish(self.t) } }
+
+    /// Append `s`; throws `FmtError` when a `from_sink` formatter's sink
+    /// refuses a chunk.
+    pub const fn write_str(ref self, s: str) throws (FmtError) {
+        self.t = unsafe { nabi_fmt_str(self.t, s) };
+        try self.spill();
+    }
+
+    /// Append `c`; never throws.
+    pub const fn write_char(ref self, c: char) throws (FmtError) { self.t = unsafe { nabi_fmt_char(self.t, c as u32) }; }
+
+    /// `s` cut to `precision` chars and padded to `width` (text aligns
+    /// left by default).
+    pub const fn pad(ref self, s: str) throws (FmtError) {
+        let start = unsafe { nabi_fmt_len(self.t) };
+        self.t = unsafe { nabi_fmt_str(self.t, s) };
+        self.t = unsafe { nabi_fmt_pad(self.t, self.flags, self.counts, start, start, 0u32) };
+        try self.spill();
+    }
+
+    /// An integer: the sign, `prefix` (`"0x"` ..) under `#`, the digits
+    /// `buf`, padded to `width` - right by default; `0` and `=` fill
+    /// between the prefix and the digits.
+    pub const fn pad_integral(ref self, is_nonnegative: bool, prefix: str, buf: str) throws (FmtError) {
+        let nonneg = if is_nonnegative { 1u32 } else { 0u32 };
+        self.t = unsafe { nabi_fmt_integral(self.t, self.flags, self.counts, nonneg, prefix, buf) };
+    }
+
+    /// The spec's fill character (`' '` when none is given).
+    pub const fn fill(self) -> char { char::from_u32((self.flags & 0xFFFFFFFFu64) as u32) ?? ' ' }
+
+    /// `none` when the spec names no alignment: numbers then align
+    /// right, other values left.
+    pub const fn align(self) -> Alignment | none { align_of_byte(self.byte(32u64)) }
+
+    /// The spec's sign (`+` or `-`); `none` when it names none.
+    pub const fn sign(self) -> Sign | none { sign_of_byte(self.byte(40u64)) }
+
+    /// The spec's `#` flag.
+    pub const fn alternate(self) -> bool { ((self.flags >> 56u64) & 1u64) != 0u64 }
+    /// The spec's `0` flag.
+    pub const fn zero_pad(self) -> bool { ((self.flags >> 57u64) & 1u64) != 0u64 }
+    /// The spec's minimum width; `none` when not given.
+    pub const fn width(self) -> usize | none { count_of(self.counts) }
+    /// The spec's precision; `none` when not given.
+    pub const fn precision(self) -> usize | none { count_of(self.counts >> 32u64) }
+
+    /// The spec's type letter (`'\0'` for none or `s d`).
+    pub const fn ty(self) -> char { self.byte(48u64) }
+
+    /// One entry of a Debug group (`Name { .. }`, `Name(..)`, `[..]`,
+    /// `{..}`): `label` (`"x: "` or `""`) and `v`. The group writes its
+    /// opening bracket, an entry each, then `debug_close`. `{:?}` puts it
+    /// on one line, `spaced` with a space inside the brackets
+    /// (`Name { x: 1 }`); `{:#?}` one entry a line, indented, each ending
+    /// in `,`.
+    pub(pkg) const fn debug_entry<T: Debug>(ref self, label: str, v: T, first: bool, spaced: bool) throws (FmtError) {
+        if !self.alternate() {
+            if !first { try self.write_str(", "); } else if spaced { try self.write_str(" "); }
+            try self.write_str(label);
+            try Debug::fmt(v, ref self);
+            return;
+        }
+        let g = Formatter { t: unsafe { nabi_fmt_new(16) }, flags: PLAIN_FLAGS + ALT_FLAG, counts: PLAIN_COUNTS, sink: none };
+        try Debug::fmt(v, ref g);
+        let text = label + g.finish();
+        try self.write_str(if first { "\n    " } else { "    " });
+        try self.write_str(text.replace("\n", "\n    "));
+        try self.write_str(",\n")
+    }
+
+    /// `debug_entry` of a map's `k: v`.
+    pub(pkg) const fn debug_pair<K: Debug, V: Debug>(ref self, k: K, v: V, first: bool) throws (FmtError) {
+        let g = Formatter { t: unsafe { nabi_fmt_new(16) }, flags: PLAIN_FLAGS + (self.flags & ALT_FLAG), counts: PLAIN_COUNTS, sink: none };
+        try Debug::fmt(k, ref g);
+        try self.debug_entry(g.finish() + ": ", v, first, false)
+    }
+
+    /// The closing bracket of a Debug group; `empty` when it had no
+    /// entry.
+    pub(pkg) const fn debug_close(ref self, close: str, empty: bool, spaced: bool) throws (FmtError) {
+        if spaced && !empty && !self.alternate() { try self.write_str(" "); }
+        try self.write_str(close)
+    }
+
+    const fn byte(self, at: u64) -> char { (((self.flags >> at) & 0xFFu64) as u8) as char }
+}
+
+const fn count_of(v: u64) -> usize | none {
+    let n = v & 0xFFFFFFFFu64;
+    if n == 0xFFFFFFFFu64 { none } else { n as usize }
+}
+
+/// An f-string written where an `Arguments` is expected (a parameter
+/// `args: fmt::Arguments`): its holes are evaluated where it stands,
+/// in order, but its text is made only when it is formatted, piece by
+/// piece into the formatter, never as one `str`. `Display` writes it.
+pub struct Arguments {
+    run: fn(Formatter) throws (FmtError) -> Formatter;
+}
+
+impl Display for Arguments {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let run = self.run;
+        f = try run(f);
+    }
+}
+
+impl Debug for Arguments {
+    /// As a `str` prints under `{:?}`: quoted and escaped.
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try Debug::fmt(f"{self}", ref f);
+    }
+}
+
+// What an `Arguments` f-string lowers to (HIR calls them by full path):
+// the closure threads the formatter through one call per piece.
+
+#[lang("fstr_args_fn")]
+pub(pkg) const fn fstr_args(run: fn(Formatter) throws (FmtError) -> Formatter) -> Arguments {
+    Arguments { run: run }
+}
+
+/// A literal piece, or a hole with a spec made into text first.
+#[lang("fstr_put_str_fn")]
+pub(pkg) const fn fstr_put_str(f: Formatter, s: str) throws (FmtError) -> Formatter {
+    try f.write_str(s);
+    f
+}
+
+/// `{v}`: straight into the formatter, with no spec of the caller's.
+#[lang("fstr_put_display_fn")]
+pub(pkg) const fn fstr_put_display<T: Display>(f: Formatter, v: T) throws (FmtError) -> Formatter {
+    let (flags, counts) = (f.flags, f.counts);
+    f.flags = PLAIN_FLAGS;
+    f.counts = PLAIN_COUNTS;
+    try Display::fmt(v, ref f);
+    f.flags = flags;
+    f.counts = counts;
+    f
+}
+
+/// `{v:?}`.
+#[lang("fstr_put_debug_fn")]
+pub(pkg) const fn fstr_put_debug<T: Debug>(f: Formatter, v: T) throws (FmtError) -> Formatter {
+    let (flags, counts) = (f.flags, f.counts);
+    f.flags = PLAIN_FLAGS;
+    f.counts = PLAIN_COUNTS;
+    try Debug::fmt(v, ref f);
+    f.flags = flags;
+    f.counts = counts;
+    f
+}
+
+impl Formatter {
+    /// Write `args` (an f-string) piece by piece, with no `str` of the
+    /// whole text: `try f.write_fmt(f"({self.x}, {self.y})")`.
+    pub const fn write_fmt(ref self, args: Arguments) throws (FmtError) {
+        try Display::fmt(args, ref self);
+    }
+}
+
+// f-string lowering targets (HIR calls them by full path, on the text
+// `t`; each returns it, maybe moved). Formatting to memory never fails.
+
+/// `{v}` (`flags`: no spec but maybe `#`).
+#[lang("fstr_display_fn")]
+pub(pkg) const fn fstr_display<T: Display>(t: str, v: T, flags: u64) -> str {
+    let f = Formatter { t: t, flags: flags, counts: PLAIN_COUNTS, sink: none };
+    try! Display::fmt(v, ref f);
+    f.t
+}
+
+/// `{v:?}` (`flags`: no spec but maybe `#`).
+#[lang("fstr_debug_fn")]
+pub(pkg) const fn fstr_debug<T: Debug>(t: str, v: T, flags: u64) -> str {
+    let f = Formatter { t: t, flags: flags, counts: PLAIN_COUNTS, sink: none };
+    try! Debug::fmt(v, ref f);
+    f.t
+}
+
+/// A number under a spec (`flags`, `counts`).
+#[lang("fstr_num_fn")]
+pub(pkg) const fn fstr_num<T: Display>(t: str, v: T, flags: u64, counts: u64) -> str {
+    let f = Formatter { t: t, flags: flags, counts: counts, sink: none };
+    try! Display::fmt(v, ref f);
+    f.t
+}
+
+/// A dynamic spec's packed words; panics when malformed, or when
+/// `text_only` and it has a number's type letter.
+#[lang("fstr_pack_fn")]
+pub(pkg) const fn fstr_pack(spec: str, text_only: bool) -> (u64, u64) {
+    unsafe {
+        let out: GcBuf<u64> = buf_new(2);
+        nabi_fmt_pack(spec, if text_only { 1u32 } else { 0u32 }, out);
+        (out[0], out[1])
+    }
+}
+
+/// A dynamic spec on a value with both: `?` picks the Debug, cut and
+/// padded as text; else its `Display` takes the precision, sign, type
+/// letter and grouping, and the width pads the text.
+#[lang("fstr_text_any_fn")]
+pub(pkg) const fn fstr_text_any<T: Display + Debug>(t: str, v: T, spec: str) -> str {
+    let (flags, counts) = fstr_pack(spec, false);
+    let start = unsafe { nabi_fmt_len(t) };
+    let debug = ((flags >> 48u64) & 0xFFu64) == 63u64;
+    if debug {
+        let out = fstr_debug(t, v, PLAIN_FLAGS | (flags & ALT_FLAG));
+        return unsafe { nabi_fmt_pad(out, flags, counts, start, start, 0u32) };
+    }
+    let hi = 0xFFFFFFFF00000000u64;
+    let out = fstr_num(t, v, PLAIN_FLAGS | (flags & OWN_FLAGS), (counts & hi) | (PLAIN_COUNTS & !hi));
+    unsafe { nabi_fmt_pad(out, flags, (counts & !hi) | (PLAIN_COUNTS & hi), start, start, 0u32) }
+}
+
+// Integers: `b o x X` show a fixed-width integer's two's complement at
+// its width.
+impl Display for i8 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_int(f.t, f.flags, f.counts, self as i64, 1u32, 8u32) }; } }
+impl Display for i16 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_int(f.t, f.flags, f.counts, self as i64, 1u32, 16u32) }; } }
+impl Display for i32 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_int(f.t, f.flags, f.counts, self as i64, 1u32, 32u32) }; } }
+impl Display for i64 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_int(f.t, f.flags, f.counts, self, 1u32, 64u32) }; } }
+impl Display for isize { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_int(f.t, f.flags, f.counts, self as i64, 1u32, 64u32) }; } }
+impl Display for u8 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_int(f.t, f.flags, f.counts, self as i64, 0u32, 8u32) }; } }
+impl Display for u16 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_int(f.t, f.flags, f.counts, self as i64, 0u32, 16u32) }; } }
+impl Display for u32 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_int(f.t, f.flags, f.counts, self as i64, 0u32, 32u32) }; } }
+impl Display for u64 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_int(f.t, f.flags, f.counts, self as i64, 0u32, 64u32) }; } }
+impl Display for usize { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_int(f.t, f.flags, f.counts, self as i64, 0u32, 64u32) }; } }
+/// Shortest round-trip digits, never an exponent (`1`, `0.1`, `1e21` as
+/// `1000000000000000000000`), `inf` / `NaN`.
+impl Display for f32 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_f64(f.t, f.flags, f.counts, self as f64, 1u32) }; } }
+impl Display for f64 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_f64(f.t, f.flags, f.counts, self, 0u32) }; } }
+impl Display for bool {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.pad(if self { "true" } else { "false" }) }
+}
+impl Display for char { const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_char(self) } }
+impl Display for str { const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.pad(self) } }
+
+// Debug is Display for the primitives but floats and chars.
+#[impl_macro(debug_via_display)] @macro {
+    (@rep[sep = ","] { @t: ty }) => {
+        @for @t {
+            impl Debug for @t {
+                const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+            }
+        }
+    }
+}
+debug_via_display!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize, bool);
+
+/// Display with `.0` on a whole number (`1.0`, `[1.0, 2.5]`).
+impl Debug for f32 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_f64(f.t, f.flags, f.counts, self as f64, 3u32) }; } }
+impl Debug for f64 { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_f64(f.t, f.flags, f.counts, self, 2u32) }; } }
+
+/// A Nabi literal: quotes, `\\`, `\n` `\r` `\t` `\0` escaped, other
+/// control and bidi chars as `\u{..}`.
+impl Debug for char {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        f.t = unsafe { nabi_fmt_escaped(f.t, nabi_str_from_char(self as u32), 39u32) };
+    }
+}
+impl Debug for str { const fn fmt(self, ref f: Formatter) throws (FmtError) { f.t = unsafe { nabi_fmt_escaped(f.t, self, 34u32) }; } }

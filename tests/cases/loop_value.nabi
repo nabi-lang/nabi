@@ -1,0 +1,16 @@
+// expect-exit: 25
+// expect-stdout:
+// 25 5
+
+fn main() -> i32 {
+    let i = 0;
+    let result = loop {
+        if i == 5 {
+            break i * 5;
+        }
+        i += 1;
+    };
+    println(f"{result} {i}");
+    return result;
+}
+

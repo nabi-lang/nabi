@@ -1,0 +1,4 @@
+// expect-error: parameter `name` of `extern "C" fn` `greet` has type `str`, which C cannot hold
+// expect-error: help: C passes a `char*`: take `s: ConstPtr<c_char>`
+extern "C" fn greet(name: str) -> i32 { return 0; }
+fn main() -> i32 { return 0; }

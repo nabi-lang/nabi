@@ -1,0 +1,44 @@
+// needs: fs
+// expect-exit: 0
+// expect-stdout:
+// unreadable: Certificate
+// bundle: 1 roots, alpn 1, pq true
+
+// `ClientConfig::new` throws when the trust store cannot be read; its
+// other fields have defaults, and a spread keeps them. `SSL_CERT_FILE`
+// picks the store, so neither network nor an OS store is needed.
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::net::tls::ClientConfig;
+
+const CA: str = "-----BEGIN CERTIFICATE-----
+MIIBVTCCAQegAwIBAgIUHuDQmdyLUvVYGHs5rDw1vYU8bIIwBQYDK2VwMBcxFTAT
+BgNVBAMMDG5hYmkgdGVzdCBDQTAgFw0yNjEwMTUwNzM2MDdaGA8yMTI2MDkyMTA3
+MzYwN1owFzEVMBMGA1UEAwwMbmFiaSB0ZXN0IENBMCowBQYDK2VwAyEAB+sqwSMn
+18aRYXVx9C0isj2rte+3tqndY+2zzNZjGb6jYzBhMB0GA1UdDgQWBBRQnL+ov9Go
+zKIB+up0p4yTbN6CMzAfBgNVHSMEGDAWgBRQnL+ov9GozKIB+up0p4yTbN6CMzAP
+BgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwICBDAFBgMrZXADQQAaONBcyMPW
+W6oGu6jBgPPGBjoMbsyzkki6bAFDUd4b2pmFFAPtu6an8KCxK3SS0GcW5n9g3LUw
+nCHpi3ak0WUC
+-----END CERTIFICATE-----
+";
+
+fn check(label: str, path: Path) {
+    unsafe { try! env::set_var("SSL_CERT_FILE", path.as_str()); }
+    let c = try ClientConfig::new() catch e {
+        println(f"{label}: {e.kind():?}");
+        return;
+    };
+    let h2 = ClientConfig { alpn_protocols: ["h2".as_bytes().to_list()], ..c };
+    println(f"{label}: {h2.root_certs.len()} roots, alpn {h2.alpn_protocols.len()}, pq {h2.enable_post_quantum}");
+}
+
+fn main() {
+    let dir = env::temp_dir();
+    check("unreadable", dir.join(Path::new("nabi-tls-config-new-missing.pem")));
+    let bundle = dir.join(Path::new("nabi-tls-config-new.pem"));
+    try! fs::write(bundle, CA);
+    check("bundle", bundle);
+    try! fs::remove_file(bundle);
+}

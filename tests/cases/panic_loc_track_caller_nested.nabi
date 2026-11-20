@@ -1,0 +1,26 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/panic_loc_track_caller_nested.nabi:25:5:
+// expect-stderr: assertion `left == right` failed
+// expect-stderr: left: 2
+// expect-stderr: right: 1
+// expect-stdout:
+
+// A `#[track_caller]` chain (user `outer` -> user `inner` -> library
+// `assert_eq` -> `panic`) reports the first caller outside it; a check
+// in a `#[track_caller]` function reports its caller too.
+#[track_caller]
+fn inner(x: i32) {
+    assert_eq(x, 1);
+}
+
+#[track_caller]
+fn outer(x: i32) {
+    inner(x);
+}
+
+fn helper(x: i32) { outer(x); }
+
+fn main() {
+    helper(1);
+    outer(2);
+}

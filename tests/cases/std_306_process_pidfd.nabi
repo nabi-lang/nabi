@@ -1,0 +1,21 @@
+// only-os: linux
+// skip-target: aarch64-linux-android x86_64-linux-android
+// expect-exit: 0
+//
+// `ChildExt::pidfd` (Linux 5.3+, in the prelude there): the pidfd
+// tracking the running child. Not on Android, where an app's seccomp
+// filter may kill the process for the system call: `pidfd` throws
+// `ENOSYS` there.
+// expect-stdout:
+// pidfd ok
+// exit status: 0
+
+use std::process::Command;
+
+fn main() {
+    let child = try Command::new("true").spawn() catch _ { panic("spawn") };
+    let fd = try child.pidfd() catch _ { -1 };
+    if fd >= 0 { println("pidfd ok"); }
+    let st = try child.wait() catch _ { panic("wait") };
+    println(f"{st}");
+}

@@ -1,0 +1,52 @@
+# minisign 0.12 on PATH: signs and checks the release's SHA256SUMS
+# (scripts/release/sign.sh). The archive is pinned by SHA-256; the pins
+# were taken from archives whose minisign signatures verified with the
+# author's key RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3.
+name: Set up minisign
+description: Put a pinned, checksum-checked minisign 0.12 on PATH.
+
+runs:
+  using: composite
+  steps:
+    - name: Install minisign 0.12
+      shell: bash
+      env:
+        V: "0.12"
+      run: |
+        case "$RUNNER_OS" in
+          Linux) a=minisign-$V-linux.tar.gz sum=9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73 ;;
+          Windows) a=minisign-$V-win64.zip sum=37b600344e20c19314b2e82813db2bfdcc408b77b876f7727889dbd46d539479 ;;
+          *)
+            echo "::error::no pinned minisign for $RUNNER_OS; add its archive and SHA-256 here"
+            exit 1
+            ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64) arch=x86_64 ;;
+          ARM64) arch=aarch64 ;;
+          *)
+            echo "::error::no minisign build for $RUNNER_ARCH"
+            exit 1
+            ;;
+        esac
+        tmp=$RUNNER_TEMP
+        [ "$RUNNER_OS" = Windows ] && tmp=$(cygpath -u "$RUNNER_TEMP")
+        curl -fsSL -o "$tmp/$a" "https://github.com/jedisct1/minisign/releases/download/$V/$a"
+        if command -v sha256sum > /dev/null 2>&1; then got=$(sha256sum "$tmp/$a"); else got=$(shasum -a 256 "$tmp/$a"); fi
+        [ "${got%% *}" = "$sum" ] || {
+          echo "::error::sha256 mismatch for $a"
+          exit 1
+        }
+        mkdir -p "$tmp/minisign"
+        case $a in
+          *.zip)
+            unzip -q -o "$tmp/$a" -d "$tmp/minisign"
+            bin=$tmp/minisign/minisign-win64/$arch
+            ;;
+          *)
+            tar -xzf "$tmp/$a" -C "$tmp/minisign"
+            bin=$tmp/minisign/minisign-linux/$arch
+            ;;
+        esac
+        "$bin/minisign" -v
+        if [ "$RUNNER_OS" = Windows ]; then cygpath -w "$bin"; else echo "$bin"; fi >> "$GITHUB_PATH"

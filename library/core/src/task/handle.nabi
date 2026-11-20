@@ -1,0 +1,157 @@
+// core::task::handle: `Join`, task ids and `CancellationError`.
+
+use core::future::{Context, Poll};
+use core::marker::{Memo, Transfer, hand_over};
+use core::rt::{atomic_load, atomic_xchg};
+use core::sync::Atomic;
+use core::task::{BY_RACE, BY_TIMEOUT, Task, TaskRef, current, join_later, no_result, wake_task};
+
+/// Cancel `t`, noting who did (the first cancel's cause stands).
+pub(pkg) fn cancel_by(t: TaskRef, cause: i32) {
+    unsafe {
+        if atomic_load(t.state, 1, SeqCst) == 0 {
+            t.state[8] = cause;
+        }
+    }
+    atomic_xchg(t.state, 1, 1, SeqCst);
+    wake_task(t);
+}
+
+/// The panic of an `await` on a task that left by its cancel.
+pub(pkg) fn cancelled_message(t: TaskRef) -> str {
+    let cause = unsafe { t.state[8] };
+    if cause == BY_RACE {
+        return "awaited a task cancelled by `task::race`; use `try await t.join()`";
+    }
+    if cause == BY_TIMEOUT {
+        return "awaited a task cancelled by `task::timeout`; use `try await t.join()`";
+    }
+    "awaited a cancelled task (use `try await t.join()`)"
+}
+
+/// A finished task's result for one joiner: a copy of its own once the
+/// `Task` was handed on, as copies of it may each await it on other
+/// threads; else the result itself (one thread's copies share it).
+pub(pkg) fn task_result<T>(t: Task<T>) -> T {
+    unsafe {
+        if atomic_load(t.task.state, 6, SeqCst) != 0 {
+            return hand_over::<T>(t.slot[0]);
+        }
+        t.slot[0]
+    }
+}
+
+// A hand-off of a `Task` (`Frozen::get`, a channel, a lock) or a `par`
+// item holding one marks it: its joiners then copy the result.
+impl<T> Transfer for Task<T> {
+    const fn transfer_copy(self, m: Memo) -> Task<T> {
+        handed(self)
+    }
+
+    const fn transfer_keep(self, m: Memo) -> Task<T> {
+        handed(self)
+    }
+
+    const fn transfer_visit(self, m: Memo) -> Task<T> {
+        handed(self)
+    }
+}
+
+const fn handed<T>(t: Task<T>) -> Task<T> {
+    unsafe { atomic_xchg(t.task.state, 6, 1, SeqCst) };
+    t
+}
+
+/// `Task::join`.
+#[must_use("future is never awaited, so its body never runs: write `await {}`")]
+pub struct Join<T> {
+    pub(pkg) task: Task<T>;
+}
+
+impl<T> Debug for Join<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Join") }
+}
+
+impl<T> Join<T> {
+    /// One step of `join`: `Ready` with the result once the task finished,
+    /// `Pending` before. Throws `CancellationError` for a cancelled task.
+    pub fn poll(ref self, ref ctx: Context) throws (CancellationError) -> Poll<T> {
+        unsafe {
+            if !join_later(self.task.task, ctx.waker) {
+                return Poll::Pending;
+            }
+            if no_result(self.task.task) {
+                throw CancellationError;
+            }
+            Poll::Ready(task_result(self.task))
+        }
+    }
+}
+
+/// Identifies a task for as long as the process runs (ids are never
+/// reused): `Task::id`, `task::id()`.
+#[derive(Clone, Copy)]
+pub struct TaskId {
+    pub(pkg) id: u64;
+}
+
+pub(pkg) static NEXT_TASK_ID: Atomic<u64> = Atomic::new(1);
+
+impl TaskId {
+    /// The id as a number, unique for the process's run.
+    pub const fn as_u64(self) -> u64 { self.id }
+}
+
+impl PartialEq for TaskId {
+    const fn eq(self, rhs: TaskId) -> bool { self.id == rhs.id }
+    const fn ne(self, rhs: TaskId) -> bool { self.id != rhs.id }
+}
+
+impl Eq for TaskId {}
+
+impl Hash for TaskId {
+    const fn hash<H: Hasher>(self, ref h: H) { self.id.hash(ref h) }
+}
+
+impl Display for TaskId {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self.id, ref f) }
+}
+
+impl Debug for TaskId {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"TaskId({self.id})") }
+}
+
+/// The running task's id; panics outside a task (`current_id`).
+#[track_caller]
+pub fn id() -> TaskId {
+    current_id() ?? panic("task::id: called outside a task; use `task::current_id()`, which is `none` there")
+}
+
+/// The running task's id, or `none` outside a task (sync code, a
+/// `spawn_blocking` thread).
+pub fn current_id() -> TaskId | none {
+    unsafe {
+        let w = current()?;
+        let t = w.running[0]?;
+        TaskId { id: t.id }
+    }
+}
+
+/// A task was cancelled.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CancellationError;
+
+impl CancellationError {
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { "task cancelled" }
+}
+
+impl Display for CancellationError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for CancellationError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("CancellationError") }
+}
+
+impl Error for CancellationError {}

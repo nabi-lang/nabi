@@ -1,0 +1,50 @@
+// Checked products over 1M elements, 200 times: an `i16` and a `u32`
+// map by a constant, products of two `i16` lists. Vector multiplies
+// whose overflow tests compare the high half of each product.
+fn scale(ys: List<i16>, xs: List<i16>, k: i16) {
+    let n = xs.len().min(ys.len());
+    for i in 0..n {
+        ys[i] = xs[i] * k;
+    }
+}
+
+fn scale32(ys: List<u32>, xs: List<u32>, k: u32) {
+    let n = xs.len().min(ys.len());
+    for i in 0..n {
+        ys[i] = xs[i] * k;
+    }
+}
+
+fn prod(ys: List<i16>, xs: List<i16>, zs: List<i16>) {
+    let n = ys.len().min(xs.len()).min(zs.len());
+    for i in 0..n {
+        ys[i] = xs[i] * zs[i];
+    }
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 20;
+    let xs: List<i16> = List::filled(n, 0i16);
+    let zs: List<i16> = List::filled(n, 0i16);
+    let ys: List<i16> = List::filled(n, 0i16);
+    let us: List<u32> = List::filled(n, 0u32);
+    let vs: List<u32> = List::filled(n, 0u32);
+    let x: u64 = 5;
+    for i in 0..n {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        xs[i] = ((x >> 33) % 201u64) as i16 - 100i16;
+        zs[i] = ((x >> 45) % 301u64) as i16 - 150i16;
+        us[i] = ((x >> 20) % 400000u64) as u32;
+    }
+    let t: i64 = 0;
+    for r in 0..200 {
+        scale(ys, xs, 3i16 + (r % 5) as i16);
+        t += ys[r * 9] as i64;
+        prod(ys, xs, zs);
+        t += ys[r * 11] as i64;
+        scale32(vs, us, 10000u32);
+        t += vs[r * 13] as i64;
+    }
+    println(f"{t}");
+    return 0;
+}

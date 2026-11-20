@@ -1,0 +1,22 @@
+// expect-exit: 0
+// expect-stdout:
+// 0 1 0 2 1 2 0 2 99
+
+// A default takes its parameter's type as the arguments bound it
+// (`xs: List<T> = []`), and may name the function's const parameters
+// (`axis: usize = N - 1`), fixed per call.
+use core::array::Array;
+
+pub struct C { pub v: f64; }
+fn count(xs: List<C> = []) -> usize { xs.len() }
+fn gcount<T>(x: T, xs: List<T> = []) -> usize { xs.len() }
+fn last<const N: usize>(a: Array<f64, N>, axis: usize = N - 1) -> usize { a.ndim() * 0 + axis }
+fn named<const N: usize>(a: Array<f64, N>, keep: bool = false, axis: usize = N - 1) -> usize {
+    if keep { 99 } else { a.ndim() * 0 + axis }
+}
+
+fn main() {
+    let m: Array<f64, 2> = Array::zeros([2, 3]);
+    let v: Array<f64, 3> = Array::zeros([2, 3, 1]);
+    println(f"{count()} {count([C { v: 1.0 }])} {gcount(1.0)} {gcount(1, [2, 3])} {last(m)} {last(v)} {last(m, 0)} {named(v, keep: false)} {named(m, keep: true)}");
+}

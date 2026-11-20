@@ -1,0 +1,271 @@
+// Vectorized loop shapes (`-O2`): min / max reductions (the lanes
+// start from the accumulator, the least / greatest of them taken after),
+// accumulators updated on both ways of a test, stores on both ways of a
+// test (merged) and on one way (under a mask where the target has one),
+// loads under a test, loops over slices; every length from 0 to 33 and
+// every start, the scalar loop's results, NaN kept.
+// expect-exit: 0
+// expect-stdout:
+// 0:7799751296038071074/0 1:-8649278979084113873/0 2:-6891803980384511889/1 3:-1892537823452097281/1 4:-8476208338122991939/0 5:-9107280649111393052/1 6:6184433964827620674/1 7:4670572096539430239/0 8:-7097831197157959352/0 9:4267312806648983705/2 10:996514254356341904/2 11:-5745866983624625278/0 12:-1284640278974600355/1 13:5943342706074583735/1 14:7698301892208220210/4 15:-2793843996850505574/0 16:2395003296294860441/0 17:7368109377907306220/2 18:-2681707058869024688/3 19:8707318334343891483/2 20:1939726909917535702/3 21:115098273062187912/1 22:-752530110788452830/1 23:-7688137410323015166/3 24:-2717434601275921596/1 25:-6346755444048190411/3 26:4011383582340479103/4 27:-3572203305591171552/3 28:-425235078714432179/2 29:1438283782077378291/2 30:-8178457046547920941/4 31:5018501787062275947/6 32:-981298302787277965/0 33:8603869589336091109/2 
+// -38 -36 38 19
+
+fn mn8(xs: List<i8>, a: usize) -> i8 {
+    let m: i8 = 127;
+    for x in xs[a:] {
+        m = m.min(x);
+    }
+    m
+}
+
+fn mxu8(xs: List<u8>, a: usize) -> u8 {
+    let m: u8 = 0;
+    for x in xs[a:] {
+        if x > m {
+            m = x;
+        }
+    }
+    m
+}
+
+fn mn16(xs: List<i16>, n: usize) -> i16 {
+    let m: i16 = 32767;
+    for i in 0..n {
+        if xs[i] < m {
+            m = xs[i];
+        }
+    }
+    m
+}
+
+fn mxu16(xs: List<u16>) -> u16 {
+    let m: u16 = 3;
+    for x in xs {
+        m = m.max(x);
+    }
+    m
+}
+
+fn mn32(xs: List<i32>) -> i32 {
+    let m: i32 = 1000000;
+    for x in xs {
+        m = x.min(m);
+    }
+    m
+}
+
+fn mxu32(xs: List<u32>, a: usize) -> u32 {
+    let m: u32 = 0;
+    for x in xs[a:] {
+        m = if m >= x { m } else { x };
+    }
+    m
+}
+
+fn mn64(xs: List<i64>) -> i64 {
+    let m: i64 = 9000000000;
+    for x in xs {
+        m = m.min(x);
+    }
+    m
+}
+
+fn both(xs: List<i32>, a: usize) -> i32 {
+    let s: i32 = 0;
+    for x in xs[a:] {
+        if x > 0 {
+            s += x;
+        } else {
+            s -= 3;
+        }
+    }
+    s
+}
+
+fn both_wrap(xs: List<u8>) -> u8 {
+    let s: u8 = 7;
+    for x in xs {
+        if x > 100u8 {
+            s = s.wrapping_add(x);
+        } else {
+            s = s.wrapping_sub(x);
+        }
+    }
+    s
+}
+
+fn twice(xs: List<i64>) -> i64 {
+    let s: i64 = 0;
+    for x in xs {
+        s = s.wrapping_add(x);
+        if x > 5 {
+            s = s.wrapping_add(x);
+        }
+    }
+    s
+}
+
+fn relu(xs: List<i32>) {
+    for i in 0..xs.len() {
+        if xs[i] > 0 {
+            xs[i] = xs[i] + 1;
+        } else {
+            xs[i] = 0;
+        }
+    }
+}
+
+fn clip(xs: List<i16>, lo: i16, hi: i16) {
+    for i in 0..xs.len() {
+        let x = xs[i];
+        if x < lo {
+            xs[i] = lo;
+        } else if x > hi {
+            xs[i] = hi;
+        } else {
+            xs[i] = x;
+        }
+    }
+}
+
+fn zero_neg(xs: List<i32>) {
+    for i in 0..xs.len() {
+        if xs[i] < 0 {
+            xs[i] = 0;
+        }
+    }
+}
+
+fn fsel(xs: List<f64>, ys: List<f64>) {
+    for i in 0..xs.len() {
+        if xs[i] < 0.0 {
+            ys[i] = 0.0;
+        } else {
+            ys[i] = xs[i];
+        }
+    }
+}
+
+fn pick(xs: List<i32>, ys: List<i32>, n: usize) -> i32 {
+    let s: i32 = 0;
+    for i in 0..n {
+        if xs[i] > 2 {
+            s = s.wrapping_add(ys[i]);
+        }
+    }
+    s
+}
+
+fn find_from(bs: List<u8>, c: u8, a: usize) -> usize {
+    for (i, b) in bs[a:].iter().enumerate() {
+        if b == c {
+            return a + i;
+        }
+    }
+    bs.len()
+}
+
+fn sum_slice(xs: List<i32>, a: usize, b: usize) -> i32 {
+    let s: i32 = 0;
+    for x in xs[a:b] {
+        s += x;
+    }
+    s
+}
+
+fn copy_slice(dst: List<i32>, src: List<i32>, a: usize) {
+    for (i, x) in src[a:].iter().enumerate() {
+        dst[i] = x * 2;
+    }
+}
+
+fn main() -> i32 {
+    let seed: u64 = 12345;
+    let rnd = |s: u64| -> u64 { s.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64) };
+    let line = "";
+    for n in 0..34 {
+        let i8s: List<i8> = List::filled(n, 0i8);
+        let u8s: List<u8> = List::filled(n, 0u8);
+        let i16s: List<i16> = List::filled(n, 0i16);
+        let u16s: List<u16> = List::filled(n, 0u16);
+        let i32s: List<i32> = List::filled(n, 0);
+        let u32s: List<u32> = List::filled(n, 0u32);
+        let i64s: List<i64> = List::filled(n, 0i64);
+        let fs: List<f64> = List::filled(n, 0.0);
+        for i in 0..n {
+            seed = rnd(seed);
+            let r = seed >> 33;
+            i8s[i] = (r % 256u64) as i8;
+            u8s[i] = (r >> 8) as u8;
+            i16s[i] = (r >> 3) as i16;
+            u16s[i] = (r >> 5) as u16;
+            i32s[i] = (r % 2001u64) as i32 - 1000;
+            u32s[i] = (r * 7919u64) as u32;
+            i64s[i] = (r as i64) - 1073741824;
+            fs[i] = (r % 9u64) as f64 - 4.0;
+            if r % 11u64 == 0 {
+                fs[i] = 0.0 / 0.0;
+            }
+        }
+        let acc: i64 = 0;
+        for a in 0..n + 1 {
+            acc = acc.wrapping_mul(31).wrapping_add(mn8(i8s, a) as i64);
+            acc = acc.wrapping_mul(31).wrapping_add(mxu8(u8s, a) as i64);
+            acc = acc.wrapping_mul(31).wrapping_add(mxu32(u32s, a) as i64);
+            acc = acc.wrapping_mul(31).wrapping_add(both(i32s, a) as i64);
+            let c: u8 = if n > 0 { u8s[(a + 3) % n] } else { 0u8 };
+            acc = acc.wrapping_mul(31).wrapping_add(find_from(u8s, c, a) as i64);
+            for b in a..n + 1 {
+                acc = acc.wrapping_mul(31).wrapping_add(sum_slice(i32s, a, b) as i64);
+            }
+        }
+        acc = acc.wrapping_mul(31).wrapping_add(mn16(i16s, n) as i64);
+        acc = acc.wrapping_mul(31).wrapping_add(mxu16(u16s) as i64);
+        acc = acc.wrapping_mul(31).wrapping_add(mn32(i32s) as i64);
+        acc = acc.wrapping_mul(31).wrapping_add(mn64(i64s));
+        acc = acc.wrapping_mul(31).wrapping_add(both_wrap(u8s) as i64);
+        acc = acc.wrapping_mul(31).wrapping_add(twice(i64s));
+        acc = acc.wrapping_mul(31).wrapping_add(pick(i32s, i32s, n) as i64);
+        let ys: List<f64> = List::filled(n, 1.0);
+        fsel(fs, ys);
+        let nans = 0;
+        for y in ys {
+            if y != y {
+                nans += 1;
+            } else {
+                acc = acc.wrapping_mul(31).wrapping_add(y as i64);
+            }
+        }
+        let cs: List<i32> = List::filled(n, 0);
+        for a in 0..n + 1 {
+            copy_slice(cs, i32s, a);
+            for c in cs {
+                acc = acc.wrapping_mul(31).wrapping_add(c as i64);
+            }
+        }
+        relu(i32s);
+        clip(i16s, -1000i16, 1000i16);
+        for x in i32s {
+            acc = acc.wrapping_mul(31).wrapping_add(x as i64);
+        }
+        for x in i16s {
+            acc = acc.wrapping_mul(31).wrapping_add(x as i64);
+        }
+        for i in 0..n {
+            i32s[i] = i32s[i] - 300;
+        }
+        zero_neg(i32s);
+        for x in i32s {
+            acc = acc.wrapping_mul(31).wrapping_add(x as i64);
+        }
+        line = f"{line}{n}:{acc}/{nans} ";
+    }
+    println(line);
+    // Aliasing: one list on both sides.
+    let xs: List<i32> = List::filled(40, 0);
+    for i in 0..40 {
+        xs[i] = i as i32 - 20;
+    }
+    copy_slice(xs, xs, 1);
+    println(f"{xs[0]} {xs[1]} {xs[38]} {xs[39]}");
+    return 0;
+}

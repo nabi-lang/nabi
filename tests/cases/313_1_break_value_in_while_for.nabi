@@ -1,0 +1,9 @@
+// expect-error: 7:26: `break` with a value inside a `while` or `for` loop
+// expect-error: 8:21: `break` with a value inside a `while` or `for` loop
+// expect-error: help: write `loop { ... break value; ... }` to leave with a value
+
+// `while` and `for` are always `()`: their `break` takes no value.
+fn main() {
+    let a = while true { break 3; };
+    for i in 0..2 { break "x"; }
+}

@@ -1,0 +1,19 @@
+// expect-exit: 5
+// `#[export_name("sym")]`: the function's linker
+// symbol is `sym`, and it is emitted even when nothing calls it.
+// expect-stdout:
+// 5
+#[export_name("nabi_test_add")]
+pub extern "C" fn add(x: i32, y: i32) -> i32 {
+    return x + y;
+}
+
+#[export_name("nabi_test_unused")]
+pub extern "C" fn unused() -> i32 {
+    return 7;
+}
+
+fn main() -> i32 {
+    println(f"{add(2, 3)}");
+    return add(2, 3);
+}

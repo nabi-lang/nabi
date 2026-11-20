@@ -1,0 +1,86 @@
+// needs: threads
+// gc-stress: 5
+// run-env: NABIR_WORKERS=4
+// `chunks_mut` views of one list go to different workers, which write
+// their own parts in place; views that overlap, or a view with an item
+// holding the whole list, run one at a time instead.
+// expect-exit: 0
+// expect-stderr: warning: par::for_each at tests/cases/219_par_chunks_mut.nabi:58:5: two items reach one collection or future, so they run one at a time on this thread; give each item its own copy, freeze what they only read (`xs.freeze()`), or split a list with `chunks_mut`
+// expect-stderr: warning: par::for_each at tests/cases/219_par_chunks_mut.nabi:64:5: two items reach one collection or future, so they run one at a time on this thread; give each item its own copy, freeze what they only read (`xs.freeze()`), or split a list with `chunks_mut`
+// expect-stderr: warning: par::for_each at tests/cases/219_par_chunks_mut.nabi:70:5: two items reach one collection or future, so they run one at a time on this thread; give each item its own copy, freeze what they only read (`xs.freeze()`), or split a list with `chunks_mut`
+// expect-stdout:
+// scale 0 2000 19998
+// ecs 1000 30 10
+// names 3000 n0-x n2999-x
+// split 6 60
+// overlap 3 1
+// read write 20
+// whole 101
+// own parts 40 40
+// disjoint 9900
+
+fn main() {
+    let xs: List<i64> = List::from_fn(10000, |i| i as i64);
+    par::for_each(xs.chunks_mut(512), |c| { for i in 0..c.len() { c[i] = c[i] * 2; } });
+    println(f"scale {xs[0]} {xs[1000]} {xs[9999]}");
+
+    // Structure of arrays: write two lists, read a third, in one pass.
+    let n = 1000usize;
+    let px: List<f64> = List::filled(n, 0.0);
+    let vx: List<f64> = List::from_fn(n, |i| i as f64);
+    let gx: FrozenList<f64> = List::filled(n, 0.5).freeze();
+    for _ in 0..10 {
+        let items = px.chunks_mut(64).zip(vx.chunks_mut(64)).zip(gx.chunks(64));
+        par::for_each(items, |((p, v), g)| {
+            for i in 0..p.len() {
+                p[i] = p[i] + 0.1;
+                v[i] = v[i] + g[i];
+            }
+        });
+    }
+    println(f"ecs {px.len()} {vx[25]} {(px[7] * 10.0).round()}");
+
+    // Elements that are references: the write barrier runs on every worker.
+    let names: List<str> = List::filled(3000, "");
+    par::for_each(names.chunks_mut(100).zip((0..3000usize).step_by(100)), |(c, base)| {
+        for i in 0..c.len() { c[i] = f"n{base + i}-x"; }
+    });
+    println(f"names {names.len()} {names[0]} {names[2999]}");
+
+    let ys: List<i32> = List::filled(10, 6);
+    let (a, b) = ys.split_at_mut(3);
+    par::for_each([a, b], |s| { for i in 0..s.len() { s[i] = s[i] * 10; } });
+    println(f"split {ys[0] / 10} {ys[9]}");
+
+    // Two views of one part: one at a time.
+    let zs: List<i32> = List::filled(10, 1);
+    let first = zs.chunks_mut(5).next() ?? panic("no chunk");
+    par::for_each([first, first], |s| { for i in 0..s.len() { s[i] = s[i] + 1; } });
+    println(f"overlap {zs[0]} {zs[9]}");
+
+    // A view written while another item reads the same part.
+    let ws: List<i32> = List::filled(10, 2);
+    let (lo, hi) = ws.split_at_mut(5);
+    par::for_each([(lo, ws[5:7]), (hi, ws[2:4])], |(w, r)| { w[0] = r[0] * 10; });
+    println(f"read write {ws[0]}");
+
+    // A view, and an item holding the whole list.
+    let vs: List<i32> = List::filled(10, 1);
+    let empty: List<i32> = [];
+    par::for_each([(vs.chunks_mut(5).next() ?? panic("no chunk"), empty), (vs.chunks_mut(5).next() ?? panic("no chunk"), vs)], |(w, l)| { w[0] = 100; l.push(1); });
+    println(f"whole {vs[0] + vs.len() as i32 - 10}");
+
+    // Each item reads the part it writes: in parallel.
+    let os: List<i32> = List::filled(10, 4);
+    let (lo2, hi2) = os.split_at_mut(5);
+    par::for_each([(lo2, os[0:5]), (hi2, os[5:10])], |(w, r)| { w[4] = r[0] * 10; });
+    println(f"own parts {os[4]} {os[9]}");
+
+    // Reads anywhere, writes in parts of their own: in parallel.
+    let us: List<i64> = List::filled(100, 99);
+    let src: FrozenList<i64> = List::filled(100, 99i64).freeze();
+    par::for_each(us.chunks_mut(10).zip(src.chunks(10)), |(w, r)| { for i in 0..w.len() { w[i] = r[i] * 10; } });
+    let t = 0i64;
+    for u in us { t += u; }
+    println(f"disjoint {t / 10}");
+}

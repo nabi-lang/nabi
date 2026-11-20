@@ -1,0 +1,29 @@
+// expect-exit: 0
+// expect-stdout:
+// signed: -8 -8 -8 -8 -16 -16 -16 -32 -32 -64
+// unsigned: 8 8 8 8 16 16 16 32 32 64
+// to signed: 8 8 8 8 16 16 16 32
+// to float: -8 -16 -8 -16 -32 8 16 8 16 32 1.5
+
+// Every lossless primitive `From`: a widening that keeps every value on
+// every target (`isize` / `usize` are at least 32 bits), so `isize` and
+// `usize` take `u8` / `u16` / `i8` / `i16` as Rust does.
+fn main() {
+    let (a, b, c) = (-8i8, -16i16, -32i32);
+    let e = -64isize;
+    println(f"signed: {i16::from(a)} {i32::from(a)} {i64::from(a)} {isize::from(a)} \
+        {i32::from(b)} {i64::from(b)} {isize::from(b)} {i64::from(c)} {isize::from(c)} \
+        {i64::from(e)}");
+    let (p, q, r) = (8u8, 16u16, 32u32);
+    let s = 64usize;
+    println(f"unsigned: {u16::from(p)} {u32::from(p)} {u64::from(p)} {usize::from(p)} \
+        {u32::from(q)} {u64::from(q)} {usize::from(q)} {u64::from(r)} {usize::from(r)} \
+        {u64::from(s)}");
+    let ip: isize = p.into();
+    let iq: isize = q.into();
+    println(f"to signed: {i16::from(p)} {i32::from(p)} {i64::from(p)} {ip} \
+        {i32::from(q)} {i64::from(q)} {iq} {i64::from(r)}");
+    println(f"to float: {f32::from(a)} {f32::from(b)} {f64::from(a)} {f64::from(b)} \
+        {f64::from(c)} {f32::from(p)} {f32::from(q)} {f64::from(p)} {f64::from(q)} \
+        {f64::from(r)} {f64::from(1.5f32)}");
+}

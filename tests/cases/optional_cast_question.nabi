@@ -1,0 +1,10 @@
+// expect-error: to propagate, write `(x as T)?`
+
+// `x as T?` casts to the optional type `T?`; the `?` does
+// not propagate.
+fn main() -> i32 {
+    let x: i64 = 3;
+    let y = x as i32?;
+    0
+}
+

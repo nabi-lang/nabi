@@ -1,0 +1,31 @@
+// expect-exit: 0
+// expect-stdout:
+// [1.0, 3.0] [2.0, 4.0] 2
+
+// `@concat` in a derive names a companion item: a struct-of-arrays
+// `PointColumns` with one list per field of `Point`.
+trait Soa { fn columns() -> usize; }
+
+#[impl_derive(Soa)] @derive {
+    pub struct @concat(@Self.name, Columns) {
+        @for_fields { pub @field.name: List<@field.type>; }
+    }
+    impl @concat(@Self.name, Columns) {
+        fn push(ref self, v: @Self) {
+            @for_fields { self.@field.name.push(v.@field); }
+        }
+    }
+    impl Soa for @Self {
+        fn columns() -> usize { @Self.field_count }
+    }
+}
+
+#[derive(Soa)]
+struct Point { x: f32; y: f32; }
+
+fn main() {
+    let c = PointColumns { x: [], y: [] };
+    c.push(Point { x: 1.0, y: 2.0 });
+    c.push(Point { x: 3.0, y: 4.0 });
+    println(f"{c.x:?} {c.y:?} {Point::columns()}");
+}

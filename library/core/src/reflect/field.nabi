@@ -1,0 +1,97 @@
+//! core::reflect::field - `Field`, one field of a struct or variant.
+
+use core::reflect::attr::Attr;
+use core::reflect::info::{TypeRef, field_size, op, read, w};
+
+/// One field of an `Inspect` struct, or of one variant of an enum.
+pub struct Field {
+    owner: usize;
+    at: usize;
+    // 0 for a struct's field; `(variant + 1) << 16` for a variant's.
+    variant: usize;
+}
+
+impl Clone for Field {
+    fn clone(self) -> Field { self }
+}
+
+impl Debug for Field {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"{self.name()}: {self.type_ref().name()}") }
+}
+
+impl Field {
+    pub(pkg) fn at(owner: usize, at: usize, variant: usize) -> Field {
+        Field { owner: owner, at: at, variant: variant }
+    }
+
+    /// The name; `"0"`, `"1"`, .. in a tuple struct or variant.
+    pub fn name(self) -> str { read::<str>(self.at) }
+    /// The name it had before a `#[renamed_from("..")]`, else empty.
+    pub fn renamed_from(self) -> str { read::<str>(self.at + 2 * w()) }
+    /// Its type.
+    pub fn type_ref(self) -> TypeRef { TypeRef::at(self.at + 4 * w()) }
+    /// Its offset in bytes from the start of the value; `usize::MAX`
+    /// when it has no fixed place.
+    pub fn offset(self) -> usize {
+        let o = read::<u64>(self.at + 10 * w() + 8);
+        if o == u64::MAX { usize::MAX } else { o as usize }
+    }
+    /// Its position in declaration order.
+    pub fn index(self) -> usize { read::<u32>(self.at + 10 * w() + 20) as usize }
+    /// A plain `pub` field.
+    pub fn is_pub(self) -> bool { read::<u32>(self.at + 10 * w() + 16) & 1u32 != 0u32 }
+    /// It has a `= expr` default.
+    pub fn has_default(self) -> bool { read::<u32>(self.at + 10 * w() + 16) & 2u32 != 0u32 }
+
+    /// The runtime attribute `A` on the field, if it has one:
+    /// `f.attr::<Range>()`.
+    pub fn attr<A>(self) -> A | none { core::reflect::attr::find::<A>(self.at + 8 * w() + 8) }
+    /// The runtime attributes on the field.
+    pub fn attrs(self) -> List<Attr> { core::reflect::attr::all(self.at + 8 * w() + 8) }
+
+    // The number `TypeOps::get` / `set` take.
+    fn number(self) -> usize {
+        if self.variant == 0 { self.index() } else { (self.variant - 0x10000) | self.index() }
+    }
+
+    /// The field's value in `owner`; `none` when `owner` is not of the
+    /// field's type (or holds another variant).
+    pub fn get(self, owner: any) -> any | none {
+        let g = op(self.owner, 0);
+        if g == 0 || read::<usize>(g) == 0 {
+            return none;
+        }
+        let f = read::<fn(any, usize) -> (any | none)>(g);
+        return f(owner, self.number());
+    }
+
+    /// The field's value as a `T`, as `cast::<T>(field.get(owner))`.
+    pub fn get_as<T>(self, owner: any) -> T | none {
+        return match self.get(owner) {
+            v: any => core::reflect::cast::<T>(v),
+            none => none,
+        };
+    }
+
+    /// Sets the field in `owner` to `value`; `false` when `owner` is not
+    /// of the field's type or `value` does not fit it (an integer fits
+    /// when its value does). `owner` gets a changed copy: a struct is a
+    /// value. A variant's payload is read-only.
+    pub fn set(self, ref owner: any, value: any) -> bool {
+        if self.variant != 0 {
+            return false;
+        }
+        let s = op(self.owner, 1);
+        if s == 0 || read::<usize>(s) == 0 {
+            return false;
+        }
+        let f = read::<fn(any, usize, any) -> (any | none)>(s);
+        return match f(owner, self.number(), value) {
+            v: any => {
+                owner = v;
+                true
+            },
+            none => false,
+        };
+    }
+}

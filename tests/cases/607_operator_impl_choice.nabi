@@ -1,0 +1,25 @@
+// expect-exit: 0
+// expect-stdout: 6 4 3 3
+
+// A generic impl for a scalar left operand is found beside core's
+// concrete ones, and an inherent method named like the operator's does
+// not hide the operator.
+pub struct G<const L: i32> { v: f64; }
+impl<const L: i32> ops::Mul<G<L>> for f64 {
+    type Output = G<L>;
+    fn mul(self, rhs: G<L>) -> G<L> { G { v: self * rhs.v } }
+}
+pub struct Q<V, const L: i32> { v: V; }
+impl<const L: i32> ops::Sqrt for Q<f64, L> {
+    type Output = Q<f64, { L / 2 }>;
+    fn sqrt(self) -> Q<f64, { L / 2 }> { Q { v: self.v.sqrt() } }
+}
+impl<const L: i32> Q<f64, L> {
+    fn sqrt(self) -> Q<f64, { L / 2 }> { Q { v: self.v.sqrt() + 0.0 } }
+}
+
+fn main() {
+    let g: G<2> = G { v: 2.0 };
+    let q: Q<f64, 2> = Q { v: 9.0 };
+    println(f"{(3.0 * g).v} {(2.0 * g).v} {(√q).v} {q.sqrt().v}");
+}

@@ -1,0 +1,52 @@
+// Field stores into list elements of a ten-word struct: a counter at
+// a computed index, a header at element 0 updated by a method (a
+// table's head, as `Dict` keeps it), and a `str` field (a reference:
+// its barrier stays). Each stores one field, not the whole element.
+struct Head {
+    len: usize;
+    cap: usize;
+    used: usize;
+    gone: usize;
+    seed: u64;
+    mask: usize;
+    shift: u32;
+    flags: u32;
+    hits: usize;
+    name: str;
+}
+
+struct Table {
+    h: List<Head>;
+}
+
+impl Table {
+    #[inline(never)]
+    fn add(self, x: usize) {
+        self.h[0].used = self.h[0].used.wrapping_add(x);
+    }
+
+    #[inline(never)]
+    fn rename(self, s: str) {
+        self.h[0].name = s;
+    }
+}
+
+fn main() -> i32 {
+    let blank = Head { len: 0, cap: 0, used: 0, gone: 0, seed: 0, mask: 0, shift: 0, flags: 0, hits: 0, name: "" };
+    let hs: List<Head> = List::filled(64, blank);
+    let t = Table { h: [blank] };
+    let names = ["a", "bb", "ccc"];
+    for i in 0..3000000usize {
+        hs[i % 64].hits = hs[(i + 1) % 64].hits.wrapping_add(i);
+        t.add(i);
+        if i % 4 == 0 {
+            t.rename(names[i % 3]);
+        }
+    }
+    let s: usize = 0;
+    for h in hs {
+        s = s.wrapping_add(h.hits);
+    }
+    println(f"{s} {t.h[0].used} {t.h[0].name}");
+    return 0;
+}

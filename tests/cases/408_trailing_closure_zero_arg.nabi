@@ -1,0 +1,11 @@
+// expect-exit: 99
+// expect-stdout:
+
+// Zero-parameter shorthand `f { body }` == `f(|| { body })`.
+fn run(f: fn() -> i32) -> i32 {
+    return f();
+}
+
+fn main() -> i32 {
+    return run { 99 };
+}

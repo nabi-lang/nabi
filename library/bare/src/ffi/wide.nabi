@@ -1,0 +1,220 @@
+//! bare::ffi::wide - NUL-terminated `wchar_t` strings: UTF-16 on Windows
+//! (the `W` APIs), one unit per char (UTF-32) elsewhere.
+//!
+//! `WideCStr` and `WideCString` keep their units, NUL included, in one
+//! GC buffer the value holds, so `as_ptr` holds as `CStr::as_ptr` does.
+//! `WideCStr::from_ptr` copies.
+
+use bare::ffi::NulError;
+use bare::ffi::types::c_wchar;
+use bare::mem::{GcBuf, buf_new, transmute_unchecked};
+use bare::ptr::ConstPtr;
+
+/// `units` and a final NUL in a new buffer.
+const fn with_nul(units: Slice<c_wchar>) -> GcBuf<c_wchar> {
+    let n = units.len();
+    unsafe {
+        let buf: GcBuf<c_wchar> = buf_new(n + 1);
+        for i in 0..n {
+            buf[i] = units[i];
+        }
+        buf
+    }
+}
+
+/// `s` as `wchar_t` units, no NUL.
+#[cfg(target_os = "windows")]
+const fn encode(s: str) -> List<c_wchar> { s.encode_utf16() }
+
+#[cfg(not(target_os = "windows"))]
+const fn encode(s: str) -> List<c_wchar> {
+    let out: List<c_wchar> = List::with_capacity(s.len());
+    for c in s.chars() {
+        out.push(c as u32 as c_wchar);
+    }
+    out
+}
+
+#[cfg(target_os = "windows")]
+const fn decode(u: Slice<c_wchar>) throws (Utf16Error) -> str { try str::from_utf16(u) }
+
+#[cfg(target_os = "windows")]
+const fn decode_lossy(u: Slice<c_wchar>) -> str { str::from_utf16_lossy(u) }
+
+#[cfg(not(target_os = "windows"))]
+const fn decode(u: Slice<c_wchar>) throws (Utf16Error) -> str {
+    let out = StrBuf::with_capacity(u.len());
+    for i in 0..u.len() {
+        match char::from_u32(u[i] as u32) {
+            c: char => out.push(c),
+            none => throw bad_at(i),
+        }
+    }
+    out.to_str()
+}
+
+#[cfg(not(target_os = "windows"))]
+const fn decode_lossy(u: Slice<c_wchar>) -> str {
+    let out = StrBuf::with_capacity(u.len());
+    for i in 0..u.len() {
+        out.push(char::from_u32(u[i] as u32) ?? '\u{FFFD}');
+    }
+    out.to_str()
+}
+
+/// The `Utf16Error` with `valid_up_to() == n`. Core makes them; `n`
+/// ASCII units and a lone low surrogate get one.
+#[cfg(not(target_os = "windows"))]
+const fn bad_at(n: usize) -> Utf16Error {
+    let u: List<u16> = List::with_capacity(n + 1);
+    for _ in 0..n {
+        u.push(0x61u16);
+    }
+    u.push(0xDC00u16);
+    try str::from_utf16(u) catch e { return e; };
+    unreachable()
+}
+
+/// A NUL-terminated `wchar_t` string.
+pub struct WideCStr {
+    /// The units and the NUL.
+    buf: GcBuf<c_wchar>;
+    /// Units before the NUL.
+    len: usize;
+}
+
+// By hand: `bare` cannot use `#[derive]` (its impls name `core`).
+impl Clone for WideCStr {
+    const fn clone(self) -> WideCStr { self }
+}
+
+impl PartialEq for WideCStr {
+    const fn eq(self, rhs: WideCStr) -> bool {
+        if self.len != rhs.len {
+            return false;
+        }
+        for i in 0..self.len {
+            if unsafe { self.buf[i] != rhs.buf[i] } {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl Eq for WideCStr {}
+
+impl Hash for WideCStr {
+    const fn hash<H: Hasher>(self, ref h: H) {
+        self.len.hash(ref h);
+        for i in 0..self.len {
+            unsafe { self.buf[i] }.hash(ref h);
+        }
+    }
+}
+
+impl Debug for WideCStr {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("WideCStr(");
+        try Debug::fmt(self.to_str_lossy(), ref f);
+        try f.write_str(")");
+    }
+}
+
+impl WideCStr {
+    /// The wide C string at `p`, copied up to its NUL; `none` for a null
+    /// pointer.
+    ///
+    /// Safety: `p` must be null or point at a live NUL-terminated
+    /// `wchar_t` string.
+    pub unsafe fn from_ptr(p: ConstPtr<c_wchar>) -> WideCStr | none {
+        if p.addr() == 0 {
+            return none;
+        }
+        let n = 0usize;
+        while unsafe { p.add(n).read() } != 0 as c_wchar {
+            n += 1;
+        }
+        let buf: GcBuf<c_wchar> = unsafe { buf_new(n + 1) };
+        for i in 0..n {
+            unsafe { buf[i] = p.add(i).read() };
+        }
+        WideCStr { buf, len: n }
+    }
+
+    /// A pointer to the first unit, for C; valid while `self` is alive.
+    pub fn as_ptr(self) -> ConstPtr<c_wchar> {
+        let at: usize = unsafe { transmute_unchecked(self.buf) };
+        // The units follow the 16-byte object header.
+        ConstPtr::<c_wchar>::dangling().with_addr(at + 16)
+    }
+
+    /// The units without the NUL.
+    pub fn as_units(self) -> Slice<c_wchar> { unsafe { Slice::from_raw_parts(self.buf, 0, self.len) } }
+
+    /// The units with the trailing NUL.
+    pub fn as_units_with_nul(self) -> Slice<c_wchar> { unsafe { Slice::from_raw_parts(self.buf, 0, self.len + 1) } }
+
+    /// The units before the NUL as a `str`; throws at an unpaired
+    /// surrogate (elsewhere than Windows: a unit that is no char).
+    pub fn to_str(self) throws (Utf16Error) -> str { try decode(self.as_units()) }
+
+    /// `to_str` with each bad unit replaced by U+FFFD.
+    pub fn to_str_lossy(self) -> str { decode_lossy(self.as_units()) }
+
+    /// Units before the NUL.
+    pub const fn len(self) -> usize { self.len }
+}
+
+/// An owned NUL-terminated `wchar_t` string.
+pub struct WideCString {
+    w: WideCStr;
+}
+
+impl Clone for WideCString {
+    const fn clone(self) -> WideCString { self }
+}
+
+impl PartialEq for WideCString {
+    const fn eq(self, rhs: WideCString) -> bool { self.w == rhs.w }
+}
+
+impl Eq for WideCString {}
+
+impl Hash for WideCString {
+    const fn hash<H: Hasher>(self, ref h: H) { self.w.hash(ref h); }
+}
+
+impl Debug for WideCString {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("WideCString(");
+        try Debug::fmt(self.w.to_str_lossy(), ref f);
+        try f.write_str(")");
+    }
+}
+
+impl WideCString {
+    /// `s` as `wchar_t` units and a NUL; throws if `s` has a NUL of its
+    /// own (`position` is its unit index).
+    pub fn new(s: str) throws (NulError) -> WideCString {
+        let u = encode(s);
+        for i in 0..u.len() {
+            if u[i] == 0 as c_wchar {
+                throw NulError::at(i);
+            }
+        }
+        WideCString { w: WideCStr { buf: with_nul(u[0:u.len()]), len: u.len() } }
+    }
+
+    /// The borrowed wide C string (with its NUL), valid while `self` is
+    /// alive.
+    pub const fn as_wide_cstr(self) -> WideCStr { self.w }
+    /// A pointer to the first unit, for C; valid while `self` is alive.
+    pub fn as_ptr(self) -> ConstPtr<c_wchar> { self.w.as_ptr() }
+    /// The units without the NUL.
+    pub fn as_units(self) -> Slice<c_wchar> { self.w.as_units() }
+    /// The string back; `new` took a `str`, so this never fails.
+    pub fn to_str(self) -> str { self.w.to_str_lossy() }
+    /// Units before the NUL.
+    pub const fn len(self) -> usize { self.w.len }
+}

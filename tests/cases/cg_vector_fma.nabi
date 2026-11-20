@@ -1,0 +1,64 @@
+// expect-exit: 0
+//
+// `mul_add` rounds once in scalar code and in loops the vectorizer
+// takes; rows of one buffer at offsets the loop never changes run in
+// vectors when far enough apart, and keep the scalar order when not.
+// expect-stdout:
+// 5.551115123125783e-17 5.551115123125783e-17
+// 1.4901161e-8 1.4901161e-8
+// 0 24062
+// 1 274502.5
+// 2 152048.5
+// 3 110992.5
+// 5 77404.5
+// 8 58872.5
+// 40 40181.5
+// 50 38077.5
+
+use core::hint::black_box;
+
+fn fused(xs: List<f64>, b: f64, c: f64, out: List<f64>) {
+    for i in 0..xs.len() {
+        out[i] = xs[i].mul_add(b, c);
+    }
+}
+
+fn fused32(xs: List<f32>, b: f32, ys: List<f32>) {
+    for i in 0..xs.len() {
+        ys[i] = b.mul_add(xs[i], ys[i]);
+    }
+}
+
+// r[j] and r[o + j] updated together: o of 0 .. lanes overlap.
+fn rows(r: List<f64>, o: usize, w: usize, x: f64) {
+    for j in 0..w {
+        let y = r[j];
+        r[j] = y + x;
+        r[o + j] = r[o + j] * 2.0 + y;
+    }
+}
+
+fn sum(r: List<f64>) -> f64 {
+    let s = 0.0;
+    for i in 0..r.len() {
+        s += r[i] * (i as f64 + 1.0);
+    }
+    s
+}
+
+fn main() {
+    let n = 67;
+    let xs: List<f64> = List::filled(n, black_box(0.1));
+    let out: List<f64> = List::filled(n, 0.0);
+    fused(xs, black_box(10.0), black_box(-1.0), out);
+    println(f"{out[0]:e} {out[66]:e}");
+    let xf: List<f32> = List::filled(n, black_box(0.1f32));
+    let yf: List<f32> = List::filled(n, black_box(-1.0f32));
+    fused32(xf, black_box(10.0f32), yf);
+    println(f"{yf[0]:e} {yf[66]:e}");
+    for o in [0, 1, 2, 3, 5, 8, 40, 50] {
+        let r: List<f64> = List::from_fn(100, |i: usize| (i % 7) as f64);
+        rows(r, o, 50, 0.5);
+        println(f"{o} {sum(r)}");
+    }
+}

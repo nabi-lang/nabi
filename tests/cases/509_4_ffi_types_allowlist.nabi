@@ -1,0 +1,48 @@
+// expect-error: parameter `s` of `extern "C" fn` `take_s` has type `str`, which C cannot hold
+// expect-error: help: C passes a `char*`: take `s: ConstPtr<c_char>`
+// expect-error: the result of extern function `name_of` has type `str`, which C cannot hold
+// expect-error: help: C keeps the bytes of a returned `char*`
+// expect-error: parameter `c` of extern function `put` has type `char`, which C cannot hold
+// expect-error: parameter `p` of extern function `pair` has type `(i32, i32)`, which C cannot hold
+// expect-error: help: C has no tuples: declare a `struct`
+// expect-error: parameter `c` of extern function `paint` has type `Color`, which C cannot hold
+// expect-error: help: the layout of a plain enum is the compiler's: add `#[repr(i32)]`
+// expect-error: parameter `xs` of extern function `sum4` has type `[i32; 4]`, which C cannot hold
+// expect-error: help: C passes an array as a pointer
+// expect-error: parameter `w` of extern function `wrapped` has type `Mask<i32, 4>`, which C cannot hold
+// expect-error: parameter `h` of extern function `holds` has type `Simd<f32, 4>`, which C cannot hold
+// expect-error: parameter `o` of extern function `opt` has type `i32 | none`, which C cannot hold
+// expect-error: parameter `n` of extern function `nested` has type `List<i64>`, which C cannot hold: the collector may move or free it
+
+// FFI types are an allowlist checked on resolved types: an alias, a
+// field or an array element is seen through, and every refusal says
+// what to write instead.
+use core::simd::{Mask, Simd};
+
+type S = str;
+type L = List<i64>;
+
+enum Color { Red, Green }
+
+#[repr(i32)]
+enum Level { Low, High }
+
+struct Lanes { v: Simd<f32, 4>; }
+struct Deep { inner: [L; 1]; }
+
+extern "C" {
+    fn name_of(i: i32) -> S;
+    fn put(c: char);
+    fn pair(p: (i32, i32));
+    fn paint(c: Color);
+    fn level(l: Level) -> Level;
+    fn sum4(xs: [i32; 4]) -> i32;
+    fn wrapped(w: Mask<i32, 4>);
+    fn holds(h: Lanes);
+    fn opt(o: i32 | none);
+    fn nested(n: Deep);
+}
+
+extern "C" fn take_s(s: S) -> i64 { s.len() as i64 }
+
+fn main() {}

@@ -1,0 +1,13 @@
+// expect-error: `await` outside an async body
+
+// `await` is an error in a (non-async) `yield` body.
+async fn one() -> i32 { 1 }
+
+yield fn bad() -> i32 {
+    yield await one();
+}
+
+fn main() -> i32 {
+    for x in bad() { println(f"{x}"); }
+    return 0;
+}

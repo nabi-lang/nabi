@@ -1,0 +1,532 @@
+//! core::hash - what a `Hash` impl writes to:
+//! `Hasher`, `BuildHasher`, the process-keyed `RandomState` that `Dict`
+//! and `Set` default to with its SipHash-1-3 `DefaultHasher`, and the
+//! caller-keyed `SipHasher13` / `SipHasher24`, whose output is stable.
+
+use core::convert::AsBytes;
+
+/// A running hash: `Hash` impls feed it bytes and integers, `finish`
+/// reads the result. Equal values must make the same sequence of
+/// writes; a variable-length run of values starts with
+/// `write_length_prefix`, so that `("ab", "c")` and `("a", "bc")` differ.
+pub trait Hasher {
+    /// Raw bytes; adds no length or terminator.
+    fn write<B: AsBytes>(ref self, bytes: B);
+
+    /// The hash of everything written so far; the state is not reset.
+    fn finish(self) -> u64;
+
+    // Fixed-width integers: their little-endian bytes.
+
+    /// `x` as one byte.
+    const fn write_u8(ref self, x: u8) { self.write([x]) }
+    /// `x` as 2 little-endian bytes.
+    const fn write_u16(ref self, x: u16) { self.write(x.to_le_bytes()) }
+    /// `x` as 4 little-endian bytes.
+    const fn write_u32(ref self, x: u32) { self.write(x.to_le_bytes()) }
+    /// `x` as 8 little-endian bytes.
+    const fn write_u64(ref self, x: u64) { self.write(x.to_le_bytes()) }
+    /// 8 bytes on every target, so a hash does not depend on the width.
+    const fn write_usize(ref self, x: usize) { self.write_u64(x as u64) }
+    /// `x` as `write_u8` of its bits.
+    const fn write_i8(ref self, x: i8) { self.write_u8(x as u8) }
+    /// `x` as `write_u16` of its bits.
+    const fn write_i16(ref self, x: i16) { self.write_u16(x as u16) }
+    /// `x` as `write_u32` of its bits.
+    const fn write_i32(ref self, x: i32) { self.write_u32(x as u32) }
+    /// `x` as `write_u64` of its bits.
+    const fn write_i64(ref self, x: i64) { self.write_u64(x as u64) }
+    /// `x` as `write_u64` of its bits, on every target.
+    const fn write_isize(ref self, x: isize) { self.write_u64(x as i64 as u64) }
+
+    /// Before a variable-length run of `Hash` values (a list's items).
+    const fn write_length_prefix(ref self, len: usize) { self.write_usize(len) }
+
+    /// A whole `str`, prefix-free on its own: never precede it with
+    /// `write_length_prefix`.
+    const fn write_str(ref self, s: str) {
+        self.write_length_prefix(s.len());
+        self.write(s);
+    }
+}
+
+/// Makes the `Hasher`s of a `Dict` / `Set`: every one it builds hashes
+/// equal values alike.
+pub trait BuildHasher {
+    /// The hasher it builds.
+    type Hasher: Hasher;
+    /// A new hasher; every one starts from the same state.
+    fn build_hasher(self) -> Self::Hasher;
+}
+
+/// The process's hash key, what `Dict` and `Set` use by default: drawn
+/// at random once per process, so where a key lands changes between
+/// runs (but not what a dict prints: that follows insertion order).
+/// Every `RandomState::new()` in a process holds the same key.
+pub struct RandomState {
+    k0: u64;
+    k1: u64;
+}
+
+/// The process key; all zero during compile-time evaluation.
+const fn process_keys() -> (u64, u64) {
+    unsafe {
+        let b: GcBuf<u64> = buf_new(2);
+        nabi_hash_keys(b);
+        (b[0], b[1])
+    }
+}
+
+impl RandomState {
+    /// The process's keys: every `RandomState` of the process hashes
+    /// alike.
+    pub const fn new() -> RandomState {
+        let (k0, k1) = process_keys();
+        RandomState { k0, k1 }
+    }
+
+    /// The key its hashers use.
+    #[inline(always)]
+    const fn key(self) -> (u64, u64) {
+        if self.is_reserved() { process_keys() } else { (self.k0, self.k1) }
+    }
+
+    /// What a hasher it builds gives for `s.hash(ref h)`, in one call:
+    /// `Dict` / `Set` keys. The same SipHash-1-3 of the bytes and 0xFF.
+    pub(pkg) const fn hash_str(self, s: str) -> u64 {
+        let k = self.key();
+        let v = sip_init(k.0, k.1);
+        let b = s.as_bytes();
+        unsafe {
+            let n = b.len;
+            let w = n & !7usize;
+            if w != 0 {
+                v = sip_words(v, false, b.buf, b.start, w);
+            }
+            let r = n & 7usize;
+            let last = 0xFFu64 << (r.wrapping_mul(8) as u64);
+            if r != 0 {
+                last |= le_word(b.buf, b.start.wrapping_add(w), r);
+            }
+            if r == 7 {
+                v = sip_word(v, last, false);
+                last = 0u64;
+            }
+            sip13_finish(v, ((n.wrapping_add(1) as u64) << 56u64) | last)
+        }
+    }
+
+    /// What a hasher it builds gives for `size` (4 or 8) little-endian
+    /// bytes of `x` written alone: `write_u64` / `write_u32`.
+    #[inline(always)]
+    pub(pkg) const fn hash_int(self, x: u64, size: usize) -> u64 {
+        let k = self.key();
+        let v = sip_init(k.0, k.1);
+        if size == 8 {
+            return sip13_finish(sip_word(v, x, false), 8u64 << 56u64);
+        }
+        sip13_finish(v, ((size as u64) << 56u64) | x)
+    }
+
+    /// Built at compile time: the all-zero key, which the run time never
+    /// draws. It stands for the process key, and a table hashed with it
+    /// at compile time is rehashed on first use.
+    pub(pkg) const fn is_reserved(self) -> bool {
+        self.k0 == 0u64 && self.k1 == 0u64
+    }
+}
+
+impl BuildHasher for RandomState {
+    type Hasher = DefaultHasher;
+    const fn build_hasher(self) -> DefaultHasher {
+        let k = self.key();
+        DefaultHasher { s: Sip::new(k.0, k.1, false) }
+    }
+}
+
+impl Default for RandomState {
+    const fn default() -> RandomState { RandomState::new() }
+}
+
+impl Clone for RandomState {
+    const fn clone(self) -> RandomState { self }
+}
+
+impl Copy for RandomState {}
+
+impl PartialEq for RandomState {
+    const fn eq(self, rhs: RandomState) -> bool { self.k0 == rhs.k0 && self.k1 == rhs.k1 }
+    const fn ne(self, rhs: RandomState) -> bool { !self.eq(rhs) }
+}
+
+impl Eq for RandomState {}
+
+/// Shows no key.
+impl Debug for RandomState {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("RandomState { .. }") }
+}
+
+/// `RandomState`'s hasher. The algorithm (SipHash-1-3 today) and so its
+/// output are unspecified and may change in any release: never persist
+/// it. `SipHasher13` is the stable form.
+pub struct DefaultHasher {
+    s: Sip;
+}
+
+impl Hasher for DefaultHasher {
+    const fn write<B: AsBytes>(ref self, bytes: B) { self.s.bytes(bytes.byte_slice()) }
+    const fn finish(self) -> u64 { self.s.finish() }
+    const fn write_u8(ref self, x: u8) { self.s.short(x as u64, 1) }
+    const fn write_u16(ref self, x: u16) { self.s.short(x as u64, 2) }
+    const fn write_u32(ref self, x: u32) { self.s.short(x as u64, 4) }
+    const fn write_u64(ref self, x: u64) { self.s.short(x, 8) }
+    const fn write_usize(ref self, x: usize) { self.s.short(x as u64, 8) }
+    const fn write_i8(ref self, x: i8) { self.s.short(x as u8 as u64, 1) }
+    const fn write_i16(ref self, x: i16) { self.s.short(x as u16 as u64, 2) }
+    const fn write_i32(ref self, x: i32) { self.s.short(x as u32 as u64, 4) }
+    const fn write_i64(ref self, x: i64) { self.s.short(x as u64, 8) }
+    const fn write_isize(ref self, x: isize) { self.s.short(x as i64 as u64, 8) }
+    const fn write_length_prefix(ref self, len: usize) { self.s.short(len as u64, 8) }
+    /// The bytes, then 0xFF: UTF-8 never holds that byte, so no prefix
+    /// is needed.
+    const fn write_str(ref self, s: str) {
+        self.s.bytes(s.as_bytes());
+        self.s.short(0xFFu64, 1);
+    }
+}
+
+impl Clone for DefaultHasher {
+    const fn clone(self) -> DefaultHasher { self }
+}
+
+/// Shows no key or state.
+impl Debug for DefaultHasher {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("DefaultHasher { .. }") }
+}
+
+/// SipHash-1-3 under a caller's key. Its output for the bytes written
+/// is the reference SipHash and stable across releases; `write_<int>`
+/// writes the integer's little-endian bytes (`write_usize` 8). The
+/// writes a `Hash` impl makes are not stable, so a persisted hash feeds
+/// bytes and integers directly, never `x.hash(ref h)`.
+pub struct SipHasher13 {
+    s: Sip;
+}
+
+impl SipHasher13 {
+    /// A hasher under the 128-bit key `k0`, `k1`.
+    pub const fn with_keys(k0: u64, k1: u64) -> SipHasher13 {
+        SipHasher13 { s: Sip::new(k0, k1, false) }
+    }
+}
+
+impl Hasher for SipHasher13 {
+    const fn write<B: AsBytes>(ref self, bytes: B) { self.s.bytes(bytes.byte_slice()) }
+    const fn finish(self) -> u64 { self.s.finish() }
+    const fn write_u8(ref self, x: u8) { self.s.short(x as u64, 1) }
+    const fn write_u16(ref self, x: u16) { self.s.short(x as u64, 2) }
+    const fn write_u32(ref self, x: u32) { self.s.short(x as u64, 4) }
+    const fn write_u64(ref self, x: u64) { self.s.short(x, 8) }
+}
+
+impl Clone for SipHasher13 {
+    const fn clone(self) -> SipHasher13 { self }
+}
+
+/// Shows no key or state.
+impl Debug for SipHasher13 {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SipHasher13 { .. }") }
+}
+
+/// SipHash-2-4 under a caller's key: as `SipHasher13`, with the
+/// original paper's rounds.
+pub struct SipHasher24 {
+    s: Sip;
+}
+
+impl SipHasher24 {
+    /// A hasher under the 128-bit key `k0`, `k1`.
+    pub const fn with_keys(k0: u64, k1: u64) -> SipHasher24 {
+        SipHasher24 { s: Sip::new(k0, k1, true) }
+    }
+}
+
+impl Hasher for SipHasher24 {
+    const fn write<B: AsBytes>(ref self, bytes: B) { self.s.bytes(bytes.byte_slice()) }
+    const fn finish(self) -> u64 { self.s.finish() }
+    const fn write_u8(ref self, x: u8) { self.s.short(x as u64, 1) }
+    const fn write_u16(ref self, x: u16) { self.s.short(x as u64, 2) }
+    const fn write_u32(ref self, x: u32) { self.s.short(x as u64, 4) }
+    const fn write_u64(ref self, x: u64) { self.s.short(x, 8) }
+}
+
+impl Clone for SipHasher24 {
+    const fn clone(self) -> SipHasher24 { self }
+}
+
+/// Shows no key or state.
+impl Debug for SipHasher24 {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SipHasher24 { .. }") }
+}
+
+/// Builds `H::default()`: for a `Dict` / `Set` with a fixed hasher of
+/// the caller's (`Dict<K, V, BuildHasherDefault<MyHasher>>`). Use one
+/// only when keys cannot come from an attacker.
+pub struct BuildHasherDefault<H> {}
+
+impl<H: Hasher + Default> BuildHasherDefault<H> {
+    /// The builder; it holds nothing.
+    pub const fn new() -> BuildHasherDefault<H> { BuildHasherDefault {} }
+}
+
+impl<H> Debug for BuildHasherDefault<H> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("BuildHasherDefault") }
+}
+
+impl<H: Hasher + Default> BuildHasher for BuildHasherDefault<H> {
+    type Hasher = H;
+    const fn build_hasher(self) -> H { H::default() }
+}
+
+impl<H: Hasher + Default> Default for BuildHasherDefault<H> {
+    const fn default() -> BuildHasherDefault<H> { BuildHasherDefault {} }
+}
+
+impl<H> Clone for BuildHasherDefault<H> {
+    const fn clone(self) -> BuildHasherDefault<H> { self }
+}
+
+impl<H> Copy for BuildHasherDefault<H> {}
+
+/// SipHash state: `c` compression rounds per word (1, or 2 when `wide`)
+/// and `c + 2` finishing rounds. `tail` holds the `ntail` bytes not yet
+/// a whole word; `length` counts every byte (its low byte is mixed in).
+/// The hot paths keep the state in locals and use wrapping arithmetic:
+/// nothing here can overflow, and a checked step costs a branch.
+struct Sip {
+    v0: u64;
+    v1: u64;
+    v2: u64;
+    v3: u64;
+    tail: u64;
+    ntail: usize;
+    length: usize;
+    wide: bool;
+}
+
+/// One SipRound.
+#[inline(always)]
+const fn sip_round(v: (u64, u64, u64, u64)) -> (u64, u64, u64, u64) {
+    let v0 = v.0.wrapping_add(v.1);
+    let v1 = v.1.rotate_left(13u32) ^ v0;
+    let v0 = v0.rotate_left(32u32);
+    let v2 = v.2.wrapping_add(v.3);
+    let v3 = v.3.rotate_left(16u32) ^ v2;
+    let v0 = v0.wrapping_add(v3);
+    let v3 = v3.rotate_left(21u32) ^ v0;
+    let v2 = v2.wrapping_add(v1);
+    let v1 = v1.rotate_left(17u32) ^ v2;
+    (v0, v1, v2.rotate_left(32u32), v3)
+}
+
+/// Word `m` mixed into `v`: one round, two when `wide`.
+#[inline(always)]
+const fn sip_word(v: (u64, u64, u64, u64), m: u64, wide: bool) -> (u64, u64, u64, u64) {
+    let r = sip_round((v.0, v.1, v.2, v.3 ^ m));
+    if wide {
+        r = sip_round(r);
+    }
+    (r.0 ^ m, r.1, r.2, r.3)
+}
+
+/// The `w` (a multiple of 8) bytes of `buf` from `at`, as whole words
+/// mixed into `v`. `at + w` is within the buffer: the sums cannot wrap.
+const fn sip_words(v: (u64, u64, u64, u64), wide: bool, buf: GcBuf<u8>, at: usize, w: usize) -> (u64, u64, u64, u64) {
+    let i = 0usize;
+    while i < w {
+        v = sip_word(v, le_word8(buf, at.wrapping_add(i)), wide);
+        i = i.wrapping_add(8);
+    }
+    v
+}
+
+/// SipHash-1-3's last word and finishing rounds: `fin` holds the length
+/// byte and the bytes after the last whole word.
+#[inline(always)]
+const fn sip13_finish(v: (u64, u64, u64, u64), fin: u64) -> u64 {
+    let v = sip_word(v, fin, false);
+    v = sip_round(sip_round(sip_round((v.0, v.1, v.2 ^ 0xFFu64, v.3))));
+    v.0 ^ v.1 ^ v.2 ^ v.3
+}
+
+/// SipHash's start under key `k0`, `k1`.
+#[inline(always)]
+const fn sip_init(k0: u64, k1: u64) -> (u64, u64, u64, u64) {
+    (k0 ^ 0x736f_6d65_7073_6575u64, k1 ^ 0x646f_7261_6e64_6f6du64, k0 ^ 0x6c79_6765_6e65_7261u64, k1 ^ 0x7465_6462_7974_6573u64)
+}
+
+impl Sip {
+    const fn new(k0: u64, k1: u64, wide: bool) -> Sip {
+        let v = sip_init(k0, k1);
+        Sip {
+            v0: v.0,
+            v1: v.1,
+            v2: v.2,
+            v3: v.3,
+            tail: 0u64,
+            ntail: 0,
+            length: 0,
+            wide,
+        }
+    }
+
+    #[inline(always)]
+    const fn compress(ref self, m: u64) {
+        let r = sip_word((self.v0, self.v1, self.v2, self.v3), m, self.wide);
+        self.v0 = r.0;
+        self.v1 = r.1;
+        self.v2 = r.2;
+        self.v3 = r.3;
+    }
+
+    /// The low `size` (1..=8) bytes of `x`, the rest zero, as written
+    /// bytes.
+    #[inline(always)]
+    const fn short(ref self, x: u64, size: usize) {
+        self.length = self.length.wrapping_add(size);
+        let nt = self.ntail;
+        let t = self.tail | x.wrapping_shl(nt.wrapping_mul(8) as u32);
+        let room = 8usize.wrapping_sub(nt);
+        if size < room {
+            self.tail = t;
+            self.ntail = nt.wrapping_add(size);
+            return;
+        }
+        self.compress(t);
+        self.ntail = size.wrapping_sub(room);
+        self.tail = if nt == 0 { 0u64 } else { x.wrapping_shr(room.wrapping_mul(8) as u32) };
+    }
+
+    /// The bytes of `b`, as written bytes: from a word boundary inline
+    /// (the whole words in `sip_words`), the rest in `long`.
+    #[inline(always)]
+    const fn bytes(ref self, b: Slice<u8>) {
+        unsafe {
+            if b.stride == 1 && self.ntail == 0 {
+                let n = b.len;
+                let w = n & !7usize;
+                if w != 0 {
+                    let v = sip_words((self.v0, self.v1, self.v2, self.v3), self.wide, b.buf, b.start, w);
+                    self.v0 = v.0;
+                    self.v1 = v.1;
+                    self.v2 = v.2;
+                    self.v3 = v.3;
+                }
+                self.length = self.length.wrapping_add(n);
+                let r = n & 7usize;
+                if r != 0 {
+                    self.tail = le_word(b.buf, b.start.wrapping_add(w), r);
+                    self.ntail = r;
+                }
+                return;
+            }
+        }
+        self.long(b);
+    }
+
+    const fn long(ref self, b: Slice<u8>) {
+        let n = b.len();
+        let i = 0usize;
+        unsafe {
+            let flat = b.stride == 1;
+            while i < n && self.ntail != 0 {
+                let x = if flat { b.buf[b.start + i] } else { b[i] };
+                self.short(x as u64, 1);
+                i += 1;
+            }
+            if flat {
+                if i < n {
+                    self.bytes(Slice { buf: b.buf, start: b.start + i, len: n - i, stride: 1, whole: false });
+                }
+            } else {
+                while i + 8 <= n {
+                    let m = 0u64;
+                    let j = 8usize;
+                    while j > 0 {
+                        j -= 1;
+                        m = (m << 8u64) | (b[i + j] as u64);
+                    }
+                    self.length += 8;
+                    self.compress(m);
+                    i += 8;
+                }
+                if i < n {
+                    let m = 0u64;
+                    let j = n;
+                    while j > i {
+                        j -= 1;
+                        m = (m << 8u64) | (b[j] as u64);
+                    }
+                    self.short(m, n - i);
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    const fn finish(self) -> u64 {
+        let b = ((self.length as u64) << 56u64) | self.tail;
+        let v = sip_word((self.v0, self.v1, self.v2, self.v3), b, self.wide);
+        v = sip_round(sip_round(sip_round((v.0, v.1, v.2 ^ 0xFFu64, v.3))));
+        if self.wide {
+            v = sip_round(v);
+        }
+        v.0 ^ v.1 ^ v.2 ^ v.3
+    }
+}
+
+/// The 8 bytes of `buf` from `at`, little-endian: a single load where
+/// the target reads unaligned words. `at + 7` is an index of the
+/// buffer: the sums cannot wrap.
+#[inline(always)]
+const fn le_word8(buf: GcBuf<u8>, at: usize) -> u64 {
+    unsafe {
+        (buf[at] as u64)
+            | ((buf[at.wrapping_add(1)] as u64) << 8u64)
+            | ((buf[at.wrapping_add(2)] as u64) << 16u64)
+            | ((buf[at.wrapping_add(3)] as u64) << 24u64)
+            | ((buf[at.wrapping_add(4)] as u64) << 32u64)
+            | ((buf[at.wrapping_add(5)] as u64) << 40u64)
+            | ((buf[at.wrapping_add(6)] as u64) << 48u64)
+            | ((buf[at.wrapping_add(7)] as u64) << 56u64)
+    }
+}
+
+/// The 4 bytes of `buf` from `at`, little-endian.
+#[inline(always)]
+const fn le_word4(buf: GcBuf<u8>, at: usize) -> u64 {
+    unsafe {
+        (buf[at] as u64)
+            | ((buf[at.wrapping_add(1)] as u64) << 8u64)
+            | ((buf[at.wrapping_add(2)] as u64) << 16u64)
+            | ((buf[at.wrapping_add(3)] as u64) << 24u64)
+    }
+}
+
+/// The `n` (1 to 7) bytes of `buf` from `at`, little-endian, the rest
+/// zero, without a loop: two overlapping 4-byte reads, or for up to 3
+/// bytes the first, middle and last. `at + n` is within the buffer:
+/// the sums cannot wrap.
+#[inline]
+const fn le_word(buf: GcBuf<u8>, at: usize, n: usize) -> u64 {
+    if n >= 4 {
+        let hi = le_word4(buf, at.wrapping_add(n).wrapping_sub(4));
+        return le_word4(buf, at) | hi.wrapping_shl(n.wrapping_sub(4).wrapping_mul(8) as u32);
+    }
+    unsafe {
+        let a = buf[at] as u64;
+        let b = buf[at.wrapping_add(n / 2)] as u64;
+        let c = buf[at.wrapping_add(n).wrapping_sub(1)] as u64;
+        a | b.wrapping_shl((n / 2).wrapping_mul(8) as u32) | c.wrapping_shl(n.wrapping_sub(1).wrapping_mul(8) as u32)
+    }
+}

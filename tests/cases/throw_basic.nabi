@@ -1,0 +1,13 @@
+// expect-exit: 1
+// expect-stdout: before
+// expect-stderr: error: `main` returned an uncaught error: 7
+// expect-stderr: --> tests/cases/throw_basic.nabi:11:5
+
+// An error escaping `fn main() throws (E)` is reported by the runtime and
+// ends the process with status 1 - not a panic (101).
+// `Display` (core::fmt has it for `i32`) gives the message.
+fn main() throws (i32) {
+    println("before");
+    throw 7;
+}
+

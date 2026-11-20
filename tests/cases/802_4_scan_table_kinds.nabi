@@ -1,0 +1,85 @@
+// gc-stress: 40
+// expect-exit: 0
+// expect-stdout:
+// points 3.5 4.5
+// pairs 3 4
+// results ok 7 | err e1 | pending
+// anys 5 s2 true 2.5
+// word-traced: unchanged true, moved false, 41
+// bytes id 1, words id 2
+
+// Each ScanTable slot kind, and conservatively scanned (type id 2) buffers.
+use bare::mem::transmute_unchecked;
+use bare::ptr::{ConstPtr, Ptr};
+use bare::mem::{GcBuf, buf_new};
+
+extern "C" {
+    fn nabi_gc_collect();
+    fn nabi_gc_alloc_slow(size: usize, align: usize, type_id: u32) -> GcBuf<u8>;
+    fn nabi_gc_wb_slow(obj: Ptr<u8>, slot: ConstPtr<u8>, len: usize);
+}
+
+struct Point { x: f64; y: f64; }
+struct Pair { a: List<i32>; b: List<f64>; }
+enum Res { Ok(i32), Err(str), Pending }
+
+fn addr<T>(b: GcBuf<T>) -> usize { unsafe { transmute_unchecked(b) } }
+fn id_of<T>(b: GcBuf<T>) -> u32 { unsafe { let p: ConstPtr<u32> = transmute_unchecked(addr(b)); p.read() } }
+
+fn churn() {
+    for i in 0..3000 { let _junk = f"junk{i}"; }
+    unsafe { nabi_gc_collect(); }
+}
+
+/// A fresh object whose only reference afterwards is its address in
+/// `slot[0]`. A plain number store has no write barrier: `slot` may be
+/// old by now, so it is remembered by hand, or a minor collection frees
+/// the young object.
+fn stash(slot: GcBuf<usize>) -> usize {
+    let t: GcBuf<i64> = unsafe { buf_new(1) };
+    unsafe { t[0] = 41; nabi_gc_wb_slow(transmute_unchecked(slot), transmute_unchecked(addr(slot) + 16), 8); slot[0] = addr(t); }
+    addr(t)
+}
+
+fn main() {
+    let pts: List<Point> = [];
+    let pairs: List<Pair> = [];
+    let rs: List<Res> = [];
+    let anys: List<any> = [];
+    for i in 0..3 {
+        pts.push(Point { x: i as f64 + 1.5, y: i as f64 + 2.5 });
+        pairs.push(Pair { a: [i, i + 1, i + 2], b: [i as f64 * 2.0] });
+        rs.push(match i { 0 => Res::Ok(7), 1 => Res::Err(f"e{i}"), _ => Res::Pending });
+        anys.push(if i == 0 { 5 } else if i == 1 { f"s{i + 1}" } else { true });
+    }
+    anys.push(2.5);
+    churn();
+    println(f"points {pts[2].x} {pts[2].y}");
+    println(f"pairs {pairs[2].a.len()} {pairs[2].b[0]}");
+    let shown: List<str> = [];
+    for r in rs {
+        shown.push(match r {
+            Res::Ok(v) => f"ok {v}",
+            Res::Err(e) => f"err {e}",
+            Res::Pending => "pending",
+        });
+    }
+    println(f"results {shown.join(" | ")}");
+    let a0: i64 = match anys[0] { v: i64 => v, _ => 0 };
+    let a1: str = match anys[1] { s: str => s, _ => "?" };
+    let a2: bool = match anys[2] { b: bool => b, _ => false };
+    let a3: f64 = match anys[3] { f: f64 => f, _ => 0.0 };
+    println(f"anys {a0} {a1} {a2} {a3}");
+
+    unsafe {
+        // One payload word holding the target's address as a plain number.
+        let words = nabi_gc_alloc_slow(24, 8, 2u32);
+        let slot: GcBuf<usize> = transmute_unchecked(words);
+        let at = stash(slot);
+        churn();
+        let back: GcBuf<i64> = transmute_unchecked(slot[0]);
+        println(f"word-traced: unchanged {slot[0] == at}, moved {addr(back) != at}, {back[0]}");
+        let bytes: GcBuf<u8> = buf_new(8);
+        println(f"bytes id {id_of(bytes)}, words id {id_of(words)}");
+    }
+}

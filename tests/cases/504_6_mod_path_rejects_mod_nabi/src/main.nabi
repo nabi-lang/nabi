@@ -1,0 +1,10 @@
+// expect-error: has no `mod.nabi`
+
+// #[path] may not name a mod.nabi body; the file exists, so the error is
+// the ban itself, not a missing file.
+#[path("gen/mod.nabi")]
+mod geom;
+
+fn main() {
+    println(f"{geom::seven()}");
+}

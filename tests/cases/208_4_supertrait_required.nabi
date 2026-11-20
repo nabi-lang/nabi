@@ -1,0 +1,16 @@
+// Implementing a trait needs its supertraits implemented too.
+// expect-error: 11:1: `X` implements `Sub` but not its supertrait `Base`
+// forbid-warning: `Y` implements
+
+trait Base { fn b(self) -> i32; }
+trait Sub: Base { fn s(self) -> i32; }
+
+struct X {}
+struct Y {}
+
+impl Sub for X { fn s(self) -> i32 { 1 } }
+
+impl Base for Y { fn b(self) -> i32 { 1 } }
+impl Sub for Y { fn s(self) -> i32 { 2 } }
+
+fn main() {}

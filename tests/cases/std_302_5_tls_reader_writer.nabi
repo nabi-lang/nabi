@@ -1,0 +1,108 @@
+// needs: net
+// skip-wasm-runner: jco
+// (preview2-shim 0.31.1, the latest, files an accepted socket's
+// pollable under its input stream: closing the socket in wasi-libc's
+// order, the stream before the socket's pollable, traps; fixed by
+// targets/wasi/shim.patch)
+// expect-exit: 0
+// expect-stdout:
+// client got 4000000 bytes, intact true
+// client updates: ok
+// server: wrote ok, read 4000 bytes, intact true
+
+// One connection split into a reader and a writer on one worker: the
+// reader answers KeyUpdate requests while the writer's large write waits
+// on a full socket, and its records must not land inside the write's.
+use std::net::{TcpListener, SocketAddr};
+use std::net;
+use std::net::tls::{Client, Server, ClientConfig, ServerConfig, Certificate, PrivateKey};
+
+
+const CA: str = "-----BEGIN CERTIFICATE-----
+MIIBVTCCAQegAwIBAgIUHuDQmdyLUvVYGHs5rDw1vYU8bIIwBQYDK2VwMBcxFTAT
+BgNVBAMMDG5hYmkgdGVzdCBDQTAgFw0yNjEwMTUwNzM2MDdaGA8yMTI2MDkyMTA3
+MzYwN1owFzEVMBMGA1UEAwwMbmFiaSB0ZXN0IENBMCowBQYDK2VwAyEAB+sqwSMn
+18aRYXVx9C0isj2rte+3tqndY+2zzNZjGb6jYzBhMB0GA1UdDgQWBBRQnL+ov9Go
+zKIB+up0p4yTbN6CMzAfBgNVHSMEGDAWgBRQnL+ov9GozKIB+up0p4yTbN6CMzAP
+BgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwICBDAFBgMrZXADQQAaONBcyMPW
+W6oGu6jBgPPGBjoMbsyzkki6bAFDUd4b2pmFFAPtu6an8KCxK3SS0GcW5n9g3LUw
+nCHpi3ak0WUC
+-----END CERTIFICATE-----
+";
+
+const CERT: str = "-----BEGIN CERTIFICATE-----
+MIIBuzCCAW2gAwIBAgIUceOw315SUu5KnTBYX6EEY5MLRJUwBQYDK2VwMBcxFTAT
+BgNVBAMMDG5hYmkgdGVzdCBDQTAgFw0yNjEwMTUwNzM2MDdaGA8yMTI2MDkyMTA3
+MzYwN1owFDESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZIzj0CAQYIKoZIzj0D
+AQcDQgAEpUU2sRqQuX5dmljhOAPeCEGDpS2mRBWhKav+lCHRC98Dytzo97/vewlk
+X90rCHvF9P2aaFvqacjDDufEDkB8laOBnDCBmTAnBgNVHREEIDAegglsb2NhbGhv
+c3SCCyoubmFiaS50ZXN0hwR/AAABMBMGA1UdJQQMMAoGCCsGAQUFBwMBMA4GA1Ud
+DwEB/wQEAwIHgDAJBgNVHRMEAjAAMB0GA1UdDgQWBBT7b7pFb4lWIeDoqC8VrldS
+NJCsDzAfBgNVHSMEGDAWgBRQnL+ov9GozKIB+up0p4yTbN6CMzAFBgMrZXADQQAk
+YxqmrA4iRhI0c6e8zk2bV3j6lxnwYR8PX7cansnBmY0Tt7TRd2oG2/h6z9KQ0mX1
+7MohUgsXpILkYW2NEjQO
+-----END CERTIFICATE-----
+";
+
+const KEY: str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgcgH7+8UZOnSmYIn9
+1ftUi+QOk+yiBJQf//N6N0MgirqhRANCAASlRTaxGpC5fl2aWOE4A94IQYOlLaZE
+FaEpq/6UIdEL3wPK3Oj3v+97CWRf3SsIe8X0/ZpoW+ppyMMO58QOQHyV
+-----END PRIVATE KEY-----
+";
+
+fn data(n: usize) -> List<u8> {
+    let d: List<u8> = [];
+    for i in 0..n { d.push((i % 251) as u8); }
+    d
+}
+
+const BIG: usize = 4000000;
+const ROUNDS: usize = 40;
+
+let any: SocketAddr = try! "127.0.0.1:0".parse::<SocketAddr>();
+let l = try! TcpListener::bind(any);
+let addr = try! l.local_addr();
+let cfg = try! ServerConfig::new(try! Certificate::from_pem(CERT), try! PrivateKey::from_pem(KEY));
+let server = task::spawn_local(async {
+    let (s, _) = try! await l.accept_async();
+    try! l.close();
+    let (r, w) = (try! await Server::new_async(s, cfg)).split();
+    // A reader answering the client's KeyUpdate requests beside a writer
+    // whose large write waits on a full socket.
+    let reader = task::spawn_local(async {
+        let err = "";
+        let got = try await r.read_to_end_async() catch e {
+            err = f"read: {e.message()}";
+            List::<u8>::new()
+        };
+        try! r.close();
+        if err.len() > 0 { err } else { f"{got.len()} bytes, intact {got == data(ROUNDS * 100)}" }
+    });
+    let wrote = "ok";
+    try await w.write_all_async(data(BIG)) catch e { wrote = f"write: {e.message()}"; };
+    let _ = try? await w.close_async();
+    f"wrote {wrote}, read {await reader}"
+});
+// Only the test CA: the host's trust store (`SSL_CERT_FILE` from cargo)
+// may be out of a wasm sandbox's reach.
+let ccfg = ClientConfig { root_certs: try! Certificate::from_pem(CA) };
+let s = try! await net::tcp_connect_async(f"{addr}");
+let (r, w) = (try! await Client::with_config_async(s, "localhost", ccfg)).split();
+let updates = task::spawn_local(async {
+    let chunk = data(ROUNDS * 100);
+    let res = "ok";
+    for i in 0..ROUNDS {
+        try await w.write_all_async(chunk[i * 100:(i + 1) * 100]) catch e { res = f"write: {e.message()}"; };
+        try await w.key_update_async() catch e { res = f"key update: {e.message()}"; };
+        if res != "ok" { break; }
+        await task::yield_now();
+    }
+    let _ = try? await w.close_async();
+    res
+});
+let back = try await r.read_to_end_async() catch e { println(f"client read: {e.message()}"); [] };
+println(f"client got {back.len()} bytes, intact {back == data(BIG)}");
+println(f"client updates: {await updates}");
+println(f"server: {await server}");
+try! r.close();

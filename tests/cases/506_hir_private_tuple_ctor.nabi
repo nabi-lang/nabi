@@ -1,0 +1,8 @@
+// Constructing a tuple struct needs every field visible.
+// expect-error: field `0` of `a::S` is private to module `a`
+
+mod a {
+    pub struct S(i32, pub i32);
+}
+
+fn main() -> i32 { let s = a::S(1, 2); return s.1; }

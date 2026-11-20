@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout: 1 1 2 3
+
+// Bare variant names in an or-pattern are the variants, as alone.
+enum U { A, B, C }
+
+fn f(u: U, big: bool) -> i64 {
+    match u {
+        A | B if !big => 1,
+        A | B => 3,
+        C => 2,
+    }
+}
+
+fn main() { println(f"{f(U::A, false)} {f(U::B, false)} {f(U::C, false)} {f(U::B, true)}"); }

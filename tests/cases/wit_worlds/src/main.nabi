@@ -1,0 +1,18 @@
+// only-target: wasm32-wasip2
+// wasm-plug: plug/main.nabi
+// expect-exit: 0
+// expect-stdout:
+// Pair { a: 42, b: "twice" }
+// twice=42
+
+// Worlds across files: `$root` functions, inline interfaces, world `use`.
+ffi::wit::import { "wit/consumer.wit" }
+
+use test::w::consumer;
+use test::w::consumer::tools;
+
+fn main() {
+    let p = tools::double(21);
+    println(f"{p:?}");
+    println(consumer::answer(p));
+}

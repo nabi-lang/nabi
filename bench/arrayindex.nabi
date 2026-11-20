@@ -1,0 +1,49 @@
+// `Array` element access by index: `a[i]` reads and writes of a rank-1
+// array, `a[i, j]` of a rank-2 one, a `usize` loop counter indexing
+// directly. Compare vecsaxpy / vecsum over `List`.
+use core::array::Array;
+
+fn scale(x: Array<f64, 1>, y: Array<f64, 1>, k: f64) {
+    for i in 0..x.len() {
+        y[i] = x[i] * k + y[i];
+    }
+}
+
+fn wsum(a: Array<u64, 1>) -> u64 {
+    let s: u64 = 0;
+    for i in 0..a.len() {
+        s = s.wrapping_add(a[i]);
+    }
+    s
+}
+
+fn trace(m: Array<f64, 2>) -> f64 {
+    let s = 0.0;
+    let sh = m.shape();
+    for i in 0..sh[0] {
+        for j in 0..sh[1] {
+            s += m[i, j] * (if i == j { 1.0 } else { 0.001 });
+        }
+    }
+    s
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 18;
+    let x: Array<f64, 1> = Array::from_fn([n], |i: [usize; 1]| -> f64 { (i[0] % 17) as f64 * 0.25 });
+    let y: Array<f64, 1> = Array::zeros([n]);
+    let u: Array<u64, 1> = Array::from_fn([n], |i: [usize; 1]| -> u64 { i[0] as u64 * 2654435761u64 });
+    let m: Array<f64, 2> = Array::from_fn([512, 512], |i: [usize; 2]| -> f64 { (i[0] + i[1]) as f64 });
+    let w: u64 = 0;
+    let t = 0.0;
+    for r in 0..200usize {
+        scale(x, y, 0.5);
+        u[r] = u[r] + 1;
+        w = w.wrapping_add(wsum(u));
+    }
+    for _ in 0..20 {
+        t += trace(m);
+    }
+    println(f"{y[7]} {w} {t}");
+    return 0;
+}

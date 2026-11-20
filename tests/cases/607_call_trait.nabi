@@ -1,0 +1,39 @@
+// expect-exit: 0
+// expect-stdout:
+// 3 [2.0, 4.0] 21 7 12 3 [2.0, 4.0]
+
+// `v(a)` on a value whose type implements `ops::Call`: one argument as
+// itself, several as a tuple, none as `()`; overloads pick by the
+// argument, a bound `F: Call<..>` calls through it, and pipes and
+// `f.(xs)` work as for a `fn`.
+use core::array::Vector;
+
+struct Spline { a: f64; }
+impl ops::Call<f64> for Spline {
+    type Output = f64;
+    fn call(self, x: f64) -> f64 { self.a * x }
+}
+impl ops::Call<Vector<f64>> for Spline {
+    type Output = Vector<f64>;
+    fn call(self, xs: Vector<f64>) -> Vector<f64> { xs .* self.a }
+}
+struct Poly { c: List<f64>; }
+impl ops::Call<(f64, f64)> for Poly {
+    type Output = f64;
+    fn call(self, args: (f64, f64)) -> f64 { self.c[0] * args.0 + self.c[1] * args.1 }
+}
+struct Clock {}
+impl ops::Call<()> for Clock {
+    type Output = i64;
+    fn call(self, args: ()) -> i64 { 7 }
+}
+fn twice<F: ops::Call<f64, Output = f64>>(f: F, x: f64) -> f64 { f(f(x)) }
+
+fn main() {
+    let s = Spline { a: 2.0 };
+    let xs: Vector<f64> = [1.0, 2.0];
+    let p = Poly { c: [1.0, 10.0] };
+    let k = Clock {};
+    let ys = s.([1.0, 2.0]);
+    println(f"{s(1.5)} {s(xs):?} {p(1.0, 2.0)} {k()} {twice(s, 3.0)} {1.5 |> s} {ys:?}");
+}

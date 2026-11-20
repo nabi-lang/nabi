@@ -1,0 +1,13 @@
+// No bound is synthesized: an instance whose type lacks the body's
+// operator is an error in the body, labelled at the call.
+// expect-error: 8:20: operator `+` cannot be applied to `MyType`
+// expect-error: ------- in this call of `compute`
+
+struct MyType {}
+
+fn compute(x, y) { x + y }
+
+fn main() {
+    let a = compute(1i32, 2i32);
+    let b = compute(MyType {}, 1i32);
+}

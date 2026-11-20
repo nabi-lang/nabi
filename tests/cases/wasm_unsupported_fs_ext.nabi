@@ -1,0 +1,30 @@
+// only-target: wasm32-wasip2 wasm32-wasip1-threads
+// expect-exit: 0
+// expect-stdout:
+// wrote: abc
+// try_clone: Unsupported
+// lock_exclusive: Unsupported
+// lock_shared: Unsupported
+// mmap: Unsupported
+
+// WASI files work, but preview 1 / 2 have no `dup`, `flock` or `mmap`
+// (mmap missing, locks partial on wasi): those report
+// `IoErrorKind::Unsupported` at run time.
+use std::fs;
+use std::fs::File;
+use core::io::{IoError, IoErrorKind};
+use std::env;
+
+let p = env::temp_dir() / "nabi_wasm_unsupported_fs_ext.txt";
+try! fs::write(p, "abc");
+println(f"wrote: {try! fs::read_to_str(p)}");
+let f = try! File::open(p);
+try {
+    let g = try f.try_clone();
+    try g.close();
+} catch e: IoError { println(f"try_clone: {e.kind():?}"); };
+try f.lock_exclusive() catch e: IoError { println(f"lock_exclusive: {e.kind():?}"); };
+try f.lock_shared() catch e: IoError { println(f"lock_shared: {e.kind():?}"); };
+try unsafe { f.mmap(0u64, 3usize) } catch e: IoError { println(f"mmap: {e.kind():?}"); };
+try! f.close();
+try! fs::remove_file(p);

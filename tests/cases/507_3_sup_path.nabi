@@ -1,0 +1,18 @@
+// expect-exit: 11
+// expect-stdout:
+// 11
+
+// A `sup::` path starts at the parent module, reaching sibling
+// and ancestor modules' items.
+pub fn helper() -> i32 { return 11; }
+
+mod inner {
+    pub fn use_helper() -> i32 {
+        return sup::helper();
+    }
+}
+
+fn main() -> i32 {
+    println(f"{inner::use_helper()}");
+    return inner::use_helper();
+}

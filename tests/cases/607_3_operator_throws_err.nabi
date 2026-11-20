@@ -1,0 +1,29 @@
+// expect-error: operator `⧵` is bound to `solve`, which throws: operators do not throw
+// expect-error: help: drop `throws` and return the error as a value (`-> Result<T, E>` or `-> T | E`), so `try (a ⧵ b).get()` or a `match` handles it; or keep `throws` on a named method without the attribute and write `try a.solve(b)`
+// expect-error: operator `▷` is bound to `anti`, which throws: operators do not throw
+
+// An operator method never throws; the uses below get no other error.
+trait Solve<Rhs = Self> {
+    type Output;
+    #[infix("⧵", like = "/")]
+    fn solve(self, rhs: Rhs) throws (str) -> Output;
+}
+
+trait Anti {
+    #[postfix("▷", like = "?")]
+    fn anti(self) throws -> i64;
+}
+
+impl Solve<f64> for f64 {
+    type Output = f64;
+    fn solve(self, b: f64) throws (str) -> f64 {
+        if self == 0.0 { throw "singular"; }
+        b / self
+    }
+}
+
+fn main() {
+    let q = 2.0 ⧵ 4.0;
+    println(f"{q}");
+    let r = try 0.0 ⧵ 4.0 catch e { -1.0 };
+}

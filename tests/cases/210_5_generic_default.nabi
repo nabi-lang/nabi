@@ -1,0 +1,14 @@
+// expect-exit: 0
+// expect-stdout:
+// 5
+
+// Generic parameter default `<T = i32>`, used when T is not given.
+fn id<T = i32>(x: T) -> T {
+    return x;
+}
+
+fn main() -> i32 {
+    let n = id(5);
+    println(f"{n}");
+    return 0;
+}

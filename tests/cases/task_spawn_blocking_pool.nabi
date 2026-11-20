@@ -1,0 +1,82 @@
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// sequential 200 sum 19900 reused true
+// 16 tasks 3200 calls within 16 threads true
+// concurrent 1000 sum 499500 bounded true
+// cancelled job finished true
+
+// `spawn_blocking` reuses idle pool threads and stays within the cap.
+use std::thread;
+use core::time::Duration;
+
+fn tid() -> u64 {
+    thread::current().id().as_u64()
+}
+
+let ids: Set<u64> = Set::new();
+let sum = 0;
+for i in 0..200 {
+    let r = await task::spawn_blocking(|| (i, tid()));
+    sum += r.0;
+    ids.insert(r.1);
+}
+println(f"sequential 200 sum {sum} reused {ids.len() == 1}");
+
+let pool_ids: Mutex<Set<u64>> = Mutex::new(Set::new());
+let ws: List<Task<i32>> = [];
+for _ in 0..16 {
+    ws.push(task::spawn(async {
+        let n = 0;
+        for _ in 0..200 {
+            let id = await task::spawn_blocking(|| tid());
+            using g = pool_ids.lock() { g.get().insert(id); }
+            n += 1;
+        }
+        n
+    }));
+}
+let calls = 0;
+for w in ws { calls += await w; }
+let used = 0usize;
+using g = pool_ids.lock() { used = g.get().len(); }
+println(f"16 tasks {calls} calls within 16 threads {used <= 16}");
+
+let jobs: List<Task<(i32, u64)>> = List::new();
+for i in 0..1000 {
+    jobs.push(task::spawn_blocking(|| {
+        thread::sleep(Duration::ms(1));
+        (i, tid())
+    }));
+}
+let all: Set<u64> = Set::new();
+let total = 0;
+for j in jobs {
+    let r = await j;
+    total += r.0;
+    all.insert(r.1);
+}
+println(f"concurrent 1000 sum {total} bounded {all.len() <= 512}");
+
+// Cancelled once the job runs (a loaded machine may take long to start
+// it); then the job finishes all the same.
+let started = Atomic::new(0);
+let flag: Mutex<bool> = Mutex::new(false);
+let t = task::spawn(async {
+    await task::spawn_blocking(|| {
+        started.store(1);
+        thread::sleep(Duration::ms(20));
+        using g = flag.lock() { g.set(true); }
+        0
+    });
+});
+let deadline = Instant::now() + Duration::secs(60);
+while started.load() == 0 && Instant::now() < deadline { await task::yield_now(); }
+t.cancel();
+let seen = false;
+while !seen && Instant::now() < deadline {
+    using g = flag.lock() { seen = g.get(); }
+    if !seen { thread::sleep(Duration::ms(2)); }
+}
+println(f"cancelled job finished {seen}");
+

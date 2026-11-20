@@ -1,0 +1,12 @@
+// expect-error: 5:13: circular re-export: `a::Item` -> `b::Item` -> `a::Item`
+
+// Re-exports that point at each other are an error.
+mod a {
+    pub use pkg::b::Item;
+}
+mod b {
+    pub use pkg::a::Item;
+}
+
+println("unreached");
+// expect-error: 8:13: circular re-export: `b::Item` -> `a::Item` -> `b::Item`

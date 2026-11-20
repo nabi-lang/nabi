@@ -1,0 +1,7 @@
+// expect-error: module `foo` body not found at
+
+// A folder `foo/` without its body file `foo.nabi` is an
+// error; the body file is mandatory.
+mod foo;
+
+println("unreached");

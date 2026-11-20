@@ -1,0 +1,15 @@
+// expect-error: `@for` belongs to `@macro` templates only
+
+// `@for` is macro-only: a derive repeats with `@for_fields`.
+trait Named { fn name_of() -> str; }
+
+#[impl_derive(Named)] @derive {
+    impl Named for @Self {
+        fn name_of() -> str { @for x in y { }; "" }
+    }
+}
+
+#[derive(Named)]
+struct S {}
+
+fn main() {}

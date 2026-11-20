@@ -1,0 +1,16 @@
+// expect-exit: 0
+// expect-stdout:
+// fallback -1
+
+// Writes `try await t.join() catch _: CancellationError { .. }`:
+// a type-check pattern whose binding is the wildcard (like
+// `_: i32` as a pattern).
+async fn main() {
+    let t = task::spawn(async {
+        while true { await task::sleep(Duration::ms(1)); }
+        0
+    });
+    t.cancel();
+    let r = try await t.join() catch _: task::CancellationError { -1 };
+    println(f"fallback {r}");
+}

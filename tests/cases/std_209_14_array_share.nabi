@@ -1,0 +1,35 @@
+// `Array::view_list` and `as_list` share one buffer with no copy; a
+// strided or offset view has no list over it (`none`), and the list's
+// first push moves it to a buffer of its own. `pin` keeps an array in
+// place for a raw pointer.
+// expect-exit: 0
+// expect-stdout:
+// [1.0, 30.0, 3.0, 4.0] [[1.0, 30.0], [3.0, 4.0]]
+// [0.5, 7.0, 0.5] [0.5, 7.0, 0.5]
+// [0.5, 7.0, 0.5] [3.0, 7.0, 0.5, 1.0]
+// true true
+// [4.0, 7.0, 0.5] 3
+
+use bare::gc::pin;
+use core::array::Array;
+
+fn main() {
+    let xs = [1.0, 2.0, 3.0, 4.0];
+    let m: Array<f64, 2> = Array::view_list(xs, [2, 2]);
+    m[0, 1] = 30.0;
+    println(f"{xs:?} {m:?}");
+    let b: Array<f64, 1> = Array::full([3], 0.5);
+    let l = b.as_list();
+    if l is List<f64> {
+        l[1] = 7.0;
+        println(f"{b:?} {l:?}");
+        l.push(1.0);
+        l[0] = 3.0;
+        println(f"{b:?} {l:?}");
+    }
+    println(f"{b[1:].as_list() is none} {m.t().as_list() is none}");
+    using p = pin(b) {
+        unsafe { p.as_data_ptr().write(4.0); }
+    }
+    println(f"{b:?} {b.to_list().len()}");
+}

@@ -1,0 +1,26 @@
+// needs: threads
+// gc-stress: 5
+// Copies of one `Task` may each await it: every joiner gets its own copy
+// of the result, so their writes never meet.
+// expect-exit: 0
+// expect-stdout:
+// 20003 20003 3
+
+use std::thread;
+
+async fn three() -> List<i32> { [1, 2, 3] }
+
+struct Held { t: Task<List<i32>>; }
+
+async fn main() {
+    let fz = sync::Frozen::new(Held { t: task::spawn(three()) });
+    let a = thread::spawn(|| {
+        let l = task::block_on(fz.get().t);
+        for i in 0..20000 { l.push(i); }
+        l.len()
+    });
+    let l = await fz.get().t;
+    for i in 0..20000 { l.push(i); }
+    let r = await fz.get().t;
+    println(f"{try! a.join()} {l.len()} {r.len()}");
+}

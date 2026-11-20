@@ -1,0 +1,18 @@
+// expect-error: 11:16: unresolved import: `std::time::Instant` does not exist
+// expect-error: help: `std::time::Instant` is not in `std`: write `use core::time::Instant;`
+// expect-error: 13:9: cannot find type `std::time::Instant` in this scope
+// expect-error: help: `std::time::Instant` is not in `std`: write `core::time::Instant`
+// expect-error: 16:13: cannot find function `std::time::Instant::now` in this scope
+// expect-error: help: `std::time::Instant::now` is not in `std`: write `core::time::Instant::now`
+// expect-error: 17:13: cannot find function `core::path::Path::empty` in this scope
+// expect-error: help: `core::path::Path::empty` is not in `core`: write `std::path::Path::empty`
+
+// An item another toolchain root has: the help names it there.
+use std::time::Instant;
+
+fn f(x: std::time::Instant) {}
+
+fn main() {
+    let t = std::time::Instant::now();
+    let p = core::path::Path::empty();
+}

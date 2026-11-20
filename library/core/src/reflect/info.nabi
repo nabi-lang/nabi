@@ -1,0 +1,473 @@
+//! core::reflect::info - `TypeInfo`, a type's description.
+//!
+//! The compiler emits a descriptor in read-only data for every type a
+//! program asks about (`info::<T>()`, `T::type_info()`) and for the
+//! types it is made of. A `TypeInfo` is the descriptor's address; its
+//! accessors read it in place and allocate nothing, except those that
+//! return a `List`.
+
+use bare::ptr::ConstPtr;
+use core::reflect::attr::Attr;
+use core::reflect::field::Field;
+
+extern "C" {
+    fn nabi_types_by_tag(tag: u32) -> usize;
+    fn nabi_types_by_path(p: usize, len: usize) -> usize;
+}
+
+// Descriptor layout (8.13): offsets in bytes at pointer width `w()`.
+pub(pkg) fn w() -> usize { usize::size() }
+pub(pkg) fn read<T>(at: usize) -> T { unsafe { ConstPtr::<T>::dangling().with_addr(at).read() } }
+
+const KIND: usize = 6;
+const FLAGS: usize = 8;
+const TAG_INDEX: usize = 12;
+const KEY_HASH: usize = 16;
+const LAYOUT_HASH: usize = 24;
+const SIZE: usize = 32;
+const ALIGN: usize = 40;
+const STRS: usize = 48;
+pub(pkg) fn key_at(d: usize) -> usize { d + STRS }
+pub(pkg) fn name_at(d: usize) -> usize { d + STRS + 2 * w() }
+pub(pkg) fn path_at(d: usize) -> usize { d + STRS + 4 * w() }
+pub(pkg) fn fields_at(d: usize) -> usize { d + STRS + 6 * w() }
+pub(pkg) fn variants_at(d: usize) -> usize { d + STRS + 8 * w() }
+pub(pkg) fn generics_at(d: usize) -> usize { d + STRS + 10 * w() }
+pub(pkg) fn attrs_at(d: usize) -> usize { d + STRS + 12 * w() }
+pub(pkg) fn ops_at(d: usize) -> usize { d + STRS + 14 * w() }
+
+// `FieldDesc`, `VariantDesc`, `TypeRef` and `AttrDesc` sizes.
+pub(pkg) fn field_size() -> usize { 12 * w() + 24 }
+pub(pkg) fn variant_size() -> usize { 6 * w() + 8 }
+pub(pkg) fn type_ref_size() -> usize { 4 * w() + 8 }
+pub(pkg) fn attr_size() -> usize { 6 * w() + 8 }
+
+// The `n`-th item of the slice `{ptr, len}` at `at`, `size` bytes each.
+pub(pkg) fn slice_len(at: usize) -> usize { read::<usize>(at + w()) }
+pub(pkg) fn slice_at(at: usize, i: usize, size: usize) -> usize { read::<usize>(at) + i * size }
+
+// `TypeOps` entries (Nabi function values), 0 when absent.
+pub(pkg) fn op(d: usize, slot: usize) -> usize {
+    let ops = read::<usize>(ops_at(d));
+    if ops == 0 { 0 } else { ops + slot * 2 * w() }
+}
+
+// `TypeOps::list` / `TypeOps::dict`: the container's entries.
+fn container(d: usize, slot: usize) -> usize {
+    let ops = read::<usize>(ops_at(d));
+    if ops == 0 { 0 } else { read::<usize>(ops + (8 + slot) * w()) }
+}
+
+fn has_fn(at: usize) -> bool { at != 0 && read::<usize>(at) != 0 }
+
+/// What kind of type a `TypeInfo` describes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum TypeKind { Struct, Enum, Union, Sum, Prim, Str, List, Dict, Array, Tuple, Fn, Any, Opaque }
+
+/// An error of `TypeInfo::build` and the container conversions: what is
+/// wrong, in words.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ReflectError {
+    pub message: str;
+}
+
+impl Display for ReflectError {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message) }
+}
+
+impl Error for ReflectError {}
+
+/// A type's description. Two are equal when they describe the same type,
+/// even from different modules.
+pub struct TypeInfo {
+    at: usize;
+}
+
+impl Clone for TypeInfo {
+    fn clone(self) -> TypeInfo { self }
+}
+
+impl PartialEq for TypeInfo {
+    fn eq(self, rhs: TypeInfo) -> bool {
+        self.at == rhs.at || read::<u64>(self.at + KEY_HASH) == read::<u64>(rhs.at + KEY_HASH) && self.type_key() == rhs.type_key()
+    }
+}
+
+impl Debug for TypeInfo {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"TypeInfo({self.name()})") }
+}
+
+impl TypeInfo {
+    pub(pkg) fn at(d: usize) -> TypeInfo { TypeInfo { at: d } }
+
+    /// The description at `at`, the address of a type descriptor that
+    /// stays mapped while it is used (`std::plugin::Plugin::types`).
+    pub unsafe fn from_desc(at: usize) -> TypeInfo { TypeInfo { at: at } }
+    pub(pkg) fn addr(self) -> usize { self.at }
+
+    /// The name `Reflect::type_name` gives: `Player`, `List<f64>`.
+    pub fn name(self) -> str { read::<str>(name_at(self.at)) }
+    /// The full path: `game::Player`; empty for a type without one.
+    pub fn path(self) -> str { read::<str>(path_at(self.at)) }
+    /// The package the type is defined in: the path's first part.
+    pub fn package(self) -> str {
+        let p = self.path();
+        match p.find("::") {
+            i: usize => p.get(0..i) ?? p,
+            none => p,
+        }
+    }
+    /// The key that names the type across modules:
+    /// `Y3f8a1c2b:game::Player`.
+    pub fn type_key(self) -> str { read::<str>(key_at(self.at)) }
+    /// A hash of the type's layout: equal for equal layouts.
+    pub fn layout_hash(self) -> u64 { read::<u64>(self.at + LAYOUT_HASH) }
+    pub(pkg) fn key_hash(self) -> u64 { read::<u64>(self.at + KEY_HASH) }
+    /// What kind of type it is.
+    pub fn kind(self) -> TypeKind {
+        return match read::<u16>(self.at + KIND) {
+            4u16 => TypeKind::Enum,
+            5u16 => TypeKind::Union,
+            6u16 => TypeKind::Sum,
+            7u16 => TypeKind::Prim,
+            8u16 => TypeKind::Str,
+            9u16 => TypeKind::List,
+            10u16 => TypeKind::Dict,
+            11u16 => TypeKind::Array,
+            12u16 => TypeKind::Tuple,
+            13u16 => TypeKind::Fn,
+            14u16 => TypeKind::Any,
+            15u16 => TypeKind::Opaque,
+            _ => TypeKind::Struct,
+        };
+    }
+    /// Size in bytes, as `T::size()`.
+    pub fn size(self) -> usize { read::<u64>(self.at + SIZE) as usize }
+    /// Alignment in bytes, as `T::align()`.
+    pub fn align(self) -> usize { read::<u32>(self.at + ALIGN) as usize }
+    /// Whether `#[derive(Inspect)]` describes its fields and gives access
+    /// to them.
+    pub fn is_inspect(self) -> bool { read::<u32>(self.at + FLAGS) & 1u32 != 0u32 }
+
+    /// The fields, in declaration order (`#[inspect(skip)]` ones left
+    /// out). Empty for an enum: its fields are its variants'.
+    pub fn fields(self) -> List<Field> {
+        let out: List<Field> = List::new();
+        let i: usize = 0;
+        while i < self.field_count() {
+            out.push(self.field_at(i));
+            i += 1;
+        }
+        return out;
+    }
+    /// How many fields `fields()` lists.
+    pub fn field_count(self) -> usize { slice_len(fields_at(self.at)) }
+    /// Field `i` (`i < field_count()`).
+    pub fn field_at(self, i: usize) -> Field {
+        Field::at(self.at, slice_at(fields_at(self.at), i, field_size()), 0)
+    }
+    /// The field named `name`.
+    pub fn field(self, name: str) -> Field | none {
+        let i: usize = 0;
+        while i < self.field_count() {
+            let f = self.field_at(i);
+            if f.name() == name {
+                return f;
+            }
+            i += 1;
+        }
+        return none;
+    }
+    /// The field named `name` of `value`: of the variant it holds for an
+    /// enum.
+    pub fn field_of_val(self, value: any, name: str) -> Field | none {
+        return match self.variant_of(value) {
+            v: Variant => v.field(name),
+            none => self.field(name),
+        };
+    }
+
+    /// An enum's variants, in declaration order.
+    pub fn variants(self) -> List<Variant> {
+        let out: List<Variant> = List::new();
+        let i: usize = 0;
+        while i < self.variant_count() {
+            out.push(self.variant_at(i));
+            i += 1;
+        }
+        return out;
+    }
+    /// How many variants an enum has.
+    pub fn variant_count(self) -> usize { slice_len(variants_at(self.at)) }
+    /// Variant `i` (`i < variant_count()`).
+    pub fn variant_at(self, i: usize) -> Variant {
+        Variant { owner: self.at, at: slice_at(variants_at(self.at), i, variant_size()) }
+    }
+    /// The variant named `name`.
+    pub fn variant(self, name: str) -> Variant | none {
+        let i: usize = 0;
+        while i < self.variant_count() {
+            let v = self.variant_at(i);
+            if v.name() == name {
+                return v;
+            }
+            i += 1;
+        }
+        return none;
+    }
+    /// The variant an enum `value` holds; `none` for another type.
+    pub fn variant_of(self, value: any) -> Variant | none {
+        if self.variant_count() == 0 {
+            return none;
+        }
+        let get = op(self.at, 0);
+        if !has_fn(get) {
+            return none;
+        }
+        let f = read::<fn(any, usize) -> (any | none)>(get);
+        return match f(value, usize::MAX) {
+            k: any => match core::reflect::cast::<usize>(k) {
+                i: usize => self.variant_at(i),
+                none => none,
+            },
+            none => none,
+        };
+    }
+
+    /// The types it is made of: an instance's type arguments, a sum's
+    /// members, a tuple's parts, a list's element, a dict's key and value.
+    pub fn generics(self) -> List<TypeRef> {
+        let out: List<TypeRef> = List::new();
+        let i: usize = 0;
+        while i < slice_len(generics_at(self.at)) {
+            out.push(self.generic_at(i));
+            i += 1;
+        }
+        return out;
+    }
+    /// How many types `generics()` lists.
+    pub fn generic_count(self) -> usize { slice_len(generics_at(self.at)) }
+    /// Type `i` of `generics()`.
+    pub fn generic_at(self, i: usize) -> TypeRef {
+        TypeRef { at: slice_at(generics_at(self.at), i, type_ref_size()) }
+    }
+    /// The element of a list or array, the value of a dict.
+    pub fn element(self) -> TypeRef | none {
+        return match self.kind() {
+            TypeKind::List | TypeKind::Array if self.generic_count() == 1 => self.generic_at(0),
+            TypeKind::Dict if self.generic_count() == 2 => self.generic_at(1),
+            _ => none,
+        };
+    }
+    /// The key of a dict.
+    pub fn key(self) -> TypeRef | none {
+        return match self.kind() {
+            TypeKind::Dict if self.generic_count() == 2 => self.generic_at(0),
+            _ => none,
+        };
+    }
+
+    /// The runtime attribute `A` on the type, if it has one.
+    pub fn attr<A>(self) -> A | none { core::reflect::attr::find::<A>(attrs_at(self.at)) }
+    /// The runtime attributes on the type.
+    pub fn attrs(self) -> List<Attr> { core::reflect::attr::all(attrs_at(self.at)) }
+
+    /// Whether `value` holds this type.
+    pub fn holds(self, value: any) -> bool {
+        return match info_of(value) {
+            t: TypeInfo => t == self,
+            none => false,
+        };
+    }
+
+    /// A value with every field at its default, or `none` when a field
+    /// has none.
+    pub fn new_default(self) -> any | none {
+        let (v, _) = self.build_parts(0, Dict::new());
+        return v;
+    }
+
+    /// A struct from named fields; a missing field takes its default.
+    pub fn build(self, fields: Dict<str, any>) throws (ReflectError) -> any {
+        if self.kind() == TypeKind::Enum {
+            throw ReflectError { message: f"`{self.name()}` is an enum; build one of its variants: `variant.build(fields)`" };
+        }
+        return try self.build_variant(0, fields);
+    }
+
+    pub(pkg) fn build_variant(self, variant: usize, fields: Dict<str, any>) throws (ReflectError) -> any {
+        let (v, why) = self.build_parts(variant, fields);
+        return match v {
+            x: any => x,
+            none => throw ReflectError { message: why },
+        };
+    }
+
+    fn build_parts(self, variant: usize, fields: Dict<str, any>) -> (any | none, str) {
+        let b = op(self.at, 2);
+        if !has_fn(b) {
+            return (none, f"`{self.name()}` cannot be built: add `#[derive(Inspect)]` to it");
+        }
+        let f = read::<fn(usize, Dict<str, any>) -> (any | none, str)>(b);
+        return f(variant, fields);
+    }
+
+    /// The length of a list `value`; 0 for another type.
+    pub fn list_len(self, value: any) -> usize {
+        let l = container(self.at, 0);
+        if !has_fn(l) { return 0; }
+        let f = read::<fn(any) -> usize>(l);
+        return f(value);
+    }
+    /// Item `i` of a list `value`.
+    pub fn list_get(self, value: any, i: usize) -> any | none {
+        let l = container(self.at, 0);
+        if !has_fn(l + 2 * w()) { return none; }
+        let f = read::<fn(any, usize) -> (any | none)>(l + 2 * w());
+        return f(value, i);
+    }
+    /// The items of a list `value`; `none` for another type.
+    pub fn list_items(self, value: any) -> List<any> | none {
+        let l = container(self.at, 0);
+        if !has_fn(l + 4 * w()) { return none; }
+        let f = read::<fn(any) -> (List<any> | none)>(l + 4 * w());
+        return f(value);
+    }
+    /// A list of this type from `items`.
+    pub fn list_from(self, items: List<any>) throws (ReflectError) -> any {
+        let l = container(self.at, 0);
+        if !has_fn(l + 6 * w()) {
+            throw ReflectError { message: f"`{self.name()}` is not a list" };
+        }
+        let f = read::<fn(List<any>) -> (any | none)>(l + 6 * w());
+        return match f(items) {
+            v: any => v,
+            none => throw ReflectError { message: f"an item does not fit `{self.name()}`" },
+        };
+    }
+    /// The entries of a dict `value`; `none` for another type.
+    pub fn dict_items(self, value: any) -> List<(any, any)> | none {
+        let d = container(self.at, 1);
+        if !has_fn(d + 2 * w()) { return none; }
+        let f = read::<fn(any) -> (List<(any, any)> | none)>(d + 2 * w());
+        return f(value);
+    }
+    /// A dict of this type from `items`.
+    pub fn dict_from(self, items: List<(any, any)>) throws (ReflectError) -> any {
+        let d = container(self.at, 1);
+        if !has_fn(d + 4 * w()) {
+            throw ReflectError { message: f"`{self.name()}` is not a dict" };
+        }
+        let f = read::<fn(List<(any, any)>) -> (any | none)>(d + 4 * w());
+        return match f(items) {
+            v: any => v,
+            none => throw ReflectError { message: f"an entry does not fit `{self.name()}`" },
+        };
+    }
+}
+
+/// A reference to a type by name, with its description when there is one.
+pub struct TypeRef {
+    at: usize;
+}
+
+impl Clone for TypeRef {
+    fn clone(self) -> TypeRef { self }
+}
+
+impl Debug for TypeRef {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.name()) }
+}
+
+impl TypeRef {
+    pub(pkg) fn at(at: usize) -> TypeRef { TypeRef { at: at } }
+    /// The type's name, as `TypeInfo::name`.
+    pub fn name(self) -> str { read::<str>(self.at) }
+    /// Its description.
+    pub fn info(self) -> TypeInfo | none {
+        let d = read::<usize>(self.at + 2 * w() + 8);
+        if d == 0 { none } else { TypeInfo::at(d) }
+    }
+}
+
+/// One variant of an enum.
+pub struct Variant {
+    owner: usize;
+    at: usize;
+}
+
+impl Clone for Variant {
+    fn clone(self) -> Variant { self }
+}
+
+impl Debug for Variant {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.name()) }
+}
+
+impl Variant {
+    /// The variant's name.
+    pub fn name(self) -> str { read::<str>(self.at) }
+    /// Its position in declaration order.
+    pub fn index(self) -> usize { read::<u32>(self.at + 4 * w() + 4) as usize }
+    /// The variant's fields, in declaration order.
+    pub fn fields(self) -> List<Field> {
+        let out: List<Field> = List::new();
+        let i: usize = 0;
+        while i < self.field_count() {
+            out.push(self.field_at(i));
+            i += 1;
+        }
+        return out;
+    }
+    /// How many fields the variant has.
+    pub fn field_count(self) -> usize { slice_len(self.at + 2 * w()) }
+    /// Field `i` (`i < field_count()`).
+    pub fn field_at(self, i: usize) -> Field {
+        Field::at(self.owner, slice_at(self.at + 2 * w(), i, field_size()), (self.index() << 16) + 0x10000)
+    }
+    /// The variant's field named `name`.
+    pub fn field(self, name: str) -> Field | none {
+        let i: usize = 0;
+        while i < self.field_count() {
+            let f = self.field_at(i);
+            if f.name() == name {
+                return f;
+            }
+            i += 1;
+        }
+        return none;
+    }
+    /// The runtime attribute `A` on the variant, if it has one.
+    pub fn attr<A>(self) -> A | none { core::reflect::attr::find::<A>(self.at + 4 * w() + 8) }
+    /// The runtime attributes on the variant.
+    pub fn attrs(self) -> List<Attr> { core::reflect::attr::all(self.at + 4 * w() + 8) }
+    /// A value of this variant from named fields.
+    pub fn build(self, fields: Dict<str, any>) throws (ReflectError) -> any {
+        return try TypeInfo::at(self.owner).build_variant(self.index(), fields);
+    }
+}
+
+/// `T`'s description.
+#[intrinsic("nabi.type_desc")]
+fn type_desc<T>() -> usize;
+
+/// `T`'s description; its fields and accessors when `T` is `Inspect`.
+pub fn info<T>() -> TypeInfo { TypeInfo { at: type_desc::<T>() } }
+
+/// The description of the type `value` holds, when the program has one
+/// (the type, or a type made of it, is asked about somewhere).
+pub fn info_of(value: any) -> TypeInfo | none {
+    let tag = read::<u32>(bare::ptr::addr_of(value).addr());
+    let d = unsafe { nabi_types_by_tag(tag) };
+    if d == 0 { none } else { TypeInfo { at: d } }
+}
+
+/// The description of the type at `path` (`"game::Player"`), when the
+/// program has one.
+pub fn find(path: str) -> TypeInfo | none {
+    if path.is_empty() {
+        return none;
+    }
+    let d = unsafe { nabi_types_by_path(path.as_ptr().addr(), path.len()) };
+    if d == 0 { none } else { TypeInfo { at: d } }
+}

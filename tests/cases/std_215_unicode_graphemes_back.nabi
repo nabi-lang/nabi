@@ -1,0 +1,35 @@
+// expect-exit: 0
+// expect-stdout:
+// ["b", "👋🏽‍♂️", "👨‍👩‍👧‍👦", "a"]
+// ["🇺", "🇯🇵", "🇰🇷", "x"]
+// ["가", "각", "한", "x"]
+// [5, 1]
+// x | 🇰🇷 🇯🇵 | none
+// 🇺 한
+// "🇰🇷x"
+
+// `graphemes` from the back cuts the same clusters as from the front:
+// emoji ZWJ sequences, regional indicators paired from the start of
+// their run, Hangul jamo and syllables, Indic conjuncts; both ends at
+// once meet on a boundary; `next_back` in a constant too.
+const LAST: str = "\u{1F1F0}\u{1F1F7}\u{1F1FA}".graphemes().next_back() ?? "";
+const REV: str = "x\u{1F1F0}\u{1F1F7}".graphemes().rev().collect();
+
+fn main() {
+    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+    let wave = "\u{1F44B}\u{1F3FD}\u{200D}\u{2642}\u{FE0F}";
+    let back = |s: str| -> List<str> { s.graphemes().rev().collect() };
+    println(f"{back(f"a{family}{wave}b"):?}");
+    println(f"{back("x\u{1F1F0}\u{1F1F7}\u{1F1EF}\u{1F1F5}\u{1F1FA}"):?}");
+    let hangul = back("x\u{1112}\u{1161}\u{11AB}\u{AC01}\u{1100}\u{1161}");
+    println(f"{hangul.iter().map(|g| g.normalize(Nfc)).to_list():?}");
+    let conjunct = back("a\u{915}\u{94D}\u{200D}\u{937}\u{93F}");
+    println(f"{conjunct.iter().map(|g| g.char_count()).to_list():?}");
+    let it = "x\u{1F1F0}\u{1F1F7}\u{1F1EF}\u{1F1F5}".graphemes();
+    let a = it.next() ?? "";
+    let z = it.next_back() ?? "";
+    let m = it.next() ?? "";
+    println(a, "|", m, z, "|", it.next_back());
+    println(LAST, "\u{1112}\u{1161}\u{11AB}".normalize(Nfc));
+    println(f"{REV:?}");
+}

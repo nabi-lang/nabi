@@ -1,0 +1,21 @@
+// nabic-arg: --extern alog=tests/cases/608_11_meta_qualified/alog
+// nabic-arg: --extern blog=tests/cases/608_11_meta_qualified/blog
+// expect-error: `log!` is a macro of another package, which a bare name does not reach
+// expect-error: help: write one of `alog::log!`, `blog::log!`
+// expect-error: package `alog` defines no macro `nope`, so `alog::nope!` names nothing
+// expect-error: `use log!;` does not name the package of `log!`
+// expect-error: package `blog` defines no derive `Named`, so `#[derive(blog::Named)]` names nothing
+// expect-error: help: write `#[derive(alog::Named)]`
+
+// A bare name reaches no other package's block; two
+// packages that define it each need their name.
+use log!;
+
+#[derive(blog::Named)]
+struct S {}
+
+fn main() {
+    log!(1);
+    alog::nope!(2);
+}
+

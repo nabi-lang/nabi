@@ -1,0 +1,89 @@
+//! std::os::windows::io: raw handles and sockets.
+//! `File`, the child pipes and the standard streams implement
+//! `AsRawHandle`; the TCP and UDP sockets `AsRawSocket`. `FromRaw*`
+//! takes ownership of a value and `IntoRaw*` gives it up. The values are
+//! the full pointer-sized HANDLE and the SOCKET as Win32 gives them.
+
+use core::io::{Stdin, Stdout, Stderr};
+
+/// A Win32 `HANDLE`.
+pub type RawHandle = isize;
+
+/// A Winsock `SOCKET`.
+pub type RawSocket = u64;
+
+/// The HANDLE behind a handle, still owned by it
+/// (`INVALID_HANDLE_VALUE`, -1, once the handle is closed).
+pub trait AsRawHandle {
+    /// The HANDLE, still owned by `self`.
+    fn as_raw_handle(self) -> RawHandle;
+}
+
+/// A handle that owns HANDLE `h` from now on: closing the handle closes
+/// `h`.
+pub trait FromRawHandle {
+    /// Safety: `h` must be an open kernel handle, and nothing else may
+    /// close it.
+    unsafe fn from_raw_handle(h: RawHandle) -> Self;
+}
+
+/// A handle that gives up its HANDLE: the handle is consumed and
+/// nothing closes the HANDLE; the caller owns it.
+pub trait IntoRawHandle {
+    /// The HANDLE, now the caller's to close (`INVALID_HANDLE_VALUE` if
+    /// `self` was closed).
+    fn into_raw_handle(self) -> RawHandle;
+}
+
+/// The SOCKET behind a socket, still owned by it (`INVALID_SOCKET`
+/// once it is closed).
+pub trait AsRawSocket {
+    /// The SOCKET, still owned by `self`.
+    fn as_raw_socket(self) -> RawSocket;
+}
+
+/// A socket that owns SOCKET `s` from now on: closing it closes `s`.
+pub trait FromRawSocket {
+    /// Safety: `s` must be an open socket of the right kind, and
+    /// nothing else may close it.
+    unsafe fn from_raw_socket(s: RawSocket) -> Self;
+}
+
+/// A socket that gives up its SOCKET: the socket is consumed and
+/// nothing closes the SOCKET; the caller owns it.
+pub trait IntoRawSocket {
+    /// The SOCKET, now the caller's to close (`INVALID_SOCKET` if
+    /// `self` was closed).
+    fn into_raw_socket(self) -> RawSocket;
+}
+
+impl AsRawHandle for Stdin {
+    fn as_raw_handle(self) -> RawHandle { unsafe { nabi_os_raw_handle(0) } }
+}
+
+impl AsRawHandle for Stdout {
+    fn as_raw_handle(self) -> RawHandle { unsafe { nabi_os_raw_handle(1) } }
+}
+
+impl AsRawHandle for Stderr {
+    fn as_raw_handle(self) -> RawHandle { unsafe { nabi_os_raw_handle(2) } }
+}
+
+/// The runtime fd behind HANDLE `h` (-1: a value it cannot hold).
+pub(pkg) unsafe fn handle_fd(h: RawHandle) -> i32 { nabi_os_handle_fd(h) }
+
+/// The runtime fd behind SOCKET `s` (-1: a value it cannot hold).
+pub(pkg) unsafe fn socket_fd(s: RawSocket) -> i32 { nabi_os_socket_fd(s) }
+
+/// The HANDLE behind runtime fd `fd`.
+pub(pkg) fn raw_handle(fd: i32) -> RawHandle { unsafe { nabi_os_raw_handle(fd) } }
+
+/// The SOCKET behind runtime fd `fd`.
+pub(pkg) fn raw_socket(fd: i32) -> RawSocket { unsafe { nabi_os_raw_socket(fd) } }
+
+extern "C" {
+    fn nabi_os_raw_handle(fd: i32) -> isize;
+    fn nabi_os_raw_socket(fd: i32) -> u64;
+    fn nabi_os_handle_fd(h: isize) -> i32;
+    fn nabi_os_socket_fd(s: u64) -> i32;
+}

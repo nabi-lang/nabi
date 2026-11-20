@@ -1,0 +1,126 @@
+// Loops over elements narrower than their values (`-O2`): loaded and
+// widened as the cast says (zero or sign), narrowed and stored; sums of
+// widened bytes and halves; every length from 0 to 33.
+// expect-exit: 0
+// expect-stdout:
+// 0:0 1:5697101661485385 2:525005533148319200 3:998755463945150588 4:4597783797539988896 5:-1462180907736463175 6:3507776716744236640 7:4669723607901502459 8:2529565571637148540 9:-1433433889128240806 10:-2086226132925955593 11:6489012430528624223 12:-5896610762927572336 13:5371988655350298577 14:-4987685096104669590 15:-1877400280420843202 16:5110738563949079139 17:-2075420352285237917 18:1507436223487814704 19:-6510825200565672422 20:-2439723669704470197 21:-738679419088774435 22:-378630196875091442 23:5134279386428656279 24:6599758395783528963 25:4486191748275724721 26:-3093469032749093956 27:3646887082107071433 28:7558388096888419858 29:-996030399353116337 30:-1074000817722489143 31:1570535863338422192 32:8891772336120353821 33:5613169136327399400 
+
+fn sum_u8(bs: List<u8>) -> u32 {
+    let s: u32 = 0;
+    for b in bs {
+        s += b as u32;
+    }
+    s
+}
+
+fn sum_i8(bs: List<i8>) -> i32 {
+    let s: i32 = 0;
+    for b in bs {
+        s = s.wrapping_add(b as i32);
+    }
+    s
+}
+
+fn sum_i16(xs: List<i16>) -> i64 {
+    let s: i64 = 0;
+    for x in xs {
+        s += x as i64;
+    }
+    s
+}
+
+fn scale(bs: List<u8>, ws: List<u16>) {
+    for i in 0..bs.len() {
+        ws[i] = bs[i] as u16 * 3;
+    }
+}
+
+fn widen_i32(xs: List<i16>, ys: List<i32>) {
+    for i in 0..xs.len() {
+        ys[i] = xs[i] as i32 - 7;
+    }
+}
+
+fn to_u64(xs: List<u32>, ys: List<u64>) {
+    for i in 0..xs.len() {
+        ys[i] = xs[i] as u64 + 1;
+    }
+}
+
+fn lo_bytes(ws: List<u16>, bs: List<u8>) {
+    for i in 0..ws.len() {
+        bs[i] = (ws[i] >> 3) as u8;
+    }
+}
+
+fn lo_halves(xs: List<i32>, ys: List<i16>) {
+    for i in 0..xs.len() {
+        ys[i] = (xs[i] + 1) as i16;
+    }
+}
+
+fn lo_words(xs: List<u64>, ys: List<u32>) {
+    for i in 0..xs.len() {
+        ys[i] = xs[i] as u32;
+    }
+}
+
+fn bytes_of(xs: List<i32>, bs: List<u8>) {
+    for i in 0..xs.len() {
+        bs[i] = xs[i] as u8;
+    }
+}
+
+fn main() -> i32 {
+    let seed: u64 = 99;
+    let line = "";
+    for n in 0..34 {
+        let u8s: List<u8> = List::filled(n, 0u8);
+        let i8s: List<i8> = List::filled(n, 0i8);
+        let i16s: List<i16> = List::filled(n, 0i16);
+        let u16s: List<u16> = List::filled(n, 0u16);
+        let i32s: List<i32> = List::filled(n, 0);
+        let u32s: List<u32> = List::filled(n, 0u32);
+        let u64s: List<u64> = List::filled(n, 0u64);
+        for i in 0..n {
+            seed = seed.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+            let r = seed >> 20;
+            u8s[i] = r as u8;
+            i8s[i] = (r >> 8) as i8;
+            i16s[i] = (r >> 3) as i16;
+            u16s[i] = (r >> 7) as u16;
+            i32s[i] = (r >> 1) as i32;
+            u32s[i] = (r >> 2) as u32;
+            u64s[i] = r * 977u64;
+        }
+        let acc: i64 = sum_u8(u8s) as i64;
+        acc = acc.wrapping_mul(31).wrapping_add(sum_i8(i8s) as i64);
+        acc = acc.wrapping_mul(31).wrapping_add(sum_i16(i16s));
+        let ws: List<u16> = List::filled(n, 0u16);
+        scale(u8s, ws);
+        let ys: List<i32> = List::filled(n, 0);
+        widen_i32(i16s, ys);
+        let zs: List<u64> = List::filled(n, 0u64);
+        to_u64(u32s, zs);
+        let bs: List<u8> = List::filled(n, 0u8);
+        lo_bytes(u16s, bs);
+        let hs: List<i16> = List::filled(n, 0i16);
+        lo_halves(i32s, hs);
+        let qs: List<u32> = List::filled(n, 0u32);
+        lo_words(u64s, qs);
+        let cs: List<u8> = List::filled(n, 0u8);
+        bytes_of(i32s, cs);
+        for i in 0..n {
+            acc = acc.wrapping_mul(31).wrapping_add(ws[i] as i64);
+            acc = acc.wrapping_mul(31).wrapping_add(ys[i] as i64);
+            acc = acc.wrapping_mul(31).wrapping_add(zs[i] as i64);
+            acc = acc.wrapping_mul(31).wrapping_add(bs[i] as i64);
+            acc = acc.wrapping_mul(31).wrapping_add(hs[i] as i64);
+            acc = acc.wrapping_mul(31).wrapping_add(qs[i] as i64);
+            acc = acc.wrapping_mul(31).wrapping_add(cs[i] as i64);
+        }
+        line = f"{line}{n}:{acc} ";
+    }
+    println(line);
+    return 0;
+}

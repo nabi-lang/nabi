@@ -1,0 +1,18 @@
+// needs: threads
+// expect-error: `a` shares `f`, which was sent through a channel
+// A future capturing a list, run on another thread.
+use std::thread;
+async fn grow(xs: List<i32>) -> usize {
+    for i in 0..200000 { xs.push(i); }
+    xs.len()
+}
+fn main() {
+    let a: List<i32> = [];
+    let f = grow(a);
+    let (tx, rx) = channel::<future::AsyncFuture<usize>>();
+    let t = thread::spawn(|| { if let g: future::AsyncFuture<usize> = rx.recv() { task::block_on(g) } else { 0 as usize } });
+    try! tx.send(f);
+    for i in 0..200000 { a.push(i); }
+    let _ = try! t.join();
+    println(f"len {a.len()}");
+}

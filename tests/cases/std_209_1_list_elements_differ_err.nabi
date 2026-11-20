@@ -1,0 +1,8 @@
+// expect-error: 7:15: mismatched types: list element expects `f64`, found `none`
+// expect-error: help: the elements are `f64` and `none`, and Nabi does not infer a sum type; give the list its type: `let xs: List<f64 | none> = [..];`
+// expect-error: 8:16: mismatched types: list element expects `none`, found `str`
+// expect-error: help: the elements are `none` and `str`, and Nabi does not infer a sum type; give the list its type: `let xs: List<str | none> = [..];`
+
+// List elements of different types get no invented sum, in either order.
+let a = [0.5, none];
+let b = [none, "a"];

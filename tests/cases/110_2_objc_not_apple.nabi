@@ -1,0 +1,13 @@
+// only-os: linux windows freebsd wasi none unknown
+// expect-error: `extern "objc"` declares Objective-C classes, which exist only on Apple targets
+
+// Off Apple targets an `extern "objc"` block is an error that says how to
+// keep it out.
+use bare::ffi::objc::Id;
+
+#[objc::class(NSArray)]
+extern "objc" {
+    fn count(self) -> usize;
+}
+
+fn main() {}

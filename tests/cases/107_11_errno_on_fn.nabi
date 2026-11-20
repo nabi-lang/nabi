@@ -1,0 +1,7 @@
+// expect-error: `#[errno]` cannot be attached to a function; it goes on an extern block or an extern function
+
+// errno belongs to a C call: the attribute marks the declaration.
+#[errno]
+fn plain() {}
+
+fn main() {}

@@ -1,0 +1,26 @@
+// needs: threads
+// expect-exit: 0
+// expect-stdout:
+// handle 7
+// thread 12
+// list 3
+// moved 2
+
+// `await` goes through `IntoFuture`: a `Future` (a `Task`) is
+// its own future, and a thread's `JoinHandle` is awaited in the blocking
+// pool, whatever `Send` result it has (a `List` is not `Sync`).
+use std::thread;
+
+async fn seven() -> i32 { 7 }
+
+async fn main() {
+    let t = task::spawn(seven());
+    println(f"handle {await t}");
+    let h = thread::spawn(|| 3 * 4);
+    println(f"thread {await h}");
+    let l = thread::spawn(|| [1, 2, 3]);
+    println(f"list {(await l).len()}");
+    let xs: List<i32> = [4, 5];
+    let m = thread::spawn([move xs] || xs.len());
+    println(f"moved {await m}");
+}

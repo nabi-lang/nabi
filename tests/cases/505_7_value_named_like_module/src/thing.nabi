@@ -1,0 +1,2 @@
+pub fn thing() -> i32 { 1 }
+pub fn other() -> i32 { 2 }

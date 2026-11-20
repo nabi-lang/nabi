@@ -1,0 +1,15 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked:
+// expect-stderr: this handle holds a closure, not `fn(i32) -> ()`: make it with `Handle::<fn(i32) -> ()>::new(..)` and read it with `Handle::<fn(i32) -> ()>::from_ptr(p)`
+// expect-stdout:
+
+// A closure's own type cannot be written: the handle says to store it as
+// a `fn`.
+use bare::ffi::Handle;
+
+fn main() {
+    let k = 2;
+    let h = Handle::new(|x: i32| { println(f"{x * k}"); });
+    let f = unsafe { Handle::<fn(i32)>::from_ptr(h.as_ptr()) }.get();
+    f(1);
+}

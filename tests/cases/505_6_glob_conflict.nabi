@@ -1,0 +1,10 @@
+// expect-error: 10:12: name `item` is ambiguous in module `<root>` - multiple glob imports resolve it: bar::item, foo::item
+
+// Two globs (shallow or deep) importing one name make that
+// name ambiguous; using it is an error.
+mod foo { pub fn item() -> i32 { 1 } }
+mod bar { pub mod deep { pub fn item() -> i32 { 2 } } pub fn item() -> i32 { 3 } }
+
+use foo::*;
+use bar::**;
+println(f"{item()}");

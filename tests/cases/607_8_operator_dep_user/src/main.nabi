@@ -1,0 +1,22 @@
+// nabic-arg: --extern opdep=tests/cases/607_8_operator_dep
+// expect-exit: 0
+// expect-stdout: 7 4 7 false 12
+
+// A dependency's `pub` operator traits bind their tokens here too, those
+// starting like a fixed token (`<~`, binary `@`) included; its private
+// `<-` does not, so `a<-1` is `a < -1`.
+use opdep::M;
+
+fn inc(x: i64) -> i64 { x + 1 }
+
+fn main() {
+    let a = M { v: 2 };
+    let b = M { v: 3 } @ a;
+    let c = 3 <~ inc;
+    let d = 3 ⊛ 2;
+    let e = 1;
+    let lt = e<-1;
+    // `@` stays meta syntax where no operand ends before it.
+    let whole @ (x, y) = (4, 8);
+    println(f"{b.v} {c} {d} {lt} {opdep::own() + 0 * whole.0 + x + y - 12}");
+}

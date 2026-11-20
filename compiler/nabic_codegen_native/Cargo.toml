@@ -1,0 +1,20 @@
+[package]
+name = "nabic_codegen_native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+nabic_codegen = { workspace = true }
+nabic_core = { workspace = true }
+nabic_diagnostic = { workspace = true }
+nabic_ir_common = { workspace = true }
+nabic_mir = { workspace = true }
+nabic_target = { workspace = true }
+nabild = { workspace = true }
+nabir_abi = { workspace = true }
+
+[lints]
+workspace = true

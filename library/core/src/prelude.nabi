@@ -1,0 +1,54 @@
+//! core::prelude - the names every file outside the library sees bare:
+//! user code gets an implicit `use core::prelude::*;`
+//! unless the file says `#![no_implicit_nabi]`. Each name appears once.
+//! Variants are not here: a bare variant resolves from the expected type.
+//! The OS Ext traits are here on their targets only: their methods need no
+//! `use` there, and elsewhere the call says where the method exists.
+
+pub use bare::ffi::types::{
+    c_schar, c_uchar, c_short, c_ushort, c_int, c_uint, c_long, c_ulong, c_longlong, c_ulonglong,
+    c_size_t, c_ssize_t, c_ptrdiff_t, c_intptr_t, c_uintptr_t, c_wchar, c_float, c_double, c_void,
+};
+pub use core::channel::{Sender, Receiver};
+pub use core::channel::{channel, channel_bounded};
+pub use core::cmp::Ordering;
+pub use core::cmp::{Eq, Ord, Hash};
+pub use core::collections::{List, Dict, Set, Deque, BinaryHeap, Slice, SliceMut, FrozenList, FrozenDict, FrozenSet};
+pub use core::convert::{From, Into, TryFrom, TryInto};
+pub use core::error::Error;
+pub use core::error::Result;
+pub use core::error::{
+    ParseError, ValueError, OverflowError, ConversionError, TypeError, StackOverflowError,
+    OutOfMemoryError, InternalError,
+};
+pub use core::fmt::{Debug, Display, RichDisplay};
+pub use core::fmt::{Formatter, FmtError};
+pub use core::future::{Future, IntoFuture};
+pub use core::io::{Read, Write, AsyncRead, AsyncWrite};
+pub use core::iter::{Iterator, IntoIterator, FromIterator, TryIterator};
+pub use core::marker::{Clone, Copy, Drop, Default, Send, Sync};
+pub use core::num::bigfloat::Float;
+pub use core::num::bigint::Int;
+pub use core::ops::{PartialEq, PartialOrd};
+pub use core::panic::{panic, assert, assert_eq, assert_ne, unreachable};
+pub use core::print::{print, println, eprint, eprintln, dbg, display};
+pub use core::range::{Range, RangeInclusive};
+pub use core::reflect::Inspect;
+pub use core::str::FromStr;
+pub use core::str::StrBuf;
+pub use core::sync::{Mutex, RwLock, Atomic, Cell};
+pub use core::task::Task;
+pub use core::time::{Duration, Instant};
+pub use core::{
+    array, bench, channel, cmp, collections, convert, crypto, encoding, error, fmt, future,
+    hint, index, io, iter, marker, num, ops, panic, par, print, range, reflect, str, stream, sync,
+    task, time, tuple,
+};
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub use std::os::linux::net::TcpStreamExt;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub use std::os::linux::process::ChildExt;
+#[cfg(target_family = "unix")]
+pub use std::os::unix::fs::PermissionsExt;
+#[cfg(target_family = "unix")]
+pub use std::os::unix::process::{CommandExt, ExitStatusExt};

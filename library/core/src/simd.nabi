@@ -1,0 +1,795 @@
+//! core::simd - portable SIMD: `Simd<T, N>` holds `N` lanes of a
+//! number `T`, and its operators work on every lane at once. A
+//! comparison gives a `Mask<T, N>`, whose lanes are set or clear.
+//!
+//! Where the target has a vector unit for the lanes (`x86_64` SSE2 or
+//! AVX2, i686 SSE2, arm64 NEON, wasm32 with `simd128`, ...), an
+//! operation on a whole vector is vector code; elsewhere it is the lane
+//! loop in its body. Both give the same result: integer `+ - *` wrap,
+//! float lanes follow IEEE 754 as the scalar operators do.
+
+/// A primitive number a `Simd` can hold: every integer type and `f32` /
+/// `f64`.
+pub trait SimdElement: Clone + PartialOrd + Debug {
+    /// `a + b`, wrapping for integers.
+    fn lane_add(a: Self, b: Self) -> Self;
+    /// `a - b`, wrapping for integers.
+    fn lane_sub(a: Self, b: Self) -> Self;
+    /// `a * b`, wrapping for integers.
+    fn lane_mul(a: Self, b: Self) -> Self;
+    /// `-a`, wrapping for integers (zero for unsigned ones minus `a`).
+    fn lane_neg(a: Self) -> Self;
+    /// `|a|`, wrapping for the least signed integer; `a` if unsigned.
+    fn lane_abs(a: Self) -> Self;
+    /// A mask lane: every bit set for `true`, clear for `false`.
+    fn lane_mask(on: bool) -> Self;
+    /// Whether mask lane `a` is set.
+    fn lane_on(a: Self) -> bool;
+    /// Zero.
+    fn lane_zero() -> Self;
+}
+
+#[impl_macro(simd_int_elements)] @macro {
+    (@rep[sep = ","] { @t: ty }) => {
+        @for @t {
+            impl SimdElement for @t {
+                const fn lane_add(a: @t, b: @t) -> @t { a.wrapping_add(b) }
+                const fn lane_sub(a: @t, b: @t) -> @t { a.wrapping_sub(b) }
+                const fn lane_mul(a: @t, b: @t) -> @t { a.wrapping_mul(b) }
+                const fn lane_neg(a: @t) -> @t { (0 as @t).wrapping_sub(a) }
+                const fn lane_abs(a: @t) -> @t {
+                    if a < (0 as @t) { (0 as @t).wrapping_sub(a) } else { a }
+                }
+                const fn lane_mask(on: bool) -> @t { if on { !(0 as @t) } else { 0 as @t } }
+                const fn lane_on(a: @t) -> bool { a != (0 as @t) }
+                const fn lane_zero() -> @t { 0 as @t }
+            }
+        }
+    }
+}
+simd_int_elements!(i8, i16, i32, i64, u8, u16, u32, u64);
+
+impl SimdElement for f32 {
+    const fn lane_add(a: f32, b: f32) -> f32 { a + b }
+    const fn lane_sub(a: f32, b: f32) -> f32 { a - b }
+    const fn lane_mul(a: f32, b: f32) -> f32 { a * b }
+    const fn lane_neg(a: f32) -> f32 { -a }
+    const fn lane_abs(a: f32) -> f32 { f32::from_bits(a.to_bits() & 0x7fff_ffff) }
+    const fn lane_mask(on: bool) -> f32 { f32::from_bits(if on { 0xffff_ffff } else { 0 }) }
+    const fn lane_on(a: f32) -> bool { a.to_bits() != 0 }
+    const fn lane_zero() -> f32 { 0.0 }
+}
+
+impl SimdElement for f64 {
+    const fn lane_add(a: f64, b: f64) -> f64 { a + b }
+    const fn lane_sub(a: f64, b: f64) -> f64 { a - b }
+    const fn lane_mul(a: f64, b: f64) -> f64 { a * b }
+    const fn lane_neg(a: f64) -> f64 { -a }
+    const fn lane_abs(a: f64) -> f64 { f64::from_bits(a.to_bits() & 0x7fff_ffff_ffff_ffff) }
+    const fn lane_mask(on: bool) -> f64 { f64::from_bits(if on { 0xffff_ffff_ffff_ffff } else { 0 }) }
+    const fn lane_on(a: f64) -> bool { a.to_bits() != 0 }
+    const fn lane_zero() -> f64 { 0.0 }
+}
+
+/// `N` lanes of `T`, operated on together. A value type, like `[T; N]`.
+#[lang("simd_type")]
+pub struct Simd<T, const N: usize> {
+    lanes: [T; N];
+}
+
+/// The lanes of a comparison of `Simd<T, N>`s: each set or clear.
+/// `select` picks lanes by it; `any` / `all` test it.
+#[lang("mask_type")]
+pub struct Mask<T, const N: usize> {
+    lanes: [T; N];
+}
+
+/// 2 lanes of `f32` (8 bytes).
+pub type f32x2 = Simd<f32, 2>;
+/// 4 lanes of `f32` (16 bytes).
+pub type f32x4 = Simd<f32, 4>;
+/// 8 lanes of `f32` (32 bytes).
+pub type f32x8 = Simd<f32, 8>;
+/// 16 lanes of `f32` (64 bytes).
+pub type f32x16 = Simd<f32, 16>;
+/// 2 lanes of `f64` (16 bytes).
+pub type f64x2 = Simd<f64, 2>;
+/// 4 lanes of `f64` (32 bytes).
+pub type f64x4 = Simd<f64, 4>;
+/// 8 lanes of `f64` (64 bytes).
+pub type f64x8 = Simd<f64, 8>;
+/// 16 lanes of `i8` (16 bytes).
+pub type i8x16 = Simd<i8, 16>;
+/// 32 lanes of `i8` (32 bytes).
+pub type i8x32 = Simd<i8, 32>;
+/// 8 lanes of `i16` (16 bytes).
+pub type i16x8 = Simd<i16, 8>;
+/// 16 lanes of `i16` (32 bytes).
+pub type i16x16 = Simd<i16, 16>;
+/// 4 lanes of `i32` (16 bytes).
+pub type i32x4 = Simd<i32, 4>;
+/// 8 lanes of `i32` (32 bytes).
+pub type i32x8 = Simd<i32, 8>;
+/// 2 lanes of `i64` (16 bytes).
+pub type i64x2 = Simd<i64, 2>;
+/// 4 lanes of `i64` (32 bytes).
+pub type i64x4 = Simd<i64, 4>;
+/// 16 lanes of `u8` (16 bytes).
+pub type u8x16 = Simd<u8, 16>;
+/// 32 lanes of `u8` (32 bytes).
+pub type u8x32 = Simd<u8, 32>;
+/// 8 lanes of `u16` (16 bytes).
+pub type u16x8 = Simd<u16, 8>;
+/// 16 lanes of `u16` (32 bytes).
+pub type u16x16 = Simd<u16, 16>;
+/// 4 lanes of `u32` (16 bytes).
+pub type u32x4 = Simd<u32, 4>;
+/// 8 lanes of `u32` (32 bytes).
+pub type u32x8 = Simd<u32, 8>;
+/// 2 lanes of `u64` (16 bytes).
+pub type u64x2 = Simd<u64, 2>;
+/// 4 lanes of `u64` (32 bytes).
+pub type u64x4 = Simd<u64, 4>;
+
+// The lane-wise operations a back end may emit as vector code. Each
+// body is the lane loop, which runs where it does not.
+
+#[intrinsic("nabi.simd.add")]
+const fn v_add<T: SimdElement, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = T::lane_add(a.lanes[i], b.lanes[i]); }
+    out
+}
+
+#[intrinsic("nabi.simd.sub")]
+const fn v_sub<T: SimdElement, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = T::lane_sub(a.lanes[i], b.lanes[i]); }
+    out
+}
+
+#[intrinsic("nabi.simd.mul")]
+const fn v_mul<T: SimdElement, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = T::lane_mul(a.lanes[i], b.lanes[i]); }
+    out
+}
+
+#[intrinsic("nabi.simd.div")]
+#[track_caller]
+const fn v_div<T: SimdElement + Div<Output = T>, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = a.lanes[i] / b.lanes[i]; }
+    out
+}
+
+#[intrinsic("nabi.simd.neg")]
+const fn v_neg<T: SimdElement, const N: usize>(a: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = T::lane_neg(a.lanes[i]); }
+    out
+}
+
+#[intrinsic("nabi.simd.abs")]
+const fn v_abs<T: SimdElement, const N: usize>(a: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = T::lane_abs(a.lanes[i]); }
+    out
+}
+
+#[intrinsic("nabi.simd.min")]
+const fn v_min<T: SimdElement, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { if b.lanes[i] < a.lanes[i] { out.lanes[i] = b.lanes[i]; } }
+    out
+}
+
+#[intrinsic("nabi.simd.max")]
+const fn v_max<T: SimdElement, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { if b.lanes[i] > a.lanes[i] { out.lanes[i] = b.lanes[i]; } }
+    out
+}
+
+#[intrinsic("nabi.simd.and")]
+const fn v_and<T: SimdElement + BitAnd<Output = T>, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = a.lanes[i] & b.lanes[i]; }
+    out
+}
+
+#[intrinsic("nabi.simd.or")]
+const fn v_or<T: SimdElement + BitOr<Output = T>, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = a.lanes[i] | b.lanes[i]; }
+    out
+}
+
+#[intrinsic("nabi.simd.xor")]
+const fn v_xor<T: SimdElement + BitXor<Output = T>, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = a.lanes[i] ^ b.lanes[i]; }
+    out
+}
+
+#[intrinsic("nabi.simd.not")]
+const fn v_not<T: SimdElement + Not<Output = T>, const N: usize>(a: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = !a.lanes[i]; }
+    out
+}
+
+#[intrinsic("nabi.simd.eq")]
+const fn v_eq<T: SimdElement, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Mask<T, N> {
+    let out: Mask<T, N> = Mask { lanes: a.lanes };
+    for i in 0..N { out.lanes[i] = T::lane_mask(a.lanes[i] == b.lanes[i]); }
+    out
+}
+
+#[intrinsic("nabi.simd.ne")]
+const fn v_ne<T: SimdElement, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Mask<T, N> {
+    let out: Mask<T, N> = Mask { lanes: a.lanes };
+    for i in 0..N { out.lanes[i] = T::lane_mask(a.lanes[i] != b.lanes[i]); }
+    out
+}
+
+#[intrinsic("nabi.simd.lt")]
+const fn v_lt<T: SimdElement, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Mask<T, N> {
+    let out: Mask<T, N> = Mask { lanes: a.lanes };
+    for i in 0..N { out.lanes[i] = T::lane_mask(a.lanes[i] < b.lanes[i]); }
+    out
+}
+
+#[intrinsic("nabi.simd.le")]
+const fn v_le<T: SimdElement, const N: usize>(a: Simd<T, N>, b: Simd<T, N>) -> Mask<T, N> {
+    let out: Mask<T, N> = Mask { lanes: a.lanes };
+    for i in 0..N { out.lanes[i] = T::lane_mask(a.lanes[i] <= b.lanes[i]); }
+    out
+}
+
+#[intrinsic("nabi.simd.sum")]
+const fn v_sum<T: SimdElement, const N: usize>(v: Simd<T, N>) -> T {
+    let s = T::lane_zero();
+    for i in 0..N { s = T::lane_add(s, v.lanes[i]); }
+    s
+}
+
+#[intrinsic("nabi.simd.splat")]
+const fn v_splat<T: SimdElement, const N: usize>(x: T) -> Simd<T, N> {
+    Simd { lanes: [x; N] }
+}
+
+/// Elements `at..at + N` of `buf`, which holds them.
+#[intrinsic("nabi.simd.load")]
+const unsafe fn v_load<T: SimdElement, const N: usize>(buf: GcBuf<T>, at: usize) -> Simd<T, N> {
+    let out: Simd<T, N> = Simd { lanes: [T::lane_zero(); N] };
+    unsafe {
+        for i in 0..N { out.lanes[i] = buf[at.wrapping_add(i)]; }
+    }
+    out
+}
+
+/// Elements `at..at + N` of `buf`, which holds them, set to the lanes.
+#[intrinsic("nabi.simd.store")]
+const unsafe fn v_store<T: SimdElement, const N: usize>(v: Simd<T, N>, buf: GcBuf<T>, at: usize) {
+    unsafe {
+        for i in 0..N { buf[at.wrapping_add(i)] = v.lanes[i]; }
+    }
+}
+
+#[intrinsic("nabi.simd.select")]
+const fn v_select<T: SimdElement, const N: usize>(m: Mask<T, N>, a: Simd<T, N>, b: Simd<T, N>) -> Simd<T, N> {
+    let out = a;
+    for i in 0..N { if !T::lane_on(m.lanes[i]) { out.lanes[i] = b.lanes[i]; } }
+    out
+}
+
+#[intrinsic("nabi.simd.and")]
+const fn m_and<T: SimdElement, const N: usize>(a: Mask<T, N>, b: Mask<T, N>) -> Mask<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = T::lane_mask(T::lane_on(a.lanes[i]) && T::lane_on(b.lanes[i])); }
+    out
+}
+
+#[intrinsic("nabi.simd.or")]
+const fn m_or<T: SimdElement, const N: usize>(a: Mask<T, N>, b: Mask<T, N>) -> Mask<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = T::lane_mask(T::lane_on(a.lanes[i]) || T::lane_on(b.lanes[i])); }
+    out
+}
+
+#[intrinsic("nabi.simd.xor")]
+const fn m_xor<T: SimdElement, const N: usize>(a: Mask<T, N>, b: Mask<T, N>) -> Mask<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = T::lane_mask(T::lane_on(a.lanes[i]) != T::lane_on(b.lanes[i])); }
+    out
+}
+
+#[intrinsic("nabi.simd.not")]
+const fn m_not<T: SimdElement, const N: usize>(a: Mask<T, N>) -> Mask<T, N> {
+    let out = a;
+    for i in 0..N { out.lanes[i] = T::lane_mask(!T::lane_on(a.lanes[i])); }
+    out
+}
+
+/// Panics unless `len` elements hold `n` lanes from `at`. No checked
+/// arithmetic, so the loads and stores calling it inline.
+#[track_caller]
+#[inline(always)]
+const fn lanes_fit(n: usize, at: usize, len: usize, what: str) {
+    if at > len || len.wrapping_sub(at) < n {
+        lanes_short(n, at, len, what);
+    }
+}
+
+#[track_caller]
+#[cold]
+const fn lanes_short(n: usize, at: usize, len: usize, what: str) {
+    panic(f"{what}: {n} lanes from index {at} need {at + n} elements, but there are {len}");
+}
+
+impl<T: SimdElement, const N: usize> Simd<T, N> {
+    /// The number of lanes, `N`.
+    pub const LANES: usize = N;
+
+    /// Every lane `x`.
+    pub const fn splat(x: T) -> Simd<T, N> {
+        v_splat(x)
+    }
+
+    /// The lanes of `a`, in order.
+    pub const fn from_array(a: [T; N]) -> Simd<T, N> {
+        Simd { lanes: a }
+    }
+
+    /// The lanes as an array.
+    pub const fn to_array(self) -> [T; N] {
+        self.lanes
+    }
+
+    /// The first `N` elements of `s`; panics when it has fewer.
+    #[track_caller]
+    pub const fn from_slice(s: Slice<T>) -> Simd<T, N> {
+        lanes_fit(N, 0, s.len(), "Simd::from_slice");
+        let out: Simd<T, N> = Simd { lanes: [T::lane_zero(); N] };
+        for i in 0..N { out.lanes[i] = s[i]; }
+        out
+    }
+
+    /// `xs[at..at + N]`; panics past the end.
+    #[track_caller]
+    #[inline(always)]
+    pub const fn load(xs: List<T>, at: usize) -> Simd<T, N> {
+        lanes_fit(N, at, xs.len(), "Simd::load");
+        unsafe { v_load(xs.buffer(), at) }
+    }
+
+    /// `xs[at..at + N]` set to the lanes; panics past the end.
+    #[track_caller]
+    #[inline(always)]
+    pub const fn store(self, xs: List<T>, at: usize) {
+        lanes_fit(N, at, xs.len(), "Simd::store");
+        unsafe { v_store(self, xs.buffer(), at); }
+    }
+
+    /// The first `N` elements of `s` set to the lanes; panics when it
+    /// has fewer.
+    #[track_caller]
+    pub const fn copy_to(self, s: SliceMut<T>) {
+        lanes_fit(N, 0, s.len(), "Simd::copy_to");
+        for i in 0..N { s[i] = self.lanes[i]; }
+    }
+
+    /// Lane `i`, or `none` past the last.
+    pub const fn get(self, i: usize) -> T | none {
+        if i < N { self.lanes[i] } else { none }
+    }
+
+    /// A copy with lane `i` set to `x`; panics past the last lane.
+    #[track_caller]
+    pub const fn with_lane(self, i: usize, x: T) -> Simd<T, N> {
+        let out = self;
+        out.lanes[i] = x;
+        out
+    }
+
+    /// `f` of each lane.
+    pub const fn map<U: SimdElement>(self, f: fn(T) -> U) -> Simd<U, N> {
+        let out: Simd<U, N> = Simd { lanes: [U::lane_zero(); N] };
+        for i in 0..N { out.lanes[i] = f(self.lanes[i]); }
+        out
+    }
+
+    /// `f` of the lanes of `self` and `other`, pairwise.
+    pub const fn zip_with<U: SimdElement>(self, other: Simd<T, N>, f: fn(T, T) -> U) -> Simd<U, N> {
+        let out: Simd<U, N> = Simd { lanes: [U::lane_zero(); N] };
+        for i in 0..N { out.lanes[i] = f(self.lanes[i], other.lanes[i]); }
+        out
+    }
+
+    /// The lesser lane of each pair; of floats, `other`'s only where it
+    /// is less (a NaN in `other` keeps `self`'s lane).
+    pub const fn min(self, other: Simd<T, N>) -> Simd<T, N> { v_min(self, other) }
+
+    /// The greater lane of each pair, as `min` does.
+    pub const fn max(self, other: Simd<T, N>) -> Simd<T, N> { v_max(self, other) }
+
+    /// Each lane kept between `lo`'s and `hi`'s.
+    pub const fn clamp(self, lo: Simd<T, N>, hi: Simd<T, N>) -> Simd<T, N> {
+        v_min(v_max(self, lo), hi)
+    }
+
+    /// Each lane's magnitude (integers wrap at their least value).
+    pub const fn abs(self) -> Simd<T, N> { v_abs(self) }
+
+    /// The sum of the lanes, added first to last (integers wrap).
+    pub const fn reduce_sum(self) -> T {
+        v_sum(self)
+    }
+
+    /// The product of the lanes, first to last (integers wrap).
+    pub const fn reduce_product(self) -> T {
+        if N == 0 { return T::lane_zero(); }
+        let s = self.lanes[0];
+        for i in 1..N { s = T::lane_mul(s, self.lanes[i]); }
+        s
+    }
+
+    /// The least lane (the first of equal ones; NaN lanes are skipped
+    /// unless every lane is one). Panics on zero lanes.
+    #[track_caller]
+    pub const fn reduce_min(self) -> T {
+        let m = self.lanes[0];
+        for i in 1..N { if self.lanes[i] < m || m != m { m = self.lanes[i]; } }
+        m
+    }
+
+    /// The greatest lane, as `reduce_min`.
+    #[track_caller]
+    pub const fn reduce_max(self) -> T {
+        let m = self.lanes[0];
+        for i in 1..N { if self.lanes[i] > m || m != m { m = self.lanes[i]; } }
+        m
+    }
+
+    /// The lanes in reverse order.
+    pub const fn reverse(self) -> Simd<T, N> {
+        let out = self;
+        for i in 0..N { out.lanes[i] = self.lanes[N - 1 - i]; }
+        out
+    }
+
+    /// Lane `i` of the result is lane `(i + k) % N`: the lanes moved `k`
+    /// places toward the first.
+    pub const fn rotate_left(self, k: usize) -> Simd<T, N> {
+        let out = self;
+        if N == 0 { return out; }
+        for i in 0..N { out.lanes[i] = self.lanes[(i + k % N) % N]; }
+        out
+    }
+
+    /// The lanes moved `k` places toward the last, wrapping around.
+    pub const fn rotate_right(self, k: usize) -> Simd<T, N> {
+        if N == 0 { return self; }
+        self.rotate_left(N - k % N)
+    }
+
+    /// Lane `i` of the result is lane `idx[i]` of `self`; panics on an
+    /// index past the last lane.
+    #[track_caller]
+    pub const fn swizzle(self, idx: [usize; N]) -> Simd<T, N> {
+        let out = self;
+        for i in 0..N {
+            if idx[i] >= N { panic(f"Simd::swizzle: lane {idx[i]} of {N}"); }
+            out.lanes[i] = self.lanes[idx[i]];
+        }
+        out
+    }
+
+    /// The lanes of `self` and `other` taken in turn: `a0 b0 a1 b1 ..`,
+    /// the first `N` in the first vector, the rest in the second.
+    pub const fn interleave(self, other: Simd<T, N>) -> (Simd<T, N>, Simd<T, N>) {
+        let lo = self;
+        let hi = self;
+        for i in 0..N {
+            let (a, b) = (self.lanes[i], other.lanes[i]);
+            let j = 2 * i;
+            if j < N { lo.lanes[j] = a; } else { hi.lanes[j - N] = a; }
+            if j + 1 < N { lo.lanes[j + 1] = b; } else { hi.lanes[j + 1 - N] = b; }
+        }
+        (lo, hi)
+    }
+
+    /// The inverse of `interleave`: the even lanes of `self` then
+    /// `other`, and the odd ones.
+    pub const fn deinterleave(self, other: Simd<T, N>) -> (Simd<T, N>, Simd<T, N>) {
+        let even = self;
+        let odd = self;
+        for k in 0..N {
+            let j = 2 * k;
+            even.lanes[k] = if j < N { self.lanes[j] } else { other.lanes[j - N] };
+            odd.lanes[k] = if j + 1 < N { self.lanes[j + 1] } else { other.lanes[j + 1 - N] };
+        }
+        (even, odd)
+    }
+}
+
+impl<const N: usize> Simd<f32, N> {
+    /// The square root of each lane.
+    pub const fn sqrt(self) -> Simd<f32, N> { self.map(|x: f32| -> f32 { x.sqrt() }) }
+
+    /// `self * a + b` per lane, rounded once.
+    pub const fn mul_add(self, a: Simd<f32, N>, b: Simd<f32, N>) -> Simd<f32, N> {
+        let out = self;
+        for i in 0..N { out.lanes[i] = self.lanes[i].mul_add(a.lanes[i], b.lanes[i]); }
+        out
+    }
+}
+
+impl<const N: usize> Simd<f64, N> {
+    /// The square root of each lane.
+    pub const fn sqrt(self) -> Simd<f64, N> { self.map(|x: f64| -> f64 { x.sqrt() }) }
+
+    /// `self * a + b` per lane, rounded once.
+    pub const fn mul_add(self, a: Simd<f64, N>, b: Simd<f64, N>) -> Simd<f64, N> {
+        let out = self;
+        for i in 0..N { out.lanes[i] = self.lanes[i].mul_add(a.lanes[i], b.lanes[i]); }
+        out
+    }
+}
+
+impl<T: SimdElement, const N: usize> Mask<T, N> {
+    /// Every lane set (`true`) or clear.
+    pub const fn splat(on: bool) -> Mask<T, N> {
+        Mask { lanes: [T::lane_mask(on); N] }
+    }
+
+    /// Lane `i` set where `a[i]` is `true`.
+    pub const fn from_array(a: [bool; N]) -> Mask<T, N> {
+        let out: Mask<T, N> = Mask { lanes: [T::lane_zero(); N] };
+        for i in 0..N { out.lanes[i] = T::lane_mask(a[i]); }
+        out
+    }
+
+    /// Whether each lane is set.
+    pub const fn to_array(self) -> [bool; N] {
+        let out = [false; N];
+        for i in 0..N { out[i] = T::lane_on(self.lanes[i]); }
+        out
+    }
+
+    /// Whether lane `i` is set; panics past the last lane.
+    #[track_caller]
+    pub const fn test(self, i: usize) -> bool { T::lane_on(self.lanes[i]) }
+
+    /// Whether some lane is set.
+    pub const fn any(self) -> bool {
+        for i in 0..N { if T::lane_on(self.lanes[i]) { return true; } }
+        false
+    }
+
+    /// Whether every lane is set.
+    pub const fn all(self) -> bool {
+        for i in 0..N { if !T::lane_on(self.lanes[i]) { return false; } }
+        true
+    }
+
+    /// The number of lanes set.
+    pub const fn count(self) -> usize {
+        let n = 0;
+        for i in 0..N { if T::lane_on(self.lanes[i]) { n += 1; } }
+        n
+    }
+
+    /// `yes`'s lane where this mask's is set, else `no`'s.
+    pub const fn select(self, yes: Simd<T, N>, no: Simd<T, N>) -> Simd<T, N> {
+        v_select(self, yes, no)
+    }
+}
+
+// Operators: lane-wise, a scalar on either side standing for every lane.
+
+impl<T: SimdElement, const N: usize> Add for Simd<T, N> {
+    type Output = Simd<T, N>;
+    const fn add(self, rhs: Simd<T, N>) -> Simd<T, N> { v_add(self, rhs) }
+}
+
+impl<T: SimdElement, const N: usize> Add<T> for Simd<T, N> {
+    type Output = Simd<T, N>;
+    const fn add(self, rhs: T) -> Simd<T, N> { v_add(self, Simd::splat(rhs)) }
+}
+
+impl<T: SimdElement, const N: usize> Sub for Simd<T, N> {
+    type Output = Simd<T, N>;
+    const fn sub(self, rhs: Simd<T, N>) -> Simd<T, N> { v_sub(self, rhs) }
+}
+
+impl<T: SimdElement, const N: usize> Sub<T> for Simd<T, N> {
+    type Output = Simd<T, N>;
+    const fn sub(self, rhs: T) -> Simd<T, N> { v_sub(self, Simd::splat(rhs)) }
+}
+
+impl<T: SimdElement, const N: usize> Mul for Simd<T, N> {
+    type Output = Simd<T, N>;
+    const fn mul(self, rhs: Simd<T, N>) -> Simd<T, N> { v_mul(self, rhs) }
+}
+
+impl<T: SimdElement, const N: usize> Mul<T> for Simd<T, N> {
+    type Output = Simd<T, N>;
+    const fn mul(self, rhs: T) -> Simd<T, N> { v_mul(self, Simd::splat(rhs)) }
+}
+
+impl<T: SimdElement + Div<Output = T>, const N: usize> Div for Simd<T, N> {
+    type Output = Simd<T, N>;
+    #[track_caller]
+    const fn div(self, rhs: Simd<T, N>) -> Simd<T, N> { v_div(self, rhs) }
+}
+
+impl<T: SimdElement + Div<Output = T>, const N: usize> Div<T> for Simd<T, N> {
+    type Output = Simd<T, N>;
+    #[track_caller]
+    const fn div(self, rhs: T) -> Simd<T, N> { v_div(self, Simd::splat(rhs)) }
+}
+
+impl<T: SimdElement + Rem<Output = T>, const N: usize> Rem for Simd<T, N> {
+    type Output = Simd<T, N>;
+    #[track_caller]
+    const fn rem(self, rhs: Simd<T, N>) -> Simd<T, N> {
+        let out = self;
+        for i in 0..N { out.lanes[i] = self.lanes[i] % rhs.lanes[i]; }
+        out
+    }
+}
+
+impl<T: SimdElement, const N: usize> Neg for Simd<T, N> {
+    type Output = Simd<T, N>;
+    const fn neg(self) -> Simd<T, N> { v_neg(self) }
+}
+
+impl<T: SimdElement + BitAnd<Output = T>, const N: usize> BitAnd for Simd<T, N> {
+    type Output = Simd<T, N>;
+    const fn bitand(self, rhs: Simd<T, N>) -> Simd<T, N> { v_and(self, rhs) }
+}
+
+impl<T: SimdElement + BitOr<Output = T>, const N: usize> BitOr for Simd<T, N> {
+    type Output = Simd<T, N>;
+    const fn bitor(self, rhs: Simd<T, N>) -> Simd<T, N> { v_or(self, rhs) }
+}
+
+impl<T: SimdElement + BitXor<Output = T>, const N: usize> BitXor for Simd<T, N> {
+    type Output = Simd<T, N>;
+    const fn bitxor(self, rhs: Simd<T, N>) -> Simd<T, N> { v_xor(self, rhs) }
+}
+
+impl<T: SimdElement + Not<Output = T>, const N: usize> Not for Simd<T, N> {
+    type Output = Simd<T, N>;
+    const fn not(self) -> Simd<T, N> { v_not(self) }
+}
+
+impl<T: SimdElement + Shl<u32, Output = T>, const N: usize> Shl<u32> for Simd<T, N> {
+    type Output = Simd<T, N>;
+    #[track_caller]
+    const fn shl(self, n: u32) -> Simd<T, N> {
+        let out = self;
+        for i in 0..N { out.lanes[i] = self.lanes[i] << n; }
+        out
+    }
+}
+
+impl<T: SimdElement + Shr<u32, Output = T>, const N: usize> Shr<u32> for Simd<T, N> {
+    type Output = Simd<T, N>;
+    #[track_caller]
+    const fn shr(self, n: u32) -> Simd<T, N> {
+        let out = self;
+        for i in 0..N { out.lanes[i] = self.lanes[i] >> n; }
+        out
+    }
+}
+
+impl<T: SimdElement, const N: usize> AddAssign for Simd<T, N> {
+    const fn add_assign(ref self, rhs: Simd<T, N>) { self = v_add(self, rhs); }
+}
+
+impl<T: SimdElement, const N: usize> SubAssign for Simd<T, N> {
+    const fn sub_assign(ref self, rhs: Simd<T, N>) { self = v_sub(self, rhs); }
+}
+
+impl<T: SimdElement, const N: usize> MulAssign for Simd<T, N> {
+    const fn mul_assign(ref self, rhs: Simd<T, N>) { self = v_mul(self, rhs); }
+}
+
+impl<T: SimdElement + Div<Output = T>, const N: usize> DivAssign for Simd<T, N> {
+    #[track_caller]
+    const fn div_assign(ref self, rhs: Simd<T, N>) { self = v_div(self, rhs); }
+}
+
+// `.==` `.!=` `.<` `.<=` `.>` `.>=`: lane-wise comparisons into a mask.
+
+impl<T: SimdElement, const N: usize> DotEq for Simd<T, N> {
+    type Output = Mask<T, N>;
+    const fn dot_eq(self, rhs: Simd<T, N>) -> Mask<T, N> { v_eq(self, rhs) }
+}
+
+impl<T: SimdElement, const N: usize> DotNe for Simd<T, N> {
+    type Output = Mask<T, N>;
+    const fn dot_ne(self, rhs: Simd<T, N>) -> Mask<T, N> { v_ne(self, rhs) }
+}
+
+impl<T: SimdElement, const N: usize> DotLt for Simd<T, N> {
+    type Output = Mask<T, N>;
+    const fn dot_lt(self, rhs: Simd<T, N>) -> Mask<T, N> { v_lt(self, rhs) }
+}
+
+impl<T: SimdElement, const N: usize> DotLe for Simd<T, N> {
+    type Output = Mask<T, N>;
+    const fn dot_le(self, rhs: Simd<T, N>) -> Mask<T, N> { v_le(self, rhs) }
+}
+
+impl<T: SimdElement, const N: usize> DotGt for Simd<T, N> {
+    type Output = Mask<T, N>;
+    const fn dot_gt(self, rhs: Simd<T, N>) -> Mask<T, N> { v_lt(rhs, self) }
+}
+
+impl<T: SimdElement, const N: usize> DotGe for Simd<T, N> {
+    type Output = Mask<T, N>;
+    const fn dot_ge(self, rhs: Simd<T, N>) -> Mask<T, N> { v_le(rhs, self) }
+}
+
+impl<T: SimdElement, const N: usize> BitAnd for Mask<T, N> {
+    type Output = Mask<T, N>;
+    const fn bitand(self, rhs: Mask<T, N>) -> Mask<T, N> { m_and(self, rhs) }
+}
+
+impl<T: SimdElement, const N: usize> BitOr for Mask<T, N> {
+    type Output = Mask<T, N>;
+    const fn bitor(self, rhs: Mask<T, N>) -> Mask<T, N> { m_or(self, rhs) }
+}
+
+impl<T: SimdElement, const N: usize> BitXor for Mask<T, N> {
+    type Output = Mask<T, N>;
+    const fn bitxor(self, rhs: Mask<T, N>) -> Mask<T, N> { m_xor(self, rhs) }
+}
+
+impl<T: SimdElement, const N: usize> Not for Mask<T, N> {
+    type Output = Mask<T, N>;
+    const fn not(self) -> Mask<T, N> { m_not(self) }
+}
+
+impl<T: SimdElement, const N: usize> Index<usize> for Simd<T, N> {
+    type Output = T;
+    #[track_caller]
+    const fn index(self, i: usize) -> T { self.lanes[i] }
+}
+
+impl<T: SimdElement, const N: usize> PartialEq for Simd<T, N> {
+    /// Every lane equal (a NaN lane is equal to nothing).
+    const fn eq(self, rhs: Simd<T, N>) -> bool {
+        for i in 0..N { if self.lanes[i] != rhs.lanes[i] { return false; } }
+        true
+    }
+    fn ne(self, rhs: Simd<T, N>) -> bool { !self.eq(rhs) }
+}
+
+impl<T: SimdElement, const N: usize> PartialEq for Mask<T, N> {
+    const fn eq(self, rhs: Mask<T, N>) -> bool {
+        for i in 0..N { if T::lane_on(self.lanes[i]) != T::lane_on(rhs.lanes[i]) { return false; } }
+        true
+    }
+    fn ne(self, rhs: Mask<T, N>) -> bool { !self.eq(rhs) }
+}
+
+impl<T: SimdElement, const N: usize> Default for Simd<T, N> {
+    const fn default() -> Simd<T, N> { Simd { lanes: [T::lane_zero(); N] } }
+}
+
+impl<T: SimdElement, const N: usize> Debug for Simd<T, N> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try Debug::fmt(self.lanes, ref f)
+    }
+}
+
+impl<T: SimdElement, const N: usize> Debug for Mask<T, N> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try Debug::fmt(self.to_array(), ref f)
+    }
+}

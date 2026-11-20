@@ -1,0 +1,27 @@
+// expect-exit: 0
+// expect-stdout:
+// first: 1
+// threw: bad 3
+
+// `par::try_scope(|s| ..)`: the closure's `s` is a `TryScope<E>`, and `E`
+// is the error its body throws.
+use core::par;
+
+struct Bad { n: i32; }
+
+fn check(n: i32) throws (Bad) -> i32 {
+    if n == 3 { throw Bad { n: n }; }
+    n
+}
+
+fn main() {
+    let sum = Atomic::new(0);
+    try par::try_scope(|s| {
+        let first = try check(1);
+        println(f"first: {first}");
+        for i in 0..3 {
+            s.spawn(|| { sum.fetch_add(i); 0 });
+        }
+        try check(3);
+    }) catch e { println(f"threw: bad {e.n}"); };
+}

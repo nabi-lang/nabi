@@ -1,0 +1,15 @@
+// expect-error: argument `s` of `wcslen` expects
+// expect-error: help: C takes text as a NUL-terminated pointer: pass `CString::new(text)?.as_ptr()` for a `char*`, or `WideCString::new(text)?.as_ptr()` for a `wchar_t*`
+
+// Only a `char*` parameter declared `str` takes a `str`; any other text
+// pointer is built from it.
+use bare::ptr::ConstPtr;
+
+extern "C" {
+    fn wcslen(s: ConstPtr<c_wchar>) -> c_size_t;
+}
+
+fn main() {
+    let text = "abc";
+    println(f"{unsafe { wcslen(text) }}");
+}

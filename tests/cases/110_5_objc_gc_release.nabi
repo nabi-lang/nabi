@@ -1,0 +1,50 @@
+// needs: objc
+// expect-exit: 0
+// expect-stdout:
+// kept 2
+// weak none
+
+// The collector gives an `Id`'s retain back once no copy is left: the
+// array then holds the object's only other retain. A `WeakId` whose
+// handle is collected frees its slot the same way.
+use bare::ffi::objc;
+use bare::ffi::objc::{Id, NSObject, WeakId};
+use bare::gc;
+
+#[link(name = "Foundation", kind = "framework")]
+#[objc::class(NSMutableArray)]
+extern "objc" {
+    pub fn array() -> Id<Self>;
+    pub fn addObject(self, o: Id<NSObject>);
+    pub fn objectAtIndex(self, i: usize) -> Id<NSObject>;
+    pub fn removeAllObjects(self);
+}
+
+fn keep(a: Id<NSMutableArray>) {
+    let o = objc::new::<NSObject>();
+    a.addObject(o);
+}
+
+fn weak_of(a: Id<NSMutableArray>) -> WeakId<NSObject> {
+    let w = WeakId::new(a.objectAtIndex(0));
+    w
+}
+
+fn main() {
+    let a = NSMutableArray::array();
+    keep(a);
+    gc::collect();
+    gc::collect();
+    let x = a.objectAtIndex(0);
+    println(f"kept {x.retainCount()}");
+    x.release_now();
+    let w = weak_of(a);
+    a.removeAllObjects();
+    gc::collect();
+    gc::collect();
+    let gone = match w.load() {
+        o: Id<NSObject> => "alive",
+        none => "none",
+    };
+    println(f"weak {gone}");
+}

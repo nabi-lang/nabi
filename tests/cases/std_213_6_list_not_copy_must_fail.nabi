@@ -1,0 +1,10 @@
+// expect-error: type `List<i64>` does not satisfy trait bound `Copy` required by `dup`
+
+// A collection is not `Copy`: copying its handle would
+// not copy its contents.
+fn dup<T: Copy>(x: T) -> (T, T) { (x, x) }
+
+fn main() {
+    let xs = [1, 2];
+    let p = dup(xs);
+}

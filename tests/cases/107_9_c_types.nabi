@@ -1,0 +1,29 @@
+// expect-exit: 0
+// expect-stdout:
+// 4 8 2 true
+// 3 3
+// true
+
+// C's types under their C names, from the prelude: `c_long` is 32 bits
+// on Windows and 32-bit targets, `c_wchar` 16 bits on Windows.
+use bare::mem::size_of;
+use bare::ptr::CPtr;
+
+extern "C" {
+    fn labs(x: c_long) -> c_long;
+    fn strlen(s: str) -> c_size_t;
+}
+
+#[cfg(target_os = "windows")]
+const WIDE: usize = 2;
+#[cfg(not(target_os = "windows"))]
+const WIDE: usize = 4;
+
+fn main() {
+    let long_ok = size_of::<c_long>() == size_of::<c_ulong>() && size_of::<c_long>() >= 4;
+    println(f"{size_of::<c_int>()} {size_of::<c_longlong>()} {size_of::<c_short>()} {size_of::<c_size_t>() == size_of::<usize>() && long_ok}");
+    let x: c_long = -3;
+    println(f"{unsafe { labs(x) }} {unsafe { strlen("abc") }}");
+    let p: CPtr<c_void> = CPtr::null();
+    println(f"{p.is_null() && size_of::<c_wchar>() == WIDE}");
+}

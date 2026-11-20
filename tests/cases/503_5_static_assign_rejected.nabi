@@ -1,0 +1,12 @@
+// expect-error: 10:1: cannot assign to static `COUNTER`: statics are immutable; only an `extern` `static mut` can be written
+// expect-error: help: declare it `static COUNTER: Atomic<i32> = Atomic::new(..);` and write `COUNTER.store(..);`
+// expect-error: 11:1: cannot assign to static `NAME`: statics are immutable
+// expect-error: help: declare it `static NAME: Mutex<str> = Mutex::new(..);` and write `using g = NAME.lock() { g.set(..); }`
+
+// Assigning to a `static` that is not an extern `static mut`
+// is a compile error; mutation goes through a wrapper's methods.
+static COUNTER: i32 = 0;
+static NAME: str = "a";
+COUNTER = 3;
+NAME = "b";
+println(f"{COUNTER}");

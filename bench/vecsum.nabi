@@ -1,0 +1,39 @@
+// Sum of a 1M-element `List<i32>` (checked `+=`), 400 times; and of a
+// `List<u8>` into a `u8` that wraps. Vectorized loops. Output matches
+// bench/c/vecsum.c.
+fn sum(xs: List<i32>) -> i32 {
+    let s: i32 = 0;
+    for i in 0..xs.len() {
+        s += xs[i];
+    }
+    s
+}
+
+fn wsum(bs: List<u8>) -> u8 {
+    let s: u8 = 0;
+    for i in 0..bs.len() {
+        s = s.wrapping_add(bs[i]);
+    }
+    s
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 20;
+    let xs: List<i32> = List::filled(n, 0);
+    let bs: List<u8> = List::filled(n, 0u8);
+    let x: u64 = 1;
+    for i in 0..n {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        xs[i] = ((x >> 33) % 201u64) as i32 - 100;
+        bs[i] = (x >> 40) as u8;
+    }
+    let t: i64 = 0;
+    let w: u64 = 0;
+    for r in 0..400 {
+        xs[r] += 1;
+        t += sum(xs) as i64;
+        w += wsum(bs) as u64;
+    }
+    println(f"{t} {w}");
+    return 0;
+}

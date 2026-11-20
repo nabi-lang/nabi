@@ -1,0 +1,13 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/panic_loc_div_zero.nabi:11:17:
+// expect-stderr: attempt to divide by zero
+// expect-stdout:
+
+// A compiler-generated check reports the operation's own position, not
+// the start of its statement.
+fn zero() -> i32 { 0 }
+
+fn main() {
+    let x = 1 + (7 / zero());
+    println(f"{x}");
+}

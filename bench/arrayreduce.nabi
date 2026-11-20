@@ -1,0 +1,22 @@
+// `Array` reductions: `sum`, `mean`, `var`, `min` / `max` / `argmax`
+// over a whole array and along each axis of a matrix, `cumsum`.
+use core::array::{Array, Matrix, Vector};
+
+fn main() -> i32 {
+    let n: usize = 1 << 16;
+    let v: Vector<f64> = Array::from_fn([n], |i: [usize; 1]| -> f64 { ((i[0] * 7919) % 1009) as f64 * 0.5 });
+    let m: Matrix<f64> = Array::from_fn([256, 256], |i: [usize; 2]| -> f64 { ((i[0] * 31 + i[1] * 17) % 97) as f64 });
+    let s = 0.0;
+    let k: usize = 0;
+    for _ in 0..50usize {
+        s += v.sum() + v.mean() + v.var() + (v.max() ?? 0.0) - (v.min() ?? 0.0);
+        k += v.argmax() ?? 0;
+        s += m.sum_along(0).sum() + m.sum_along(1).sum();
+        s += m.mean_along(0)[3] + m.var_along(1)[5];
+        s += m.max_along(0)[7] + m.min_along(1)[9];
+        k += m.argmax_along(1)[11];
+        s += v.cumsum()[n - 1];
+    }
+    println(f"{s} {k}");
+    0
+}

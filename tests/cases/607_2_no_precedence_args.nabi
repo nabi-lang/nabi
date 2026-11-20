@@ -1,0 +1,10 @@
+// expect-error: 6:5: `#[infix]` takes only an operator token, `like = ".."` and `swap`: precedence and associativity are fixed by the language
+
+// There is no precedence or associativity argument; levels
+// come only from the fixed precedence table.
+trait T {
+    #[infix("⊕", prec = 3)]
+    fn f(self, rhs: Self) -> i32;
+}
+
+println("unreached");

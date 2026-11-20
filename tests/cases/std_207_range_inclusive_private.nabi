@@ -1,0 +1,8 @@
+// expect-error: field `exhausted` of `RangeInclusive<i64>` is private
+
+// `RangeInclusive`'s fields other than `start` / `end`
+// are private.
+fn main() {
+    let r = 0..=3;
+    println(f"{r.start} {r.end} {r.exhausted}");
+}

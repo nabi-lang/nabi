@@ -1,0 +1,8 @@
+// expect-exit: 3
+// expect-stdout:
+
+// Positional tuple access `.0`, `.1`.
+fn main() -> i32 {
+    let pair = (1, 2);
+    return pair.0 + pair.1;
+}

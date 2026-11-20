@@ -1,0 +1,12 @@
+// expect-error: is private to module
+
+// A variant follows its enum's visibility - a private enum's
+// variants can't be named outside its module, even through `use`.
+mod shapes {
+    enum Shape { Dot(i32), Line }
+}
+
+fn main() -> i32 {
+    let s = shapes::Shape::Dot(1);
+    return 0;
+}

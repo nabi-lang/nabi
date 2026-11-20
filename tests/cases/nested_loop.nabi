@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout: 36
+
+fn main() {
+    let total = 0;
+    for i in 0..4 {
+        for j in 0..4 {
+            if j == i {
+                continue;
+            }
+            total += i + j;
+        }
+    }
+    println(f"{total}");
+}

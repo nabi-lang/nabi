@@ -1,0 +1,126 @@
+// Calls on a 61-word struct: by value (`self`), `ref self` writing one
+// field, `ref self` writing none, and an iterator over a 54-word
+// struct (`next(ref self)`), the shape of a regex `Matches`. The
+// callees stay calls (`#[inline(never)]`): what the call itself costs.
+struct Big {
+    g0: List<i32>;
+    g1: List<i32>;
+    g2: List<i32>;
+    g3: List<i32>;
+    g4: List<i32>;
+    g5: List<i32>;
+    g6: List<i32>;
+    g7: List<i32>;
+    g8: List<i32>;
+    g9: List<i32>;
+    g10: List<i32>;
+    g11: List<i32>;
+    g12: List<i32>;
+    g13: List<i32>;
+    g14: List<i32>;
+    g15: List<i32>;
+    g16: List<i32>;
+    g17: List<i32>;
+    g18: List<i32>;
+    g19: List<i32>;
+    g20: List<i32>;
+    g21: List<i32>;
+    g22: List<i32>;
+    g23: List<i32>;
+    g24: List<i32>;
+    g25: List<i32>;
+    g26: List<i32>;
+    g27: List<i32>;
+    g28: List<i32>;
+    g29: List<i32>;
+    g30: List<i32>;
+    g31: List<i32>;
+    g32: List<i32>;
+    g33: List<i32>;
+    g34: List<i32>;
+    g35: List<i32>;
+    g36: List<i32>;
+    g37: List<i32>;
+    g38: List<i32>;
+    g39: List<i32>;
+    g40: List<i32>;
+    g41: List<i32>;
+    g42: List<i32>;
+    g43: List<i32>;
+    g44: List<i32>;
+    g45: List<i32>;
+    g46: List<i32>;
+    g47: List<i32>;
+    g48: List<i32>;
+    g49: List<i32>;
+    g50: List<i32>;
+    g51: List<i32>;
+    g52: List<i32>;
+    g53: List<i32>;
+    g54: List<i32>;
+    g55: List<i32>;
+    g56: List<i32>;
+    g57: List<i32>;
+    g58: List<i32>;
+    g59: List<i32>;
+    n: usize;
+}
+
+impl Big {
+    #[inline(never)]
+    fn val(self, x: usize) -> usize {
+        x + self.n
+    }
+
+    #[inline(never)]
+    fn bump(ref self, x: usize) -> usize {
+        self.n += 1;
+        x + self.n
+    }
+
+    #[inline(never)]
+    fn peek(ref self, x: usize) -> usize {
+        x + self.n
+    }
+}
+
+struct Scan {
+    tables: [List<u8>; 50];
+    hay: str;
+    at: usize;
+    end: usize;
+}
+
+impl Iterator for Scan {
+    type Item = usize;
+
+    #[inline(never)]
+    fn next(ref self) -> usize | none {
+        if self.at >= self.end {
+            return none;
+        }
+        let i = self.at;
+        self.at += 3;
+        i
+    }
+}
+
+fn main() -> i32 {
+    let b = Big { g0: [], g1: [], g2: [], g3: [], g4: [], g5: [], g6: [], g7: [], g8: [], g9: [], g10: [], g11: [], g12: [], g13: [], g14: [], g15: [], g16: [], g17: [], g18: [], g19: [], g20: [], g21: [], g22: [], g23: [], g24: [], g25: [], g26: [], g27: [], g28: [], g29: [], g30: [], g31: [], g32: [], g33: [], g34: [], g35: [], g36: [], g37: [], g38: [], g39: [], g40: [], g41: [], g42: [], g43: [], g44: [], g45: [], g46: [], g47: [], g48: [], g49: [], g50: [], g51: [], g52: [], g53: [], g54: [], g55: [], g56: [], g57: [], g58: [], g59: [], n: 3 };
+    let s: usize = 0;
+    for i in 0..4000000usize {
+        s = s.wrapping_add(b.val(i));
+    }
+    for i in 0..4000000usize {
+        s = s.wrapping_add(b.bump(i));
+    }
+    for i in 0..4000000usize {
+        s = s.wrapping_add(b.peek(i));
+    }
+    let it = Scan { tables: [[]; 50], hay: "x", at: 0, end: 12000000 };
+    for m in it {
+        s = s.wrapping_add(m);
+    }
+    println(f"{s} {b.n}");
+    return 0;
+}

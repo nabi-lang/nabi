@@ -1,0 +1,14 @@
+// expect-exit: 7
+// expect-stdout:
+// 7 7
+
+// A `pkg::` path is absolute from the package root, so a child
+// module's function is reachable the same way from the root.
+mod inner {
+    pub fn hello() -> i32 { return 7; }
+}
+
+fn main() -> i32 {
+    println(f"{pkg::inner::hello()} {inner::hello()}");
+    return pkg::inner::hello();
+}

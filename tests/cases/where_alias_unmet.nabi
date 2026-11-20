@@ -1,0 +1,13 @@
+// expect-error: where_alias_unmet.nabi:10:14: type `Tok` does not satisfy trait bound `Display` required by `Shown<Tok>`
+// A type alias's `where` holds at each use; the error
+// points at the use.
+struct Tok { v: i32; }
+struct W<T> { v: T; }
+type Shown<T> where T: Display = W<T>;
+
+fn main() -> i32 {
+    let ok: Shown<i32> = W { v: 1 };
+    let bad: Shown<Tok> = W { v: Tok { v: 2 } };
+    return ok.v + bad.v.v;
+}
+

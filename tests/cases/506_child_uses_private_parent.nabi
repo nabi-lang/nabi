@@ -1,0 +1,13 @@
+// A private item is not visible to child modules: the help names the
+// visibility that reaches the use and the `use` to write.
+// expect-error: 9:25: function `helper` is private to module `<root>` and cannot be used from `child` (add `pub(pkg)` to expose it)
+// expect-error: 10:25: cannot find function `helper` in this scope
+// expect-error: help: `helper` has that name, but it is private to module `<root>`: write `pub(pkg)` before it, so its whole package sees it, and add `use pkg::helper;`
+fn helper() -> i32 { 1 }
+
+mod child {
+    pub fn f() -> i32 { pkg::helper() }
+    pub fn g() -> i32 { helper() }
+}
+
+println(f"{child::f()}");

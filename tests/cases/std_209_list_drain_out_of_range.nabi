@@ -1,0 +1,12 @@
+// A drain range past the length panics at the call.
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/std_209_list_drain_out_of_range.nabi:10:13:
+// expect-stderr: List::drain: range 2..4 out of bounds for length 3
+// expect-stdout: 3
+
+fn main() -> i32 {
+    let xs: List<i32> = [1, 2, 3];
+    println(f"{xs.len()}");
+    let d = xs.drain(2..4);
+    d.len() as i32
+}

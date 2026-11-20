@@ -1,0 +1,4 @@
+# Cases a phone cannot run, one per line: <case> <why>. The instrumentation
+# reports them skipped, not failed. Only for what the app sandbox or the
+# phone lacks; a compiler or library bug is a failure.
+std_process_signal_enum SIGUSR1 stays blocked: an app's processes inherit the signal mask ART sets (SIGQUIT, SIGUSR1, SIGPIPE blocked), so the case's handler never runs

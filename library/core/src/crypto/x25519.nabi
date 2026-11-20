@@ -1,0 +1,123 @@
+//! X25519 (RFC 7748): Diffie-Hellman on Curve25519's u coordinate.
+
+use core::crypto::Secret;
+use core::crypto::curve25519::{Fe25519, f25519_zero, f25519_one, f25519_small, f25519_add, f25519_sub, f25519_mul, f25519_sq, f25519_invert, f25519_cswap, f25519_to_bytes, f25519_from_bytes};
+
+/// A private key: 32 bytes in secret storage (clamped when used, as
+/// RFC 7748 says). It has one owner (`let b = a` moves it); `wipe` and
+/// its release clear it.
+pub struct PrivateKey {
+    k: Secret;
+}
+
+impl !Sync for PrivateKey {}
+
+/// A public key: a 32-byte u coordinate.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct PublicKey {
+    b: [u8; 32];
+}
+
+/// `[k]u` with the clamped scalar `k`: a Montgomery ladder, swapping
+/// by mask (RFC 7748 5).
+fn ladder(k: Slice<u8>, u: Slice<u8>) -> [u8; 32] {
+    let s: [u8; 32] = [0u8; 32];
+    for i in 0usize..32 { s[i] = k[i]; }
+    s[0] &= 248u8;
+    s[31] = (s[31] & 127u8) | 64u8;
+    let x1 = f25519_from_bytes(u);
+    let x2 = f25519_one();
+    let z2 = f25519_zero();
+    let x3 = x1;
+    let z3 = f25519_one();
+    let a24 = f25519_small(121665i64);
+    let swap = 0i64;
+    let t = 255usize;
+    while t > 0 {
+        t -= 1;
+        let bit = ((s[t / 8] >> (t % 8) as u8) & 1u8) as i64;
+        swap ^= bit;
+        f25519_cswap(ref x2, ref x3, swap);
+        f25519_cswap(ref z2, ref z3, swap);
+        swap = bit;
+        let a = f25519_add(x2, z2);
+        let aa = f25519_sq(a);
+        let b = f25519_sub(x2, z2);
+        let bb = f25519_sq(b);
+        let e = f25519_sub(aa, bb);
+        let c = f25519_add(x3, z3);
+        let d = f25519_sub(x3, z3);
+        let da = f25519_mul(d, a);
+        let cb = f25519_mul(c, b);
+        x3 = f25519_sq(f25519_add(da, cb));
+        z3 = f25519_mul(x1, f25519_sq(f25519_sub(da, cb)));
+        x2 = f25519_mul(aa, bb);
+        z2 = f25519_mul(e, f25519_add(aa, f25519_mul(a24, e)));
+    }
+    f25519_cswap(ref x2, ref x3, swap);
+    f25519_cswap(ref z2, ref z3, swap);
+    f25519_to_bytes(f25519_mul(x2, f25519_invert(z2)))
+}
+
+fn key32<B: AsBytes>(b: B, what: str) throws (ValueError) -> Slice<u8> {
+    let s = b.byte_slice();
+    if s.len() != 32 { throw ValueError::new(f"X25519 {what} must be 32 bytes"); }
+    s
+}
+
+impl PrivateKey {
+    /// The key of 32 bytes; throws `ValueError` on another length.
+    pub fn from_bytes<B: AsBytes>(bytes: B) throws (ValueError) -> PrivateKey {
+        PrivateKey { k: Secret::new(try key32(bytes, "private key")) }
+    }
+
+    /// A copy of the 32 bytes.
+    pub fn to_secret(self) -> Secret { Secret::new(self.k) }
+
+    /// The public key that pairs with this one.
+    pub fn public_key(self) -> PublicKey {
+        let base: [u8; 32] = [0u8; 32];
+        base[0] = 9u8;
+        PublicKey { b: ladder(self.k[0:32], base[0:32]) }
+    }
+
+    /// The shared secret with `peer`; `none` when it is all zero (a
+    /// small-order peer key, RFC 7748 6.1).
+    pub fn diffie_hellman(self, peer: PublicKey) -> Secret | none {
+        let k = ladder(self.k[0:32], peer.b[0:32]);
+        let out = Secret::zeroed(32);
+        let d = 0u8;
+        for i in 0usize..32 {
+            d |= k[i];
+            out[i] = k[i];
+        }
+        if d == 0u8 { return none; }
+        out
+    }
+
+    /// Overwrite the key with zeros now (every copy shares it).
+    pub fn wipe(self) { self.k.wipe(); }
+}
+
+/// Wiped where it is released.
+impl Drop for PrivateKey {
+    fn drop(ref self) { self.wipe(); }
+}
+
+/// Nothing of the key.
+impl Debug for PrivateKey {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("PrivateKey { .. }") }
+}
+
+impl PublicKey {
+    /// Any 32 bytes (RFC 7748 5: every u coordinate is accepted).
+    pub fn from_bytes<B: AsBytes>(bytes: B) throws (ValueError) -> PublicKey {
+        let s = try key32(bytes, "public key");
+        let b: [u8; 32] = [0u8; 32];
+        for i in 0usize..32 { b[i] = s[i]; }
+        PublicKey { b }
+    }
+
+    /// The key's 32 bytes.
+    pub const fn to_bytes(self) -> [u8; 32] { self.b }
+}

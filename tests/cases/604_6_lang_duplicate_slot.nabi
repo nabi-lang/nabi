@@ -1,0 +1,16 @@
+// expect-error: lang slot `oom_fn` is already bound
+
+// Binding two items to one slot is a compile error.
+#[lang("oom_fn")]
+fn a() -> i32 {
+    return 1;
+}
+
+#[lang("oom_fn")]
+fn b() -> i32 {
+    return 2;
+}
+
+fn main() -> i32 {
+    return 0;
+}

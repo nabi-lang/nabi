@@ -1,0 +1,31 @@
+// needs: objc
+// expect-error: an `extern "objc"` block names its class: `#[objc::class(NSArray)]` declares one
+// expect-error: `static count` in an `extern "objc"` block: it holds methods
+// expect-error: `extends(NSNothing)`: no class `NSNothing` is declared; declare it with `#[objc::class(NSNothing)]`
+// expect-error: class `NSString` is declared twice (`bare::ffi::objc` declares it): add methods to it with `#[objc::category(NSString)]`
+// expect-error: `make`: protocol `NSCopying` has no class object to send a class method to
+
+// What an `extern "objc"` block must say, and what it may hold.
+use bare::ffi::objc::Id;
+
+extern "objc" {
+    fn count(self) -> usize;
+}
+
+#[objc::class(NSSet)]
+extern "objc" {
+    static count: usize;
+}
+
+#[objc::class(NSThing, extends(NSNothing))]
+extern "objc" {}
+
+#[objc::class(NSString)]
+extern "objc" {}
+
+#[objc::protocol(NSCopying)]
+extern "objc" {
+    fn make() -> Id<NSCopying>;
+}
+
+fn main() {}

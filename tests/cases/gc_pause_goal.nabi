@@ -1,0 +1,27 @@
+// expect-exit: 0
+// gc-stress: 100
+// expect-stdout:
+// young true
+// rows 200 ok
+
+// A pause goal sizes the young generation from what minor collections
+// cost: it never grows past the default budget. Live data survives.
+use bare::gc;
+
+fn main() {
+    let default = gc::stats().young_budget;
+    gc::set_pause_goal(0.5);
+    let rows: List<List<str>> = [];
+    for r in 0..200 {
+        let row: List<str> = [];
+        for c in 0..20 { row.push(f"{r}:{c}"); }
+        rows.push(row);
+        for i in 0..200 { let _junk = f"junk {r} {i}"; }
+    }
+    let s = gc::stats();
+    println(f"young {default == 0 || s.young_budget <= default.max(128 << 20)}");
+    let ok = true;
+    for r in 0..200 { if rows[r][19] != f"{r}:19" { ok = false; } }
+    gc::set_pause_goal(0.0);
+    println(f"rows {rows.len()} {if ok { "ok" } else { "bad" }}");
+}

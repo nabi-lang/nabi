@@ -1,0 +1,16 @@
+// needs: threads
+// expect-error: `q` may hold one object twice
+// Stored once on each branch then once after.
+use std::thread;
+
+fn main() {
+    let (tx, rx) = channel::<List<i32>>();
+    let t = thread::spawn(|| { if let l: List<i32> = rx.recv() { for i in 0..200000 { l.push(i); } } 0 });
+    let q: List<List<i32>> = [];
+    let a: List<i32> = [];
+    let c = q.len() == 0;
+    if c { q.push(a); } else { q.push([]); }
+    q.push(a);
+    if let e: List<i32> = q.pop() { try! tx.send(e); }
+    if let f: List<i32> = q.pop() { for i in 0..200000 { f.push(i); } let _ = try! t.join(); println(f"len {f.len()}"); }
+}

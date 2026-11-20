@@ -1,0 +1,49 @@
+// only-endian: little
+// expect-exit: 0
+// expect-stdout:
+// ptr_cast: 7 4
+// u8 view: 1
+// align_cast: 258 none
+// unchecked: 258
+// method cast: 1 2 1
+
+// Every pointer cast is a named function - `ptr_cast`
+// retypes (same address), `align_cast` checks the alignment first
+// (`none` when misaligned), `align_cast_unchecked` trusts the caller.
+// `ConstPtr` and `ManyPtr` retype with their own `cast` method.
+use bare::ptr::{Ptr, ConstPtr, ManyPtr, addr_of, many_addr_of};
+use bare::{align_cast, align_cast_unchecked, ptr_cast};
+
+struct A { x: u32; }
+struct B { x: u32; }
+
+fn main() {
+    let a = A { x: 7 };
+    let pa: Ptr<A> = addr_of(a);
+    let pb: Ptr<B> = ptr_cast::<B>(pa);
+    println(f"ptr_cast: {unsafe { pb.read() }.x} {pb.addr() - pa.addr() + 4}");
+
+    let words: [u32; 2] = [1, 258];
+    let pw: Ptr<u32> = addr_of(words[0]);
+    let bytes: Ptr<u8> = ptr_cast::<u8>(pw);
+    // The low byte first: little-endian targets only (`only-endian`).
+    println(f"u8 view: {unsafe { bytes.read() }}");
+
+    let at4: Ptr<u8> = bytes.add(4);
+    let good = match align_cast::<u32>(at4) {
+        p: Ptr<u32> => f"{unsafe { p.read() }}",
+        none => "none",
+    };
+    let bad = match align_cast::<u32>(bytes.add(1)) {
+        p: Ptr<u32> => f"{unsafe { p.read() }}",
+        none => "none",
+    };
+    println(f"align_cast: {good} {bad}");
+    let u: Ptr<u32> = align_cast_unchecked::<u32>(at4);
+    println(f"unchecked: {unsafe { u.read() }}");
+
+    let cw: ConstPtr<u8> = pw.as_const().cast::<u8>();
+    let mw: ManyPtr<u32> = many_addr_of(words[0]);
+    let mb: ManyPtr<u8> = mw.cast::<u8>();
+    println(f"method cast: {unsafe { cw.read() }} {unsafe { mb.read(4) }} {unsafe { mb.cast::<u32>().read(0) }}");
+}

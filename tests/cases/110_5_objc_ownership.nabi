@@ -1,0 +1,45 @@
+// needs: objc
+// expect-exit: 0
+// expect-stdout:
+// alloc+init 1, the alloc result released true
+// new 1
+// mutableCopy 1
+// autoreleased 1 after the pool
+// shared 1 true
+// released true
+
+// A `+1` result (`alloc`, `init`, `new`, `copy`, `mutableCopy`) is taken
+// over and a `+0` one retained: either way an `Id` holds one retain,
+// which all its copies share. `init` takes its receiver's.
+use bare::ffi::objc;
+use bare::ffi::objc::{Id, NSObject};
+
+#[link(name = "Foundation", kind = "framework")]
+#[objc::class(NSMutableArray)]
+extern "objc" {
+    fn alloc() -> Id<Self>;
+    fn init(self) -> Id<Self>;
+    fn new() -> Id<Self>;
+    fn arrayWithCapacity(n: usize) -> Id<Self>;
+    fn mutableCopy(self) -> Id<NSMutableArray>;
+    fn addObject(self, o: Id<NSObject>);
+}
+
+fn main() {
+    let raw = NSMutableArray::alloc();
+    let a = raw.init();
+    println(f"alloc+init {a.retainCount()}, the alloc result released {raw.is_released()}");
+    let n = NSMutableArray::new();
+    println(f"new {n.retainCount()}");
+    let c = a.mutableCopy();
+    println(f"mutableCopy {c.retainCount()}");
+    let b = objc::autoreleasepool(|| NSMutableArray::arrayWithCapacity(4));
+    println(f"autoreleased {b.retainCount()} after the pool");
+    let d = a;
+    d.addObject(n);
+    println(f"shared {a.retainCount()} {n.retainCount() == 2}");
+    for o in [a, b, c, n] {
+        o.release_now();
+    }
+    println(f"released {d.is_released()}");
+}

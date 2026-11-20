@@ -1,0 +1,53 @@
+// expect-exit: 0
+// expect-stdout:
+// Q { v: [2.5, 2.5] }
+// Q { v: [2.0, 2.0] }
+// Q { v: [2.5, 2.5] }
+
+// A dot tree over a wrapper whose operators change the type (a length
+// over a time is a speed) is typed through its dot traits and fused
+// into one loop: `Broadcastable` views the arrays, `BroadcastScalar`
+// the scalar wrapper, and the checked type's `Materialize` builds the
+// result.
+use core::array::Array;
+use core::ops::{Broadcastable, BroadcastScalar, Materialize};
+
+#[derive(Debug)]
+struct Q<V, const L: i32> { v: V; }
+
+impl<const R: usize, const L: i32> Broadcastable<R> for Q<Array<f64, R>, L> {
+    type Elem = f64;
+    fn broadcast_view(self) -> Array<f64, R> { self.v }
+}
+impl<const R: usize, const L: i32> Materialize<f64, R> for Q<Array<f64, R>, L> {
+    type Output = Q<Array<f64, R>, L>;
+    fn materialize(out: Array<f64, R>) -> Q<Array<f64, R>, L> { Q { v: out } }
+}
+impl<const L: i32> BroadcastScalar for Q<f64, L> {
+    type Elem = f64;
+    fn broadcast_scalar(self) -> f64 { self.v }
+}
+impl<const R: usize, const L: i32, const L2: i32> ops::DotDiv<Q<Array<f64, R>, L2>> for Q<Array<f64, R>, L> {
+    type Output = Q<Array<f64, R>, { L - L2 }>;
+    fn dot_div(self, rhs: Q<Array<f64, R>, L2>) -> Q<Array<f64, R>, { L - L2 }> { Q { v: self.v ./ rhs.v } }
+}
+impl<const R: usize, const L: i32> ops::DotAdd<Q<f64, L>> for Q<Array<f64, R>, L> {
+    type Output = Q<Array<f64, R>, L>;
+    fn dot_add(self, rhs: Q<f64, L>) -> Q<Array<f64, R>, L> { Q { v: self.v .+ rhs.v } }
+}
+impl<const R: usize, const L: i32> ops::DotAdd for Q<Array<f64, R>, L> {
+    type Output = Q<Array<f64, R>, L>;
+    fn dot_add(self, rhs: Q<Array<f64, R>, L>) -> Q<Array<f64, R>, L> { Q { v: self.v .+ rhs.v } }
+}
+
+fn main() {
+    let d: Q<Array<f64, 1>, 1> = Q { v: [2.0, 4.0] };
+    let t: Q<Array<f64, 1>, 2> = Q { v: [1.0, 2.0] };
+    let v0: Q<f64, -1> = Q { v: 0.5 };
+    let s: Q<Array<f64, 1>, -1> = d ./ t .+ v0;
+    println(f"{s:?}");
+    s .= d ./ t;
+    println(f"{s:?}");
+    s .+= v0;
+    println(f"{s:?}");
+}

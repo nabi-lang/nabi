@@ -1,0 +1,849 @@
+// core::iter::adapters: the lazy adapters the `Iterator` methods
+// return: `Map`, `Filter`, `Zip`, ...
+
+use core::iter::{DoubleEndedIterator, ExactSizeIterator, IntoIterator, Iterator};
+
+/// The iterator `map` returns: `f` of each item.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Map<I, U> {
+    pub(pkg) it: I;
+    pub(pkg) f: fn(I::Item) -> U;
+}
+
+impl<I: Iterator, U> Debug for Map<I, U> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Map") }
+}
+
+impl<I: Iterator, U> Iterator for Map<I, U> {
+    type Item = U;
+    const fn next(ref self) -> U | none {
+        (self.f)(self.it.next()?)
+    }
+
+    const fn exact_len(self) -> usize | none { self.it.exact_len() }
+
+    /// As many as the inner iterator: O(1) over an `ExactSizeIterator`.
+    const fn count(self) -> usize { self.it.count() }
+}
+
+impl<I: DoubleEndedIterator, U> DoubleEndedIterator for Map<I, U> {
+    const fn next_back(ref self) -> U | none {
+        (self.f)(self.it.next_back()?)
+    }
+}
+
+impl<I: ExactSizeIterator, U> ExactSizeIterator for Map<I, U> {
+    const fn len(self) -> usize { self.it.len() }
+}
+
+/// The iterator `filter` returns: the items `pred` accepts, in order.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Filter<I> {
+    pub(pkg) it: I;
+    pub(pkg) pred: fn(I::Item) -> bool;
+}
+
+impl<I: Iterator> Debug for Filter<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Filter") }
+}
+
+impl<I: Iterator> Iterator for Filter<I> {
+    type Item = I::Item;
+    const fn next(ref self) -> I::Item | none {
+        while let x: I::Item = self.it.next() {
+            if (self.pred)(x) {
+                return x;
+            }
+        }
+        none
+    }
+}
+
+impl<I: DoubleEndedIterator> DoubleEndedIterator for Filter<I> {
+    const fn next_back(ref self) -> I::Item | none {
+        while let x: I::Item = self.it.next_back() {
+            if (self.pred)(x) {
+                return x;
+            }
+        }
+        none
+    }
+}
+
+/// The iterator `enumerate` returns: `(index, item)` pairs from the
+/// start index.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Enumerate<I> {
+    pub(pkg) it: I;
+    pub(pkg) i: usize;
+}
+
+impl<I> Debug for Enumerate<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Enumerate") }
+}
+
+impl<I: Iterator> Iterator for Enumerate<I> {
+    type Item = (usize, I::Item);
+    const fn next(ref self) -> (usize, I::Item) | none {
+        let x = self.it.next()?;
+        let at = self.i;
+        self.i = at + 1;
+        (at, x)
+    }
+
+    const fn exact_len(self) -> usize | none { self.it.exact_len() }
+
+    /// As many as the inner iterator: O(1) over an `ExactSizeIterator`.
+    const fn count(self) -> usize { self.it.count() }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for Enumerate<I> {
+    fn len(self) -> usize { self.it.len() }
+}
+
+impl<I: DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for Enumerate<I> {
+    const fn next_back(ref self) -> (usize, I::Item) | none {
+        let n = self.it.len();
+        let x = self.it.next_back()?;
+        (self.i + n - 1, x)
+    }
+}
+
+/// The iterator `zip` returns: pairs of items; ends with the shorter
+/// side.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Zip<I, J> {
+    pub(pkg) a: I;
+    pub(pkg) b: J;
+}
+
+impl<I, J> Debug for Zip<I, J> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Zip") }
+}
+
+impl<I: Iterator, J: Iterator> Iterator for Zip<I, J> {
+    type Item = (I::Item, J::Item);
+    const fn next(ref self) -> (I::Item, J::Item) | none {
+        let x = self.a.next()?;
+        (x, self.b.next()?)
+    }
+
+    const fn exact_len(self) -> usize | none {
+        let n = self.a.exact_len()?;
+        n.min(self.b.exact_len()?)
+    }
+}
+
+impl<I: ExactSizeIterator, J: ExactSizeIterator> ExactSizeIterator for Zip<I, J> {
+    const fn len(self) -> usize { self.a.len().min(self.b.len()) }
+}
+
+/// From the back, the longer side's extra tail is dropped first.
+impl<I: DoubleEndedIterator + ExactSizeIterator, J: DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for Zip<I, J> {
+    const fn next_back(ref self) -> (I::Item, J::Item) | none {
+        let (n, m) = (self.a.len(), self.b.len());
+        for _ in m..n {
+            self.a.next_back();
+        }
+        for _ in n..m {
+            self.b.next_back();
+        }
+        let x = self.a.next_back()?;
+        (x, self.b.next_back()?)
+    }
+}
+
+/// The iterator `chain` returns: every item of the first, then of the
+/// second.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Chain<I, J> {
+    pub(pkg) a: I;
+    pub(pkg) b: J;
+    pub(pkg) first: bool;
+}
+
+impl<I, J> Debug for Chain<I, J> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Chain") }
+}
+
+impl<I: Iterator, J: Iterator<Item = I::Item>> Iterator for Chain<I, J> {
+    type Item = I::Item;
+    const fn next(ref self) -> I::Item | none {
+        if self.first {
+            if let x: I::Item = self.a.next() {
+                return x;
+            }
+            self.first = false;
+        }
+        self.b.next()
+    }
+}
+
+impl<I: DoubleEndedIterator, J: DoubleEndedIterator> DoubleEndedIterator for Chain<I, J> {
+    const fn next_back(ref self) -> I::Item | none {
+        self.b.next_back() ?? self.a.next_back()
+    }
+}
+
+/// The iterator `step_by` returns: the first item, then every `step`th.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct StepBy<I> {
+    pub(pkg) it: I;
+    pub(pkg) step: usize;
+    pub(pkg) first: bool;
+}
+
+impl<I> Debug for StepBy<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("StepBy") }
+}
+
+impl<I: Iterator> Iterator for StepBy<I> {
+    type Item = I::Item;
+    const fn next(ref self) -> I::Item | none {
+        if self.first {
+            self.first = false;
+            return self.it.next();
+        }
+        self.it.nth(self.step - 1)
+    }
+
+    const fn exact_len(self) -> usize | none {
+        let n = self.it.exact_len()?;
+        if !self.first {
+            return n / self.step;
+        }
+        if n == 0 { 0 } else { 1 + (n - 1) / self.step }
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for StepBy<I> {
+    const fn len(self) -> usize {
+        let n = self.it.len();
+        if !self.first {
+            return n / self.step;
+        }
+        if n == 0 { 0 } else { 1 + (n - 1) / self.step }
+    }
+}
+
+/// The back item is the last one the front would reach: the tail past
+/// it is dropped first.
+impl<I: DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for StepBy<I> {
+    const fn next_back(ref self) -> I::Item | none {
+        let n = self.it.len();
+        if n == 0 {
+            return none;
+        }
+        let extra = if self.first { (n - 1) % self.step } else { n % self.step };
+        if !self.first && n < self.step {
+            return none;
+        }
+        for _ in 0..extra {
+            self.it.next_back();
+        }
+        self.it.next_back()
+    }
+}
+
+/// The iterator `rev` returns: the items from the back.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Rev<I> {
+    pub(pkg) it: I;
+}
+
+impl<I> Debug for Rev<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Rev") }
+}
+
+impl<I: DoubleEndedIterator> Iterator for Rev<I> {
+    type Item = I::Item;
+    const fn next(ref self) -> I::Item | none {
+        self.it.next_back()
+    }
+
+    const fn exact_len(self) -> usize | none { self.it.exact_len() }
+
+    /// As many as the inner iterator: O(1) over an `ExactSizeIterator`.
+    const fn count(self) -> usize { self.it.count() }
+}
+
+impl<I: DoubleEndedIterator> DoubleEndedIterator for Rev<I> {
+    fn next_back(ref self) -> I::Item | none {
+        self.it.next()
+    }
+}
+
+impl<I: DoubleEndedIterator + ExactSizeIterator> ExactSizeIterator for Rev<I> {
+    const fn len(self) -> usize { self.it.len() }
+}
+
+/// `flatten`: `cur` is the inner iterator being drained.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Flatten<I> {
+    pub(pkg) it: I;
+    pub(pkg) cur: <I::Item as IntoIterator>::IntoIter | none;
+}
+
+impl<I: Iterator> Debug for Flatten<I>
+where
+    I::Item: IntoIterator,
+{
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Flatten") }
+}
+
+impl<I: Iterator> Iterator for Flatten<I>
+where
+    I::Item: IntoIterator,
+{
+    type Item = <I::Item as IntoIterator>::Item;
+    const fn next(ref self) -> <I::Item as IntoIterator>::Item | none {
+        while true {
+            if let inner: <I::Item as IntoIterator>::IntoIter = self.cur {
+                if let x: <I::Item as IntoIterator>::Item = inner.next() {
+                    self.cur = inner;
+                    return x;
+                }
+                self.cur = none;
+            } else {
+                let nx = self.it.next()?;
+                self.cur = nx.into_iter();
+            }
+        }
+        none
+    }
+}
+
+/// `flat_map`: `cur` is the inner iterator being drained.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct FlatMap<I, U> {
+    pub(pkg) it: I;
+    pub(pkg) f: fn(I::Item) -> U;
+    pub(pkg) cur: <U as IntoIterator>::IntoIter | none;
+}
+
+impl<I: Iterator, U: IntoIterator> Debug for FlatMap<I, U> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("FlatMap") }
+}
+
+impl<I: Iterator, U: IntoIterator> Iterator for FlatMap<I, U> {
+    type Item = U::Item;
+    const fn next(ref self) -> U::Item | none {
+        while true {
+            if let inner: U::IntoIter = self.cur {
+                if let x: U::Item = inner.next() {
+                    self.cur = inner;
+                    return x;
+                }
+                self.cur = none;
+            } else {
+                self.cur = (self.f)(self.it.next()?).into_iter();
+            }
+        }
+        none
+    }
+}
+
+/// The iterator `peekable` returns: `peek` looks at the next item
+/// without taking it.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Peekable<I> {
+    pub(pkg) it: I;
+    pub(pkg) peeked: I::Item | none;
+    pub(pkg) has: bool;
+}
+
+impl<I: Iterator> Debug for Peekable<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Peekable") }
+}
+
+impl<I: Iterator> Peekable<I> {
+    /// The next item, left in place for the following `next`.
+    pub const fn peek(ref self) -> I::Item | none {
+        if !self.has {
+            self.peeked = self.it.next();
+            self.has = true;
+        }
+        self.peeked
+    }
+}
+
+impl<I: Iterator> Iterator for Peekable<I> {
+    type Item = I::Item;
+    const fn next(ref self) -> I::Item | none {
+        if self.has {
+            self.has = false;
+            return self.peeked;
+        }
+        self.it.next()
+    }
+}
+
+/// The iterator `take` returns: at most the first `n` items.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Take<I> {
+    pub(pkg) it: I;
+    pub(pkg) left: usize;
+}
+
+impl<I> Debug for Take<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Take") }
+}
+
+impl<I: Iterator> Iterator for Take<I> {
+    type Item = I::Item;
+    const fn next(ref self) -> I::Item | none {
+        if self.left == 0 {
+            return none;
+        }
+        self.left -= 1;
+        self.it.next()
+    }
+
+    const fn exact_len(self) -> usize | none {
+        if self.left == 0 {
+            return 0;
+        }
+        self.it.exact_len()?.min(self.left)
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for Take<I> {
+    const fn len(self) -> usize { self.it.len().min(self.left) }
+}
+
+impl<I: DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for Take<I> {
+    const fn next_back(ref self) -> I::Item | none {
+        if self.left == 0 {
+            return none;
+        }
+        for _ in self.left..self.it.len() {
+            self.it.next_back();
+        }
+        self.left -= 1;
+        self.it.next_back()
+    }
+}
+
+/// The iterator `skip` returns: all but the first `n` items.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Skip<I> {
+    pub(pkg) it: I;
+    pub(pkg) n: usize;
+}
+
+impl<I> Debug for Skip<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Skip") }
+}
+
+impl<I: Iterator> Iterator for Skip<I> {
+    type Item = I::Item;
+    const fn next(ref self) -> I::Item | none {
+        while self.n > 0 {
+            self.n -= 1;
+            self.it.next()?;
+        }
+        self.it.next()
+    }
+
+    const fn exact_len(self) -> usize | none { self.it.exact_len()?.saturating_sub(self.n) }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for Skip<I> {
+    const fn len(self) -> usize { self.it.len().saturating_sub(self.n) }
+}
+
+impl<I: DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for Skip<I> {
+    const fn next_back(ref self) -> I::Item | none {
+        if self.it.len() <= self.n {
+            return none;
+        }
+        self.it.next_back()
+    }
+}
+
+/// The iterator `take_while` returns: items up to the first that `pred`
+/// rejects.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct TakeWhile<I> {
+    pub(pkg) it: I;
+    pub(pkg) pred: fn(I::Item) -> bool;
+    /// `pred` rejected an item: no more are taken.
+    pub(pkg) done: bool;
+}
+
+impl<I: Iterator> Debug for TakeWhile<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("TakeWhile") }
+}
+
+impl<I: Iterator> Iterator for TakeWhile<I> {
+    type Item = I::Item;
+    const fn next(ref self) -> I::Item | none {
+        if self.done {
+            return none;
+        }
+        let x = self.it.next()?;
+        if (self.pred)(x) {
+            return x;
+        }
+        self.done = true;
+        none
+    }
+}
+
+/// The iterator `skip_while` returns: items from the first that `pred`
+/// rejects on.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct SkipWhile<I> {
+    pub(pkg) it: I;
+    pub(pkg) pred: fn(I::Item) -> bool;
+    /// An item passed `pred`'s test: the rest go through unchecked.
+    pub(pkg) done: bool;
+}
+
+impl<I: Iterator> Debug for SkipWhile<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SkipWhile") }
+}
+
+impl<I: Iterator> Iterator for SkipWhile<I> {
+    type Item = I::Item;
+    const fn next(ref self) -> I::Item | none {
+        if self.done {
+            return self.it.next();
+        }
+        while let x: I::Item = self.it.next() {
+            if !(self.pred)(x) {
+                self.done = true;
+                return x;
+            }
+        }
+        none
+    }
+}
+
+/// The iterator `scan` returns: each running state of `f`.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Scan<I, S> {
+    pub(pkg) it: I;
+    pub(pkg) state: S;
+    pub(pkg) f: fn(S, I::Item) -> S;
+}
+
+impl<I: Iterator, S> Debug for Scan<I, S> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Scan") }
+}
+
+impl<I: Iterator, S> Iterator for Scan<I, S> {
+    type Item = S;
+    const fn next(ref self) -> S | none {
+        let s = (self.f)(self.state, self.it.next()?);
+        self.state = s;
+        s
+    }
+
+    const fn exact_len(self) -> usize | none { self.it.exact_len() }
+
+    /// As many as the inner iterator: O(1) over an `ExactSizeIterator`.
+    const fn count(self) -> usize { self.it.count() }
+}
+
+impl<I: ExactSizeIterator, S> ExactSizeIterator for Scan<I, S> {
+    const fn len(self) -> usize { self.it.len() }
+}
+
+/// `inspect`'s adapter (`Inspect` is the reflection trait).
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct InspectIter<I> {
+    pub(pkg) it: I;
+    pub(pkg) f: fn(I::Item);
+}
+
+impl<I: Iterator> Debug for InspectIter<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("InspectIter") }
+}
+
+// No `count` override: counting a stepped inner iterator runs `f`.
+impl<I: Iterator> Iterator for InspectIter<I> {
+    type Item = I::Item;
+    const fn next(ref self) -> I::Item | none {
+        let x = self.it.next()?;
+        (self.f)(x);
+        x
+    }
+
+    const fn exact_len(self) -> usize | none { self.it.exact_len() }
+}
+
+impl<I: DoubleEndedIterator> DoubleEndedIterator for InspectIter<I> {
+    const fn next_back(ref self) -> I::Item | none {
+        let x = self.it.next_back()?;
+        (self.f)(x);
+        x
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for InspectIter<I> {
+    const fn len(self) -> usize { self.it.len() }
+}
+
+/// The iterator `cycle` returns: the items over and over; empty if the
+/// source is.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Cycle<I> {
+    /// The iterator as `cycle` got it: each round restarts from a copy.
+    pub(pkg) orig: I;
+    pub(pkg) it: I;
+}
+
+impl<I> Debug for Cycle<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Cycle") }
+}
+
+impl<I: Iterator> Iterator for Cycle<I> {
+    type Item = I::Item;
+    const fn next(ref self) -> I::Item | none {
+        if let x: I::Item = self.it.next() {
+            return x;
+        }
+        // One restart per call: an empty iterator ends the cycle.
+        self.it = self.orig;
+        self.it.next()
+    }
+
+    /// 0 for an empty iterator; else endless.
+    const fn exact_len(self) -> usize | none {
+        if let n: usize = self.orig.exact_len() {
+            if n == 0 {
+                return 0;
+            }
+        }
+        none
+    }
+}
+
+/// The iterator `chunks` returns: lists of `size` items, the last one
+/// shorter when the items run out.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Chunks<I> {
+    pub(pkg) it: I;
+    pub(pkg) size: usize;
+}
+
+impl<I> Debug for Chunks<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Chunks") }
+}
+
+impl<I: Iterator> Iterator for Chunks<I> {
+    type Item = List<I::Item>;
+    const fn next(ref self) -> List<I::Item> | none {
+        let first = self.it.next()?;
+        let out: List<I::Item> = List::with_capacity(self.size);
+        out.push(first);
+        while out.len() < self.size {
+            if let x: I::Item = self.it.next() {
+                out.push(x);
+            } else {
+                break;
+            }
+        }
+        out
+    }
+
+    const fn exact_len(self) -> usize | none {
+        let n = self.it.exact_len()?;
+        n / self.size + if n % self.size == 0 { 0 } else { 1 }
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for Chunks<I> {
+    const fn len(self) -> usize {
+        let n = self.it.len();
+        n / self.size + if n % self.size == 0 { 0 } else { 1 }
+    }
+}
+
+/// The iterator `windows` returns: every run of `size` consecutive items,
+/// overlapping, as lists.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Windows<I> {
+    pub(pkg) it: I;
+    pub(pkg) size: usize;
+    /// The last window yielded; each step builds a new list, so a
+    /// yielded window never changes.
+    pub(pkg) win: List<I::Item>;
+    pub(pkg) started: bool;
+}
+
+impl<I: Iterator> Debug for Windows<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Windows") }
+}
+
+impl<I: Iterator> Iterator for Windows<I> {
+    type Item = List<I::Item>;
+    const fn next(ref self) -> List<I::Item> | none {
+        if !self.started {
+            self.started = true;
+            let w: List<I::Item> = List::with_capacity(self.size);
+            while w.len() < self.size {
+                w.push(self.it.next()?);
+            }
+            self.win = w;
+            return w;
+        }
+        if self.win.len() < self.size {
+            return none;
+        }
+        let x = self.it.next()?;
+        let w: List<I::Item> = List::with_capacity(self.size);
+        for i in 1..self.size {
+            w.push(self.win[i]);
+        }
+        w.push(x);
+        self.win = w;
+        w
+    }
+
+    const fn exact_len(self) -> usize | none {
+        if self.started {
+            if self.win.len() < self.size {
+                return 0;
+            }
+            return self.it.exact_len();
+        }
+        let n = self.it.exact_len()?;
+        if n < self.size { 0 } else { n - self.size + 1 }
+    }
+}
+
+/// The iterator `pairwise` returns: each item with the next.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Pairwise<I> {
+    pub(pkg) it: I;
+    pub(pkg) prev: I::Item | none;
+}
+
+impl<I: Iterator> Debug for Pairwise<I> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Pairwise") }
+}
+
+impl<I: Iterator> Iterator for Pairwise<I> {
+    type Item = (I::Item, I::Item);
+    const fn next(ref self) -> (I::Item, I::Item) | none {
+        let a = match self.prev {
+            p: I::Item => p,
+            none => self.it.next()?,
+        };
+        let b = self.it.next()?;
+        self.prev = b;
+        (a, b)
+    }
+
+    const fn exact_len(self) -> usize | none {
+        let n = self.it.exact_len()?;
+        match self.prev {
+            _: I::Item => n,
+            none => if n == 0 { 0 } else { n - 1 },
+        }
+    }
+}
+
+/// The iterator `combinations` returns: each choice of `k` items as a
+/// list.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Combinations<T> {
+    pub(pkg) pool: List<T>;
+    pub(pkg) idx: List<usize>;
+    pub(pkg) started: bool;
+    pub(pkg) done: bool;
+}
+
+impl<T> Debug for Combinations<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Combinations") }
+}
+
+impl<T> Iterator for Combinations<T> {
+    type Item = List<T>;
+    const fn next(ref self) -> List<T> | none {
+        if self.done {
+            return none;
+        }
+        let n = self.pool.len();
+        let r = self.idx.len();
+        if self.started {
+            let i = r;
+            loop {
+                if i == 0 {
+                    self.done = true;
+                    return none;
+                }
+                i -= 1;
+                if self.idx[i] != i + n - r {
+                    break;
+                }
+            }
+            self.idx[i] += 1;
+            for j in i + 1..r {
+                self.idx[j] = self.idx[j - 1] + 1;
+            }
+        }
+        self.started = true;
+        pick(self.pool, self.idx, r)
+    }
+}
+
+/// The iterator `permutations` returns: each ordering of `k` items as a
+/// list.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Permutations<T> {
+    pub(pkg) pool: List<T>;
+    pub(pkg) idx: List<usize>;
+    pub(pkg) cycles: List<usize>;
+    pub(pkg) r: usize;
+    pub(pkg) started: bool;
+    pub(pkg) done: bool;
+}
+
+impl<T> Debug for Permutations<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Permutations") }
+}
+
+impl<T> Iterator for Permutations<T> {
+    type Item = List<T>;
+    const fn next(ref self) -> List<T> | none {
+        if self.done {
+            return none;
+        }
+        let n = self.pool.len();
+        let r = self.r;
+        if !self.started {
+            self.started = true;
+            return pick(self.pool, self.idx, r);
+        }
+        let i = r;
+        while i > 0 {
+            i -= 1;
+            self.cycles[i] -= 1;
+            if self.cycles[i] == 0 {
+                let first = self.idx[i];
+                for j in i..n - 1 {
+                    self.idx[j] = self.idx[j + 1];
+                }
+                self.idx[n - 1] = first;
+                self.cycles[i] = n - i;
+            } else {
+                let j = n - self.cycles[i];
+                self.idx.swap(i, j);
+                return pick(self.pool, self.idx, r);
+            }
+        }
+        self.done = true;
+        none
+    }
+}
+
+const fn pick<T>(pool: List<T>, idx: List<usize>, r: usize) -> List<T> {
+    let out: List<T> = List::with_capacity(r);
+    for i in 0..r {
+        out.push(pool[idx[i]]);
+    }
+    out
+}

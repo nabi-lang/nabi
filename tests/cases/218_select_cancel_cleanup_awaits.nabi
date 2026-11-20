@@ -1,0 +1,103 @@
+// expect-exit: 0
+// expect-stdout:
+// a: finally start
+// a: finally end
+// b: finally start
+// parent finally
+// join -> cancelled
+// children: 2 cleaned
+// losers: 2 cleaned
+// main done
+
+// Cancelling a task that waits on `select` runs the started
+// children's cleanups to the end, awaits included: the first one to
+// finish them ends the `select`, the rest finish theirs in the
+// background, like the losers of a `select` that won. The cancel waits
+// until the parent's first poll of the `select` ended with both children
+// parked in their sleeps: a cancel during that poll is seen by `b`'s
+// first await, not `a`'s, and `b`'s cleanup would start first.
+static STARTED: Atomic<i64> = Atomic::new(0);
+static POLLED: Atomic<i64> = Atomic::new(0);
+static ENDED: Atomic<i64> = Atomic::new(0);
+static DONE: Atomic<i64> = Atomic::new(0);
+
+// Waits up to a minute for `a` to reach `n`: a loaded box stalls the
+// task for seconds, and a lost wakeup still fails the case with the
+// short count printed, before the case's own time limit.
+async fn until(a: Atomic<i64>, n: i64) {
+    let at = Instant::now() + Duration::secs(60);
+    while a.load() < n && Instant::now() < at {
+        await task::sleep(Duration::ms(1));
+    }
+}
+
+async fn child(name: str, steps: i64) -> i64 {
+    STARTED.fetch_add(1);
+    try {
+        await task::sleep(Duration::secs(120));
+    } finally {
+        println(f"{name}: finally start");
+        for _ in 0..steps {
+            await task::yield_now();
+        }
+        if name == "a" { println(f"{name}: finally end"); }
+        ENDED.fetch_add(1);
+    }
+    0
+}
+
+/// `inner`, noting each poll that has ended.
+struct Noted<F> { inner: F; }
+
+impl<F: Future> Future for Noted<F> {
+    type Output = F::Output;
+    fn poll(ref self, ref ctx: future::Context) -> future::Poll<F::Output> {
+        let f = self.inner;
+        let r = f.poll(ref ctx);
+        self.inner = f;
+        POLLED.fetch_add(1);
+        r
+    }
+}
+
+async fn parent() -> i64 {
+    try {
+        let (i, v) = await Noted { inner: task::select([child("a", 1), child("b", 3)]) };
+        println(f"select -> {i} {v}");
+    } finally {
+        await task::yield_now();
+        println("parent finally");
+    }
+    0
+}
+
+async fn loser() -> i64 {
+    try {
+        await task::sleep(Duration::secs(120));
+    } finally {
+        await task::sleep(Duration::ms(1));
+        DONE.fetch_add(1);
+    }
+    0
+}
+
+async fn winner() -> i64 {
+    await task::yield_now();
+    1
+}
+
+async fn main() {
+    let t = task::spawn(parent());
+    await until(STARTED, 2);
+    await until(POLLED, 1);
+    t.cancel();
+    let r = try await t.join() catch _: task::CancellationError { -1 };
+    println(if r == -1 { "join -> cancelled" } else { "join -> value" });
+    await until(ENDED, 2);
+    println(f"children: {ENDED.load()} cleaned");
+    let (i, _) = await task::select([loser(), winner(), loser()]);
+    await until(DONE, 2);
+    println(f"losers: {DONE.load()} cleaned");
+    if i != 1 { println("wrong winner"); }
+    println("main done");
+}

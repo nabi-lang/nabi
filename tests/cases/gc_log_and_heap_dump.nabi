@@ -1,0 +1,75 @@
+// needs: process
+// expect-exit: 0
+// expect-stdout:
+// log: 3 lines, full true, minor true, fields true
+// dump: exit 101, out of memory true, totals true, types true, large true
+
+// `NABIR_GC_LOG=1` and `NABIR_HEAP_DUMP=on_oom`; the program reruns itself with each.
+use bare::gc;
+use std::env;
+use std::process::Command;
+
+extern "C" {
+    fn nabi_gc_collect_young();
+}
+
+fn text(b: List<u8>) -> str { try! str::from_utf8(b) }
+
+fn child(mode: str) {
+    let big: List<u8> = [];
+    for i in 0..100000 {
+        big.push(i as u8);
+    }
+    let small: List<str> = [];
+    for i in 0..100 {
+        small.push(f"s{i}");
+    }
+    if mode == "log" {
+        gc::collect();
+        unsafe { nabi_gc_collect_young() };
+        gc::collect();
+        return;
+    }
+    core::panic::oom();
+}
+
+fn main() {
+    let mode = try? env::var("GC_DIAG_CHILD");
+    if let m: str = mode {
+        child(m);
+        return;
+    }
+    let exe = try! env::current_exe();
+    // The children count their own collections: no inherited stress.
+    let o = try! Command::new(exe).env("GC_DIAG_CHILD", "log").env("NABIR_GC_LOG", "1")
+        .env("NABIR_GC_STRESS", "0").output();
+    let lines: List<str> = text(o.stderr).trim().lines().collect();
+    let (full, minor, fields) = (0, 0, 0usize);
+    for l in lines {
+        if l.contains(" full: ") {
+            full += 1;
+        }
+        if l.contains(" minor: ") {
+            minor += 1;
+        }
+        if l.starts_with("nabi gc: #") && l.contains(" ms pause, ") && l.contains(" objects marked, ")
+            && l.contains(" KiB; ttsp ") && l.contains(" us, mark ") && l.contains(" us, sweep ")
+            && l.contains(" us, evac ") && l.contains(" us, threads ") && l.contains(", at ") && l.ends_with(" ms") {
+                fields += 1;
+            }
+    }
+    println(f"log: {lines.len()} lines, full {full == 2}, minor {minor == 1}, fields {fields == lines.len()}");
+
+    let d = try! Command::new(exe).env("GC_DIAG_CHILD", "oom").env("NABIR_HEAP_DUMP", "on_oom")
+        .env("NABIR_GC_STRESS", "0").output();
+    let err = text(d.stderr);
+    let large = false;
+    for l in err.lines() {
+        let rest = l.strip_prefix("nabi heap dump: large object of type ") ?? "";
+        if let (_, n): (str, str) = rest.split_once(": ") {
+            let bytes = (try? (n.strip_suffix(" bytes") ?? "").parse::<i64>()) ?? 0;
+            large = large || bytes >= 100000;
+        }
+    }
+    println(f"dump: exit {d.status.code() ?? -1}, out of memory {err.trim().ends_with("fatal error: out of memory")}, totals {err.contains(" blocks (")}, types {err.contains("nabi heap dump: type 0x")}, large {large}");
+}

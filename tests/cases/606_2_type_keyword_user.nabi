@@ -1,0 +1,8 @@
+// expect-error: 5:1: `#[keyword("vec2")]` must be on a function - its handler; only the standard library names a type with it
+
+// Only the standard library registers type keywords (a
+// `#[keyword]` on a struct).
+#[keyword("vec2")]
+struct V { x: i32; y: i32; }
+
+println("unreached");

@@ -1,0 +1,28 @@
+// expect-exit: 0
+// expect-stdout:
+// [0, 2, 0] [1, 1, 2]
+// [1, 0, 2] [7, 7, 6] [6, 0, 3]
+// [4, 16, 4] [1, 2, 8]
+
+// `.%%=` and the bitwise / shift forms `.&=` `.|=` `.^=` `.<<=` `.>>=`
+// write the target in place, like `.+=`.
+fn main() {
+    let r: List<i32> = [-3, 5, 9];
+    r .%%= 3;
+    let s: [i32; 3] = [-5, 7, -1];
+    s .%%= 3;
+    println(f"{r:?} {s:?}");
+    let a: List<u8> = [5, 4, 6];
+    a .&= 3;
+    let o: List<u8> = [5, 3, 6];
+    o .|= [2, 4, 0];
+    let x: [u8; 3] = [3, 5, 6];
+    x .^= 5;
+    println(f"{a:?} {o:?} {x:?}");
+    let l: List<i64> = [1, 4, 1];
+    l .<<= 2;
+    let h: List<i64> = [16, 32, 64];
+    let by: List<i64> = [4, 4, 3];
+    h .>>= by;
+    println(f"{l:?} {h:?}");
+}

@@ -1,0 +1,11 @@
+// expect-error: `[ref buf]` can't be used in a closure that may run on another thread: both threads could change `buf` at once
+// expect-error: help: write `let buf = Mutex::new(buf);` before the closure, capture `buf` without `ref`, and use `using g = buf.lock() { g.set(..); }`; or return the value from the closure instead
+
+// A `[ref x]` capture in a `fn() + Send` closure shares the cell
+// between threads, so it is never `Sync`.
+fn main() {
+    let xs: List<i32> = [1, 2, 3];
+    let buf: List<i32> = [];
+    par::for_each(xs, [ref buf] |x: i32| { buf.push(x); });
+    println(f"{buf.len()}");
+}

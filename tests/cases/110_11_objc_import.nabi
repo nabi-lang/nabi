@@ -1,0 +1,38 @@
+// needs: objc
+// expect-exit: 0
+// expect-stdout:
+// 11 HELLO, OBJC 2 objc
+// mutable 3 a,b,c
+// options true false
+// error NSCocoaErrorDomain 260
+// domain NSCocoaErrorDomain
+// number 42 true
+
+// Foundation through `ffi::objc::import`: classes and categories from
+// the SDK's headers, nullable and `instancetype` results, `NS_OPTIONS`,
+// a last `NSError **` as `throws`, and an extern `NSString *` constant.
+mod ns {
+    ffi::objc::import { "Foundation/Foundation.h" }
+}
+use ns::*;
+use bare::ffi::objc;
+use bare::ffi::objc::ns;
+
+fn main() {
+    let s = ns("hello, objc");
+    let parts = s.componentsSeparatedByString(ns(", "));
+    let last = parts.lastObject() ?? panic("empty");
+    println(f"{s.length()} {s.uppercaseString().to_str()} {parts.count()} {last}");
+    let m = NSMutableArray::array();
+    for x in ["a", "b", "c"] {
+        m.addObject(ns(x));
+    }
+    println(f"mutable {m.count()} {m.componentsJoinedByString(ns(",")).to_str()}");
+    let o = NSCaseInsensitiveSearch | NSLiteralSearch;
+    println(f"options {o.contains(NSLiteralSearch)} {o.contains(NSBackwardsSearch)}");
+    try NSString::stringWithContentsOfFile_encoding_error(ns("/nonexistent/nabi"), NSUTF8StringEncoding)
+        catch e: objc::Error { println(f"error {e.domain()} {e.code()}"); ns("") };
+    println(f"domain {NSCocoaErrorDomain().to_str()}");
+    let n = NSNumber::numberWithInteger(42);
+    println(f"number {n.integerValue()} {n.isEqualToNumber(NSNumber::numberWithLong(42))}");
+}

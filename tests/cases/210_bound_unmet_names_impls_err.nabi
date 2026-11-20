@@ -1,0 +1,25 @@
+// expect-error: 23:13: type `fn(List<f64>) -> f64 + Send + Sync` does not satisfy trait bound `IntoObjective` required by `go`
+// expect-error: help: `IntoObjective` is implemented for `fn(Vector<f64>) -> f64`, `fn(f64) -> f64`, `Pair<T>`: pass a value of one of these types
+// forbid-error: no method `eval`
+// expect-error: 24:13: type `str` does not satisfy trait bound `Show` required by `show`
+// forbid-error: `Show` is implemented for
+
+// An unmet bound of a trait with few impls names the types that have
+// it; a blanket impl names none.
+trait IntoObjective { fn eval(self, x: f64) -> f64; }
+trait Show { fn show(self) -> str; }
+trait Tag {}
+struct Vector<T> { v: List<T>; }
+struct Pair<T> { a: T; b: T; }
+impl IntoObjective for fn(Vector<f64>) -> f64 { fn eval(self, x: f64) -> f64 { x } }
+impl IntoObjective for fn(f64) -> f64 { fn eval(self, x: f64) -> f64 { x } }
+impl<T> IntoObjective for Pair<T> { fn eval(self, x: f64) -> f64 { x } }
+impl<T: Tag> Show for T { fn show(self) -> str { "" } }
+fn go<F: IntoObjective>(f: F) -> f64 { f.eval(1.0) }
+fn show<S: Show>(s: S) -> str { s.show() }
+fn obj(xs: List<f64>) -> f64 { xs[0] }
+
+fn main() {
+    let a = go(obj);
+    let b = show("x");
+}

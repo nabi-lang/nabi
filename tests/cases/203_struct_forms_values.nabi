@@ -1,0 +1,61 @@
+// expect-exit: 0
+// expect-stdout:
+// 1 2 3 7 true
+// 3 30 false 5
+// 16 true true
+// 1 5 1 9
+// 2 2
+
+use bare::mem::align_of;
+
+struct Point { x: f64; y: f64; }
+
+struct Pair(i32, i32);
+struct Wrapper(str);
+
+struct Marker;
+
+const RETRY: i32 = 3;
+
+struct Config {
+    retry: i32 = RETRY;
+    timeout: f64 = 30.0;
+    verbose: bool = false;
+}
+
+struct Mixed { a: u8; b: i64; c: u16; }
+
+struct Holder { xs: List<i32>; }
+
+fn main() {
+    // Named, tuple and unit forms.
+    let p = Point { x: 1.0, y: 2.0 };
+    let q = Pair(3, 7);
+    let w = Wrapper("w");
+    let m = Marker;
+    println(f"{p.x} {p.y} {q.0} {q.1} {w.0 == "w"}");
+    // Omitted fields take their `const` defaults.
+    let c = Config { verbose: false };
+    let d = Config { retry: 5, ..c };
+    println(f"{c.retry} {c.timeout} {c.verbose} {d.retry}");
+    // Declaration order with natural alignment (repr(C)): `b` at
+    // i64's alignment (8; 4 on i686 Linux), `c` after it, the size a
+    // multiple of it.
+    let al = align_of::<i64>();
+    println(f"{Point::size()} {Mixed::size() == (al + 8 + 2 + al - 1) / al * al} {Mixed::align() == al}");
+    // A struct copies; a list element read copies.
+    let a = Point { x: 1.0, y: 2.0 };
+    let b = a;
+    b.x = 5.0;
+    let ps: List<Point> = [a];
+    let e = ps[0];
+    e.x = 9.0;
+    print(f"{a.x} {b.x} {ps[0].x} ");
+    ps[0] = e;
+    println(f"{ps[0].x}");
+    // A struct field holding a handle copies the handle (shares the list).
+    let h = Holder { xs: [1] };
+    let h2 = h;
+    h2.xs.push(2);
+    println(f"{h.xs.len()} {h2.xs.len()}");
+}

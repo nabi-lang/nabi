@@ -1,0 +1,16 @@
+// expect-exit: 0
+// expect-stdout:
+// 2 2 2
+
+// A root function named `std` is an ordinary item, also as `pkg::std`.
+pub(pkg) fn std(x: i32) -> i32 { x * 2 }
+
+mod inner {
+    use pkg::std;
+
+    pub fn twice() -> i32 { std(1) }
+}
+
+fn main() {
+    println(f"{std(1)} {pkg::std(1)} {inner::twice()}");
+}

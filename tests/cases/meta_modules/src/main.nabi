@@ -1,0 +1,17 @@
+// expect-exit: 0
+// expect-stdout: 2
+// A `pub` meta block in another module is found by the
+// pre-pass over every file; the derive is used here.
+mod derives;
+
+use derives::Width;
+
+#[derive(Width)]
+struct S { a: i32; b: i64; }
+
+fn main() -> i32 {
+    let s = S { a: 1, b: 2i64 };
+    println(f"{s.width()}");
+    return 0;
+}
+

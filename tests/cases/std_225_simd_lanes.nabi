@@ -1,0 +1,74 @@
+// `core::simd` vectors built from scalars (`from_array` of locals, of a
+// struct's fields, with repeated and constant lanes) and summed lane by
+// lane, in order from zero: `-0.0` lanes sum to `0.0`, a NaN lane makes
+// a NaN, integers wrap; accumulators carried through loops and read
+// back by lane, every lane width.
+// expect-exit: 0
+// expect-stdout:
+// dot 70 70
+// zero 0 -0 NaN
+// mix 6 6.5 -2.5 4.8125
+// i32 2 10
+// i8 0 120
+// u16 65534 3
+// u64 18446744073709551615
+// f64 4096.5 2048.25 1024.125 4608.5
+// f32 4096.5 2048.25 1024.125 4608.5
+// rows 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
+
+use core::hint::black_box;
+use core::simd::{f32x4, f64x2, Simd};
+
+struct V4 { x: f32; y: f32; z: f32; w: f32; }
+
+fn simd(v: V4) -> f32x4 { Simd::from_array([v.x, v.y, v.z, v.w]) }
+
+fn dot(a: V4, b: V4) -> f32 { (simd(a) * simd(b)).reduce_sum() }
+
+fn main() -> i32 {
+    let a = black_box(V4 { x: 1.0, y: 2.0, z: 3.0, w: 4.0 });
+    let b = black_box(V4 { x: 5.0, y: 6.0, z: 7.0, w: 8.0 });
+    println(f"dot {dot(a, b)} {a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w}");
+    let nz = black_box(-0.0f32);
+    let z = Simd::from_array([nz, nz, nz, nz]).reduce_sum();
+    let z2 = f64x2::from_array([black_box(-0.0), black_box(-0.0)]);
+    let nan = Simd::from_array([1.0f32, black_box(f32::NAN), nz, 2.0]).reduce_sum();
+    println(f"zero {z} {z2.to_array()[1]} {nan}");
+    let x = black_box(1.25f32);
+    let m = Simd::from_array([x, x, 2.0, black_box(1.5f32)]);
+    let k = Simd::from_array([x, 4.0, x, -2.0 * x]);
+    println(f"mix {m.reduce_sum()} {(m + f32x4::splat(0.0)).to_array()[1] + 5.25} {k.to_array()[3]} {(m * k).reduce_sum() - 0.5}");
+    let big = black_box(2147483647i32);
+    let i = Simd::from_array([big, big, black_box(2i32), 2]);
+    println(f"i32 {i.reduce_sum()} {Simd::from_array([1, 2, black_box(3i32), 4]).reduce_sum()}");
+    let b8 = black_box(100i8);
+    let v8: Simd<i8, 16> = Simd::from_array([b8, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -b8 - 28]);
+    let w8: Simd<i8, 16> = Simd::from_array([b8, b8, -b8, -b8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0]);
+    println(f"i8 {v8.reduce_sum()} {w8.reduce_sum() + 54}");
+    let h = black_box(65535u16);
+    let v16: Simd<u16, 8> = Simd::from_array([h, h, 0, 0, 0, 0, 0, black_box(0u16)]);
+    let w16: Simd<u16, 8> = Simd::from_array([h, 1, 1, 1, 1, 0, 0, black_box(0u16)]);
+    println(f"u16 {v16.reduce_sum()} {w16.reduce_sum()}");
+    let q = black_box(u64::MAX);
+    println(f"u64 {Simd::from_array([q, black_box(0u64)]).reduce_sum()}");
+    // Accumulators through a loop, then lanes read back.
+    let acc = Simd::from_array([0.5, 0.25, 0.125, 0.5]);
+    let acf = Simd::from_array([0.5f32, 0.25, 0.125, 0.5]);
+    for i in 0..black_box(1024) {
+        let t = i as f64;
+        let s = black_box(1.0);
+        acc = acc + Simd::from_array([4.0 * s, 2.0 * s, s, 4.5 * s]);
+        acf = acf + Simd::from_array([4.0f32, 2.0, 1.0, 4.5f32 * (t * 0.0 + 1.0) as f32]);
+    }
+    let d = acc.to_array();
+    let e = acf.to_array();
+    println(f"f64 {d[0]} {d[1]} {d[2]} {d[3]}");
+    println(f"f32 {e[0]} {e[1]} {e[2]} {e[3]}");
+    // Two registers of lanes.
+    let r: Simd<i32, 16> = Simd::from_array([black_box(1i32), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, black_box(16i32)]);
+    let ra = r.to_array();
+    let line = "rows";
+    for j in 0..16 { line = f"{line} {ra[j]}"; }
+    println(line);
+    return 0;
+}

@@ -1,0 +1,14 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/bare_addr_of_oob.nabi:12:21:
+// expect-stderr: index out of bounds
+// expect-stdout:
+
+// `addr_of(a[i])` checks `i` like a read of `a[i]`.
+use bare::ptr::addr_of;
+
+fn main() -> i32 {
+    let a: [i64; 3] = [1, 2, 3];
+    let i = a.len();
+    let p = addr_of(a[i]);
+    p.addr() as i32
+}

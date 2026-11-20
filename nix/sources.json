@@ -1,0 +1,9 @@
+{
+  "version": "0.1.0",
+  "template": true,
+  "archives": {
+    "aarch64-darwin": { "url": "https://github.com/nabi-lang/nabi/releases/download/v0.1.0/nabi-0.1.0-aarch64-apple-darwin.tar.xz", "sha256": "0000000000000000000000000000000000000000000000000000000000000000" },
+    "aarch64-linux": { "url": "https://github.com/nabi-lang/nabi/releases/download/v0.1.0/nabi-0.1.0-aarch64-unknown-linux-musl.tar.xz", "sha256": "0000000000000000000000000000000000000000000000000000000000000000" },
+    "x86_64-linux": { "url": "https://github.com/nabi-lang/nabi/releases/download/v0.1.0/nabi-0.1.0-x86_64-unknown-linux-musl.tar.xz", "sha256": "0000000000000000000000000000000000000000000000000000000000000000" }
+  }
+}

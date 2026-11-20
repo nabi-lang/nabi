@@ -1,0 +1,86 @@
+// expect-error: error[E0106]: `ys` came out of the `Mutex` at line 26, and `g`'s `using` block released the lock
+// expect-error: handoff_guard_errors.nabi:29:5: `ys` came out of the `Mutex` at line 26, and `g`'s `using` block released the lock
+// expect-error: help: the lock no longer protects `ys`; use it inside the `using` block, or keep a deep copy there with `g.get_clone()`
+// expect-error: handoff_guard_errors.nabi:37:5: `zs` was given to the `Mutex` at line 35
+// expect-error: handoff_guard_errors.nabi:45:5: `a` came out of the `RwLock` at line 43, and `g`'s `using` block released the lock
+// expect-error: handoff_guard_errors.nabi:54:5: `got` came out of the `Mutex` at line 51, and `g`'s `using` block released the lock
+// expect-error: handoff_guard_errors.nabi:66:5: `keep` shares the value the `Mutex` protects at line 64, and `g`'s `using` block released the lock
+// expect-error: handoff_guard_errors.nabi:74:5: `mine` shares the value the `Mutex` protects (`g.update(|_| mine)`) at line 72, and `g`'s `using` block released the lock
+
+// A handle taken out of a guard (`g.get()`), or handed to it
+// (`g.set(v)`, the captures of `g.update(f)`'s closure), is protected
+// only while the guard's `using` block holds the lock: using it after
+// the block, or returning it out of the block, is a compile error.
+
+fn main() {
+    let m = Mutex::new([1i32]);
+    let a = got_after(m) + set_after(m) + read_after(RwLock::new([3i32]));
+    let b = try_locked(m) + returned(m).len() as i64;
+    let c = update_keeps(m) + update_gives(m);
+    println(f"{a} {b} {c}");
+}
+
+fn got_after(m: Mutex<List<i32>>) -> i64 {
+    let ys: List<i32> = [];
+    using g = m.lock() {
+        ys = g.get();
+        ys.push(1);
+    }
+    ys.len() as i64
+}
+
+fn set_after(m: Mutex<List<i32>>) -> i64 {
+    let zs: List<i32> = [5];
+    using g = m.lock() {
+        g.set(zs);
+    }
+    zs.len() as i64
+}
+
+fn read_after(l: RwLock<List<i32>>) -> i64 {
+    let a: List<i32> = [];
+    using g = l.read() {
+        a = g.get();
+    }
+    a.len() as i64
+}
+
+fn try_locked(m: Mutex<List<i32>>) -> i64 {
+    let got: List<i32> = [];
+    match m.try_lock() {
+        v: sync::MutexGuard<List<i32>> => using g = v { got = g.get(); },
+        none => {},
+    }
+    got.len() as i64
+}
+
+fn returned(m: Mutex<List<i32>>) -> List<i32> {
+    using g = m.lock() { return g.get(); }
+}
+
+fn update_keeps(m: Mutex<List<i32>>) -> i64 {
+    let keep: List<List<i32>> = [];
+    using g = m.lock() {
+        g.update(|v| { keep.push(v); v });
+    }
+    keep[0].len() as i64
+}
+
+fn update_gives(m: Mutex<List<i32>>) -> i64 {
+    let mine: List<i32> = [];
+    using g = m.lock() {
+        g.update(|_| mine);
+    }
+    mine.len() as i64
+}
+
+// The `using` block's value is what `get` returned.
+// expect-error: handoff_guard_errors.nabi:80:17: the value of `g`'s `using` block is what the `Mutex` protects, and the block releases the lock before it is used
+fn block_value(m: Mutex<List<i32>>) -> i64 {
+    let items = using g = m.lock() { g.get() };
+    items.sort();
+    items.len() as i64
+}
+
+// `return g.get()` inside the block hands the guarded value to the caller.
+// expect-error: handoff_guard_errors.nabi:58:26: this returns a value out of the `Mutex`, and `g`'s `using` block releases the lock before the caller uses it

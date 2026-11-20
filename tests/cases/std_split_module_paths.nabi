@@ -1,0 +1,26 @@
+// expect-exit: 0
+// expect-stdout:
+// 2 4 6 1+2i true 8080
+// true 0
+
+// A module split across files keeps its items at the parent's path:
+// `io::BufReader`, `iter::Map`, `num::Complex`, `net::SocketAddr`.
+use core::io::{BufReader, Cursor};
+use core::collections::ListIter;
+use core::iter::Map;
+use core::num::Complex;
+use std::fs::{Metadata, OpenFlags};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, UdpSocket};
+
+fn main() {
+    let m: Map<ListIter<i32>, i32> = [1, 2, 3].iter().map(|x| x * 2);
+    let xs: List<i32> = m.collect();
+    let z: Complex<f64> = Complex::new(1.0, 2.0);
+    let r = BufReader::new(Cursor::new("ab"));
+    let n = r.capacity();
+    let a = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080));
+    println(f"{xs[0]} {xs[1]} {xs[2]} {z} {a.ip().is_loopback()} {a.port()}");
+    let held: (List<Metadata>, List<OpenFlags>, List<TcpListener>, List<UdpSocket>) =
+        (List::new(), List::new(), List::new(), List::new());
+    println(f"{n > 0} {held.0.len() + held.1.len() + held.2.len() + held.3.len()}");
+}

@@ -1,0 +1,231 @@
+// core::num::bigint::ops: the operator and comparison trait impls of
+// `Int`.
+
+use core::num::bigint::Int;
+use core::num::bigint::mag::IntMag;
+
+impl Add for Int {
+    type Output = Int;
+    const fn add(self, rhs: Int) -> Int {
+        if self.big is none && rhs.big is none {
+            if let s: i64 = self.small.checked_add(rhs.small) { return Int::from_i64(s); }
+        }
+        let (an, am) = self.parts();
+        let (bn, bm) = rhs.parts();
+        add_signed(an, am, bn, bm)
+    }
+}
+
+const fn add_signed(an: bool, am: IntMag, bn: bool, bm: IntMag) -> Int {
+    if an == bn { return Int::from_parts(an, am.plus(bm)); }
+    let c = am.cmp3(bm);
+    if c == 0 { return Int::from_i64(0); }
+    if c > 0 { Int::from_parts(an, am.minus(bm)) } else { Int::from_parts(bn, bm.minus(am)) }
+}
+
+impl Sub for Int {
+    type Output = Int;
+    const fn sub(self, rhs: Int) -> Int {
+        if self.big is none && rhs.big is none {
+            if let s: i64 = self.small.checked_sub(rhs.small) { return Int::from_i64(s); }
+        }
+        let (an, am) = self.parts();
+        let (bn, bm) = rhs.parts();
+        add_signed(an, am, !bn, bm)
+    }
+}
+
+impl Mul for Int {
+    type Output = Int;
+    fn mul(self, rhs: Int) -> Int {
+        if self.big is none && rhs.big is none {
+            if let s: i64 = self.small.checked_mul(rhs.small) { return Int::from_i64(s); }
+        }
+        let (an, am) = self.parts();
+        let (bn, bm) = rhs.parts();
+        Int::from_parts(an != bn, am.times(bm))
+    }
+}
+
+/// Truncating division (`-7 / 2 == -3`); panics on zero.
+impl Div for Int {
+    type Output = Int;
+    #[track_caller]
+    fn div(self, rhs: Int) -> Int {
+        let (q, _) = self.div_rem(rhs);
+        q
+    }
+}
+
+/// The remainder of `/`: takes the dividend's sign (`-7 % 2 == -1`).
+impl Rem for Int {
+    type Output = Int;
+    #[track_caller]
+    fn rem(self, rhs: Int) -> Int {
+        let (_, r) = self.div_rem(rhs);
+        r
+    }
+}
+
+/// `%%`: takes the divisor's sign (`-7 %% 2 == 1`).
+impl Modulo for Int {
+    type Output = Int;
+    #[track_caller]
+    fn modulo(self, rhs: Int) -> Int {
+        let r = self % rhs;
+        if !r.is_zero() && r.is_negative() != rhs.is_negative() { r + rhs } else { r }
+    }
+}
+
+impl Neg for Int {
+    type Output = Int;
+    const fn neg(self) -> Int {
+        if self.big is none {
+            if let s: i64 = self.small.checked_neg() { return Int::from_i64(s); }
+        }
+        let (n, m) = self.parts();
+        Int::from_parts(!n, m)
+    }
+}
+
+impl BitAnd for Int {
+    type Output = Int;
+    const fn bitand(self, rhs: Int) -> Int { self.bitwise(rhs, 0) }
+}
+
+impl BitOr for Int {
+    type Output = Int;
+    const fn bitor(self, rhs: Int) -> Int { self.bitwise(rhs, 1) }
+}
+
+impl BitXor for Int {
+    type Output = Int;
+    const fn bitxor(self, rhs: Int) -> Int { self.bitwise(rhs, 2) }
+}
+
+/// `~x == -x - 1`.
+impl BitNot for Int {
+    type Output = Int;
+    const fn bitnot(self) -> Int { -self - Int::from_i64(1) }
+}
+
+/// `x << n == x * 2^n`.
+impl Shl<u32> for Int {
+    type Output = Int;
+    const fn shl(self, n: u32) -> Int {
+        let (neg, m) = self.parts();
+        Int::from_parts(neg, m.shl(n as u64))
+    }
+}
+
+/// `x >> n == floor(x / 2^n)` (an arithmetic shift).
+impl Shr<u32> for Int {
+    type Output = Int;
+    const fn shr(self, n: u32) -> Int {
+        if self.big is none {
+            if n >= 63u32 { return Int::from_i64(if self.small < 0 { -1 } else { 0 }); }
+            return Int::from_i64(self.small >> (n as i64));
+        }
+        let (neg, m) = self.parts();
+        if !neg { return Int::from_parts(false, m.shr(n as u64)); }
+        // floor(-m / 2^n) = -((m - 1) >> n) - 1.
+        let t = m.minus(IntMag::from_u64(1u64)).shr(n as u64);
+        Int::from_parts(true, t.plus(IntMag::from_u64(1u64)))
+    }
+}
+
+impl PartialEq for Int {
+    const fn eq(self, rhs: Int) -> bool { self.cmp3(rhs) == 0 }
+    const fn ne(self, rhs: Int) -> bool { self.cmp3(rhs) != 0 }
+}
+
+impl Eq for Int {}
+
+impl PartialOrd for Int {
+    const fn lt(self, rhs: Int) -> bool { self.cmp3(rhs) < 0 }
+    const fn gt(self, rhs: Int) -> bool { self.cmp3(rhs) > 0 }
+    const fn le(self, rhs: Int) -> bool { self.cmp3(rhs) <= 0 }
+    const fn ge(self, rhs: Int) -> bool { self.cmp3(rhs) >= 0 }
+}
+
+impl Ord for Int {
+    const fn cmp(self, rhs: Int) -> Ordering {
+        let c = self.cmp3(rhs);
+        if c < 0 { Ordering::Less } else if c > 0 { Ordering::Greater } else { Ordering::Equal }
+    }
+}
+
+/// The sign, then the magnitude's 32-bit limbs after their count: the
+/// same writes for the small and big forms of one value.
+impl Hash for Int {
+    const fn hash<H: Hasher>(self, ref h: H) {
+        unsafe {
+            if let m: IntMag = self.big {
+                let n = m.n;
+                while n > 0 && m.d[n - 1] == 0u32 {
+                    n -= 1;
+                }
+                h.write_u8(if self.neg && n > 0 { 1u8 } else { 0u8 });
+                h.write_length_prefix(n);
+                for i in 0..n {
+                    h.write_u32(m.d[i]);
+                }
+                return;
+            }
+            let mag = if self.small < 0 { 0u64.wrapping_sub(self.small as u64) } else { self.small as u64 };
+            let n = if mag == 0u64 { 0usize } else if mag >> 32u64 == 0u64 { 1usize } else { 2usize };
+            h.write_u8(if self.small < 0 { 1u8 } else { 0u8 });
+            h.write_length_prefix(n);
+            if n > 0 {
+                h.write_u32(mag as u32);
+            }
+            if n > 1 {
+                h.write_u32((mag >> 32u64) as u32);
+            }
+        }
+    }
+}
+
+impl Clone for Int {
+    const fn clone(self) -> Int { self }
+}
+
+impl Copy for Int {}
+
+impl Default for Int {
+    const fn default() -> Int { Int::from_i64(0) }
+}
+
+impl Zero for Int {
+    const fn zero() -> Int { Int::from_i64(0) }
+}
+
+impl One for Int {
+    const fn one() -> Int { Int::from_i64(1) }
+}
+
+/// `b o x X` show the sign and magnitude: `int` has no width for a
+/// two's complement form (`{-255:x}` is `-ff`).
+impl Display for Int {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        if self.big is none {
+            f.t = unsafe { nabi_fmt_int(f.t, f.flags, f.counts, self.small, 1u32, 0u32) };
+        } else {
+            let t = f.ty();
+            let r = if t == 'b' { 2u32 } else if t == 'o' { 8u32 } else if t == 'x' || t == 'X' { 16u32 } else { 10u32 };
+            let digits = self.abs().to_str_radix(r);
+            f.t = unsafe { nabi_fmt_digits(f.t, f.flags, f.counts, if self.is_negative() { 1u32 } else { 0u32 }, digits) };
+        }
+    }
+}
+
+impl Debug for Int {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+impl FromStr for Int {
+    type Err = ParseError;
+    fn from_str(s: str) throws (ParseError) -> Int {
+        try Int::parse_radix(s, 10u32)
+    }
+}

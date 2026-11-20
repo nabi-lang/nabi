@@ -1,0 +1,50 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/opt_index_range.nabi:38:16:
+// expect-stderr: index out of bounds
+// expect-stdout:
+// 34567890123456789 17
+// 0 18446744073709551615
+
+// Past `a[i]` the index is below the length: `i + 1` needs no
+// overflow check, `(n - 1) - k` with `k < n` none either; the check of
+// an index that does not fit still fails where it stands.
+
+fn rev(v: u64) -> (u64, usize) {
+    let tmp: [u8; 20] = [0u8; 20];
+    let n: usize = 0;
+    while v >= 10u64 {
+        tmp[n] = (v % 10u64) as u8;
+        v = v / 10u64;
+        n += 1;
+    }
+    tmp[n] = v as u8;
+    n += 1;
+    let r: u64 = 0;
+    for k in 0..n {
+        r = r * 10u64 + tmp[n - 1 - k] as u64;
+    }
+    (r, n)
+}
+
+fn sub(a: u64, b: u64) -> u64 {
+    if b < a + 1u64 { a - b } else { a.wrapping_sub(b) }
+}
+
+fn fill(m: usize) -> usize {
+    let a: [usize; 20] = [0usize; 20];
+    let t: usize = 0;
+    let i: usize = 0;
+    while i < m {
+        a[i] = i;
+        t += a[i];
+        i += 1;
+    }
+    t
+}
+
+fn main() {
+    let (r, n) = rev(34567890123456789u64);
+    println(f"{r} {n}");
+    println(f"{sub(5u64, 5u64)} {sub(0u64, 1u64)}");
+    println(f"{fill(21)}");
+}

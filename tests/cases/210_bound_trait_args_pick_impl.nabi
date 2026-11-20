@@ -1,0 +1,23 @@
+// expect-exit: 0
+// expect-stdout: 2 2.5 7 7
+
+// Several impls of one generic trait for a type: the bound's arguments
+// (`X: Conv<f64>`), a path's (`Conv::<f64>::conv`) or a qualified
+// path's (`<T as Conv<i64>>::conv`) pick the impl.
+trait Conv<T> { fn conv(self) -> List<T>; }
+impl<T> Conv<T> for List<T> {
+    fn conv(self) -> List<T> { self }
+}
+impl Conv<f64> for List<i64> {
+    fn conv(self) -> List<f64> { self.iter().map(|x| x as f64).collect() }
+}
+
+fn first<X: Conv<f64>>(x: X) -> f64 { x.conv()[0] }
+
+fn main() {
+    let b: List<i64> = [7];
+    let c = Conv::<f64>::conv(b);
+    let d = <List<i64> as Conv<i64>>::conv(b);
+    let (i, f): (List<i64>, List<f64>) = ([2], [2.5]);
+    println(f"{first(i)} {first(f)} {c[0]} {d[0]}");
+}

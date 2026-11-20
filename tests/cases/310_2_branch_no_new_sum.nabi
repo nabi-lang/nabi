@@ -1,0 +1,26 @@
+// expect-error: 14:13: `if` branches have different types `none` and `Resp` - Nabi does not infer a sum type; annotate the slot (`let v: Resp | none = if ...`)
+// expect-error: 15:13: `match` arms have different types `none` and `Resp` (arm 2) - Nabi does not infer a sum type; annotate the slot (`let v: Resp | none = match ...`)
+// expect-error: 16:41: `break` values have different types `none` and `Resp` - Nabi does not infer a sum type; annotate the slot (`let v: Resp | none = loop ...`)
+// expect-error: 17:13: `if` branches have different types `i64` and `Resp | none`
+// expect-error: 18:13: `match` arms have different types `str` and `i64 | none` (arm 2)
+// expect-error: 21:1: the return paths of `g` have different types `none` and `Resp`
+// forbid-error: cannot infer
+
+// Branches whose types none of them holds as members still differ: no
+// sum is made for them, and nothing after reports their value again.
+struct Resp { n: i32; }
+
+fn pick(c: bool, p: Resp, r: Resp?, n: i64?) {
+    let v = if c { none } else { p };
+    let w = match c { true => none, false => p };
+    let x = loop { if c { break none; } break p; };
+    let y = if c { 1i64 } else { r };
+    let z = match c { true => "a", false => n };
+}
+
+fn g(c: bool, p: Resp) { if c { return none; } p }
+
+fn main() {
+    pick(true, Resp { n: 1 }, none, none);
+    g(true, Resp { n: 1 });
+}

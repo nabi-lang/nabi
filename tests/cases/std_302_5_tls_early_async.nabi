@@ -1,0 +1,88 @@
+// needs: net
+// skip-wasm-runner: jco
+// (preview2-shim 0.31.1, the latest, files an accepted socket's
+// pollable under its input stream: closing the socket in wasi-libc's
+// order, the stream before the socket's pollable, traps; fixed by
+// targets/wasi/shim.patch)
+// expect-exit: 0
+// expect-stdout:
+// client 0: resumed false, early accepted false, reply ok
+// client 1: resumed true, early accepted true, reply ok
+// client 2: resumed true, early accepted true, reply ok
+// server: resumed false, early 0 bytes, got GET /async
+// server: resumed true, early 10 bytes, got GET /async
+// server: resumed true, early 10 bytes, got GET /async
+
+// TLS resumption and 0-RTT through the async handshakes.
+use std::net::{TcpListener, SocketAddr};
+use std::net;
+use std::net::tls::{Client, Server, ClientConfig, ServerConfig, Certificate, PrivateKey};
+
+const CA: str = "-----BEGIN CERTIFICATE-----
+MIIBdDCCARqgAwIBAgIUesSSl98urNjXdIg9ZEchaXosKn8wCgYIKoZIzj0EAwIw
+FzEVMBMGA1UEAwwMbmFiaSB0bHMzIENBMCAXDTI2MTAxNjE2NDUyOFoYDzIxMjYw
+OTIyMTY0NTI4WjAXMRUwEwYDVQQDDAxuYWJpIHRsczMgQ0EwWTATBgcqhkjOPQIB
+BggqhkjOPQMBBwNCAASm99tdV0zcZnmRkxSKY8NKyq4P6TBBQTVIbWbhCFlqiWiR
+E+3tmO5ejVfYaSvS1fvVA8b2JRzZoIoC/tzRNPSto0IwQDAPBgNVHRMBAf8EBTAD
+AQH/MA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUr6wCFfS6oUgXq2s3vEdt1Qhq
+hWUwCgYIKoZIzj0EAwIDSAAwRQIgeqJNGXypHq/mgoRS0pVx0nXG32gUkb9Eukpe
+jauUHu4CIQDt+gwZfEdCSBojPA+r6yqNV3oxrQizdCW2cT9rOYVU+Q==
+-----END CERTIFICATE-----
+";
+const LEAF: str = "-----BEGIN CERTIFICATE-----
+MIIBuTCCAV+gAwIBAgIUNVBLVY9ZRZowYSKfPQfz7lmyco0wCgYIKoZIzj0EAwIw
+FzEVMBMGA1UEAwwMbmFiaSB0bHMzIENBMCAXDTI2MTAxNjE2NDUyOFoYDzIxMjYw
+OTIyMTY0NTI4WjAOMQwwCgYDVQQDDANzcnYwWTATBgcqhkjOPQIBBggqhkjOPQMB
+BwNCAAR5uZ9PkllU1m2eeTB9F0lDWMYPptY4AHaGEtuYfCs7ny/kG84UyKiS7wyY
+tX53KCj5bjbnecgBNCFDCCUSar3uo4GPMIGMMAkGA1UdEwQCMAAwDgYDVR0PAQH/
+BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBoGA1UdEQQTMBGCCWxvY2FsaG9z
+dIcEfwAAATAdBgNVHQ4EFgQUa44+G/Ry/nJKK6WuJTLH4LNHUMowHwYDVR0jBBgw
+FoAUr6wCFfS6oUgXq2s3vEdt1QhqhWUwCgYIKoZIzj0EAwIDSAAwRQIhAOTYmzJA
+fBqHsQDc3rfgzVg+nfAs1hRWXcNlp4Cle/tNAiAT6axVZdo/u5kpNav77+9GnLp7
+XeWCTROQHXR4wlLS3g==
+-----END CERTIFICATE-----
+";
+const KEY: str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgNTSUe5vgM79N6K71
+1M22uGAT9Rl/3Xj4L0M3ROx+CNGhRANCAAR5uZ9PkllU1m2eeTB9F0lDWMYPptY4
+AHaGEtuYfCs7ny/kG84UyKiS7wyYtX53KCj5bjbnecgBNCFDCCUSar3u
+-----END PRIVATE KEY-----
+";
+
+let l = try! TcpListener::bind(try! "127.0.0.1:0".parse::<SocketAddr>());
+let addr = try! l.local_addr();
+let cfg = try! ServerConfig::new(try! Certificate::from_pem(LEAF), try! PrivateKey::from_pem(KEY));
+cfg.max_early_data = 4096u32;
+let server = task::spawn_local(async {
+    let log: List<str> = [];
+    for _ in 0..3 {
+        let (s, _) = try! await l.accept_async();
+        let srv = try! await Server::new_async(s, cfg);
+        let early = srv.early_data();
+        let got = early;
+        if early.len() == 0 {
+            let buf: List<u8> = [];
+            for _ in 0..256 { buf.push(0u8); }
+            let n = try! await srv.read_async(buf);
+            got = buf[0:n].to_list();
+        }
+        log.push(f"resumed {srv.is_resumed()}, early {early.len()} bytes, got {try! str::from_utf8(got)}");
+        try! await srv.write_all_async("ok");
+        try! await srv.close_notify_async();
+        try! srv.close();
+    }
+    try! l.close();
+    log
+});
+// Only the test CA: the host's trust store (`SSL_CERT_FILE` from cargo)
+// may be out of a wasm sandbox's reach.
+let ccfg = ClientConfig { root_certs: try! Certificate::from_pem(CA) };
+ccfg.early_data = "GET /async".as_bytes().to_list();
+for i in 0..3 {
+    let s = try! await net::tcp_connect_async(f"{addr}");
+    let c = try! await Client::with_config_async(s, "localhost", ccfg);
+    let back = try! await c.read_to_end_async();
+    println(f"client {i}: resumed {c.is_resumed()}, early accepted {c.is_early_data_accepted()}, reply {try! str::from_utf8(back)}");
+    try! c.close();
+}
+for line in await server { println(f"server: {line}"); }

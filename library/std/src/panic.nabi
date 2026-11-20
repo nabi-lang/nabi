@@ -1,0 +1,59 @@
+//! std::panic - a hook that sees every panic before the process ends
+//! (or, under `#[on_panic]`, before the C caller gets its value back).
+//!
+//! A library that C, Python or another host loads aborts on a panic
+//! instead of exiting: the hook is its chance to log first.
+
+use bare::ffi::Handle;
+use bare::ffi::types::c_void;
+use bare::ptr::{CPtr, ConstPtr};
+
+extern "nabi" {
+    fn nabi_panic_set_hook(hook: extern "C" fn(CPtr<c_void>, ConstPtr<u8>, usize, ConstPtr<u8>, usize) | none, ud: CPtr<c_void>) -> CPtr<c_void>;
+}
+
+/// What panicked: the message and, when known, `path:line:col`.
+pub struct PanicInfo {
+    pub message: str;
+    pub location: str | none;
+}
+
+impl Debug for PanicInfo {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"PanicInfo({self.message:?}, {self.location:?})")
+    }
+}
+
+/// Run `hook` on every panic in the process from now on, on the
+/// panicking thread, after the report is printed. A panic inside the hook
+/// is not reported to it again.
+pub fn set_hook(hook: fn(PanicInfo)) {
+    let h = Handle::<fn(PanicInfo)>::new(hook);
+    let old = unsafe { nabi_panic_set_hook(run, h.as_ptr()) };
+    if !old.is_null() {
+        unsafe { Handle::<fn(PanicInfo)>::from_ptr(old) }.release();
+    }
+}
+
+/// Remove the hook `set_hook` installed.
+pub fn take_hook() {
+    let old = unsafe { nabi_panic_set_hook(none, CPtr::null()) };
+    if !old.is_null() {
+        unsafe { Handle::<fn(PanicInfo)>::from_ptr(old) }.release();
+    }
+}
+
+extern "C" fn run(ud: CPtr<c_void>, msg: ConstPtr<u8>, len: usize, at: ConstPtr<u8>, at_len: usize) {
+    let hook = unsafe { Handle::<fn(PanicInfo)>::from_ptr(ud) }.get();
+    let location: str | none = if at_len == 0 { none } else { text(at, at_len) };
+    hook(PanicInfo { message: text(msg, len), location });
+}
+
+/// `n` bytes at `p`, copied (bytes that are not UTF-8 replaced).
+fn text(p: ConstPtr<u8>, n: usize) -> str {
+    let bytes: List<u8> = List::with_capacity(n);
+    for i in 0..n {
+        bytes.push(unsafe { p.add(i).read() });
+    }
+    str::from_utf8_lossy(bytes)
+}

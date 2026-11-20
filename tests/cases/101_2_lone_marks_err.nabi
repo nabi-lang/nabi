@@ -1,0 +1,11 @@
+// expect-error: 8:13: `◌́` (U+0301 COMBINING ACUTE ACCENT) cannot stand alone
+// expect-error: 9:14: U+FE0F VARIATION SELECTOR-16 cannot stand alone
+// expect-error: 10:14: `◌̈` (U+0308 COMBINING DIAERESIS) cannot stand alone
+
+// A combining mark or variation selector changes the character before it.
+fn main() {
+    let e = 1;
+    let a = ́e;
+    let b = (️);
+    let c = 1̈;
+}

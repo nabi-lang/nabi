@@ -1,0 +1,13 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/panic_loc_strbuf_slice.nabi:13:9:
+// expect-stderr: string slice is not on a char boundary: byte 2 is inside `가` (bytes 1..4)
+// expect-stderr: string offsets count bytes; to work by character, use `chars()`, `char_indices()` or `char_slice(a, b)`
+// expect-stderr: to cut at a boundary, use `floor_char_boundary(i)`; `get(a..b)` gives `none` instead of a panic
+// expect-stdout:
+
+// `StrBuf` slicing checks bounds as `str` slicing does
+// and reports the user's expression.
+let b = StrBuf::new();
+b.push_str("a가");
+let n = 2;
+println(b[1:n]);

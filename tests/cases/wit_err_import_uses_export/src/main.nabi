@@ -1,0 +1,16 @@
+// expect-error: imported interface `test:lend/inspect` uses types of `test:lend/res`, which this component exports
+
+// An import naming an exported resource is refused.
+ffi::wit::import { "lend.wit" }
+
+#[wit::export]
+pub struct Thing {
+    n: u32;
+}
+
+impl Thing {
+    pub fn new(n: u32) -> Thing { Thing { n } }
+    pub fn get(self) -> u32 { self.n }
+}
+
+fn main() {}

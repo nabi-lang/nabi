@@ -1,0 +1,14 @@
+// expect-exit: 0
+// expect-stdout: 7 7
+
+mod a {
+    pub fn val() -> i32 { 7i32 }
+}
+
+fn main() {
+    use a::val;
+    let x = val();
+    let y = val();
+    println(f"{x} {y}");
+}
+

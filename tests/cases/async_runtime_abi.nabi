@@ -1,0 +1,115 @@
+// needs: net
+// only-os: macos linux windows
+// expect-exit: 0
+// expect-stdout:
+// timer: true
+// coro: 42
+// io: 5 bytes
+// registrations left: 0
+
+// The runtime ABI from hand-written futures:
+// `nabi_timer_register` wakes at a deadline, `nabi_coro_park` /
+// `nabi_coro_unpark` park on a frame address, `nabi_io_register` wakes on
+// fd readiness (the runtime's fd: the descriptor, or on Windows the
+// one it makes of the SOCKET). A waker crosses as a one-element
+// `GcBuf<Waker>`.
+use bare::mem::{GcBuf, buf_new};
+use std::net::{TcpListener, TcpStream, SocketAddr};
+#[cfg(target_family = "unix")]
+use std::os::unix::io::AsRawFd;
+#[cfg(target_os = "windows")]
+use std::os::windows::io::AsRawSocket;
+
+#[cfg(target_family = "unix")]
+fn io_fd(s: TcpStream) -> i32 { s.as_raw_fd() }
+#[cfg(target_os = "windows")]
+fn io_fd(s: TcpStream) -> i32 { unsafe { nabi_os_socket_fd(s.as_raw_socket()) } }
+
+extern "C" {
+    fn nabi_time_now_ns() -> i64;
+    fn nabi_timer_register(deadline: u64, waker: GcBuf<future::Waker>);
+    fn nabi_coro_park(frame: GcBuf<i32>, waker: GcBuf<future::Waker>);
+    fn nabi_coro_unpark(frame: GcBuf<i32>);
+    fn nabi_io_register(fd: i32, interest: u32, waker: GcBuf<future::Waker>);
+    #[cfg(target_os = "windows")]
+    fn nabi_os_socket_fd(s: u64) -> i32;
+}
+
+fn boxed(w: future::Waker) -> GcBuf<future::Waker> {
+    unsafe {
+        let b: GcBuf<future::Waker> = buf_new(1);
+        b[0] = w;
+        b
+    }
+}
+
+/// Ready once the clock passes `at`.
+struct Deadline { at: i64; }
+impl Future for Deadline {
+    type Output = bool;
+    fn poll(ref self, ref ctx: future::Context) -> future::Poll<bool> {
+        if unsafe { nabi_time_now_ns() } >= self.at { return future::Poll::Ready(true); }
+        unsafe { nabi_timer_register(self.at as u64, boxed(ctx.waker())) };
+        future::Poll::Pending
+    }
+}
+
+/// Ready once `frame[0]` is set (by whoever then unparks `frame`).
+struct Slot { frame: GcBuf<i32>; }
+impl Future for Slot {
+    type Output = i32;
+    fn poll(ref self, ref ctx: future::Context) -> future::Poll<i32> {
+        unsafe { nabi_coro_park(self.frame, boxed(ctx.waker())) };
+        let v = unsafe { self.frame[0] };
+        if v != 0 { return future::Poll::Ready(v); }
+        future::Poll::Pending
+    }
+}
+
+/// Ready once `fd` may be readable.
+struct Readable { fd: i32; armed: bool; }
+impl Future for Readable {
+    type Output = ();
+    fn poll(ref self, ref ctx: future::Context) -> future::Poll<()> {
+        if self.armed { return future::Poll::Ready(()); }
+        self.armed = true;
+        unsafe { nabi_io_register(self.fd, 1, boxed(ctx.waker())) };
+        future::Poll::Pending
+    }
+}
+
+let start = unsafe { nabi_time_now_ns() };
+let ok = await Deadline { at: start + 20_000_000 };
+println(f"timer: {ok && unsafe { nabi_time_now_ns() } - start >= 20_000_000}");
+
+let frame: GcBuf<i32> = unsafe { buf_new(1) };
+let waiter = task::spawn(async { await Slot { frame: frame } });
+await task::sleep(Duration::ms(10));
+unsafe { frame[0] = 42; }
+unsafe { nabi_coro_unpark(frame) };
+println(f"coro: {await waiter}");
+
+let any: SocketAddr = try! "127.0.0.1:0".parse::<SocketAddr>();
+let listener = try! TcpListener::bind(any);
+let client = try! TcpStream::connect(try! listener.local_addr());
+let (server, _) = try! listener.accept();
+server.set_nonblocking(true);
+// The task owns the stream and closes it.
+let reader = task::spawn(async {
+    let buf = List::filled(16, 0u8);
+    loop {
+        await Readable { fd: io_fd(server), armed: false };
+        let n = try server.read(buf) catch _ { 0 };
+        if n > 0 {
+            try! server.close();
+            return n;
+        }
+    }
+});
+await task::sleep(Duration::ms(10));
+try! client.write_all("hello");
+println(f"io: {await reader} bytes");
+try! client.close();
+try! listener.close();
+println(f"registrations left: {task::registrations()}");
+

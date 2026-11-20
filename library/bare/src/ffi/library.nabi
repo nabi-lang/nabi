@@ -1,0 +1,326 @@
+//! bare::ffi::library - shared libraries loaded at run time: `dlopen` on
+//! Unix, `LoadLibraryW` on Windows. A `Library` is never unloaded
+//! implicitly; `close` is the only way, and it is `unsafe` because
+//! every function pointer taken from it dangles afterwards.
+
+#[cfg(target_family = "unix")]
+use bare::ffi::CStr;
+#[cfg(target_os = "windows")]
+use bare::ffi::WideCString;
+use bare::ffi::types::{c_int, c_void};
+#[cfg(target_os = "windows")]
+use bare::gc::pin;
+use bare::mem::{size_of, transmute_unchecked};
+use bare::ptr::{CPtr, ConstPtr};
+
+#[cfg(target_family = "unix")]
+extern "C" {
+    #[link_name = "dlopen"]
+    fn ffi_dlopen(path: str, flags: c_int) -> CPtr<c_void>;
+    #[link_name = "dlopen"]
+    fn ffi_dlopen_self(path: CPtr<c_char>, flags: c_int) -> CPtr<c_void>;
+    #[link_name = "dlsym"]
+    fn ffi_dlsym(handle: CPtr<c_void>, name: str) -> CPtr<c_void>;
+    #[link_name = "dlclose"]
+    fn ffi_dlclose(handle: CPtr<c_void>) -> c_int;
+    #[link_name = "dlerror"]
+    fn ffi_dlerror() -> ConstPtr<c_char> | none;
+}
+
+#[cfg(target_os = "windows")]
+extern "system" {
+    #[link_name = "LoadLibraryW"]
+    fn ffi_load_library_w(path: ConstPtr<u16>) -> CPtr<c_void>;
+    #[link_name = "GetModuleHandleW"]
+    fn ffi_get_module_handle_w(name: CPtr<u16>) -> CPtr<c_void>;
+    #[link_name = "GetProcAddress"]
+    fn ffi_get_proc_address(module: CPtr<c_void>, name: str) -> CPtr<c_void>;
+    #[link_name = "FreeLibrary"]
+    fn ffi_free_library(module: CPtr<c_void>) -> i32;
+    #[link_name = "GetLastError"]
+    fn ffi_get_last_error() -> u32;
+    #[link_name = "FormatMessageW"]
+    fn ffi_format_message_w(flags: u32, source: CPtr<c_void>, id: u32, lang: u32, buf: CPtr<u16>, size: u32, args: CPtr<c_void>) -> u32;
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const RTLD_LOCAL: c_int = 4;
+#[cfg(all(target_family = "unix", not(any(target_os = "macos", target_os = "ios"))))]
+const RTLD_LOCAL: c_int = 0;
+#[cfg(target_family = "unix")]
+const RTLD_NOW: c_int = 2;
+
+/// A shared library could not be loaded (`Library::open`) or unloaded
+/// (`Library::close`).
+// By hand: bare cannot use the derives, which expand to core paths.
+pub struct LoadError {
+    path: str;
+    message: str;
+    closing: bool;
+}
+
+impl LoadError {
+    /// The path given to `open`.
+    pub const fn path(self) -> str { self.path }
+    /// The system's reason (`dlerror`, `FormatMessageW`).
+    pub const fn message(self) -> str { self.message }
+}
+
+impl PartialEq for LoadError {
+    const fn eq(self, rhs: LoadError) -> bool {
+        self.path == rhs.path && self.message == rhs.message && self.closing == rhs.closing
+    }
+}
+
+impl Eq for LoadError {}
+
+impl Clone for LoadError {
+    fn clone(self) -> LoadError { LoadError { path: self.path, message: self.message, closing: self.closing } }
+}
+
+impl Display for LoadError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let what = if self.closing { "close" } else { "load" };
+        try f.write_str(f"cannot {what} {self.path}: {self.message}")
+    }
+}
+
+impl Debug for LoadError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"LoadError {{ path: {self.path:?}, message: {self.message:?} }}")
+    }
+}
+
+impl Error for LoadError {}
+
+/// A library has no symbol of that name (`Library::symbol`).
+pub struct SymbolError {
+    name: str;
+    message: str;
+}
+
+impl SymbolError {
+    /// The symbol asked for.
+    pub const fn name(self) -> str { self.name }
+    /// The system's reason (`dlerror`, `FormatMessageW`).
+    pub const fn message(self) -> str { self.message }
+}
+
+impl PartialEq for SymbolError {
+    const fn eq(self, rhs: SymbolError) -> bool { self.name == rhs.name && self.message == rhs.message }
+}
+
+impl Eq for SymbolError {}
+
+impl Clone for SymbolError {
+    fn clone(self) -> SymbolError { SymbolError { name: self.name, message: self.message } }
+}
+
+impl Display for SymbolError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"cannot find symbol {self.name}: {self.message}")
+    }
+}
+
+impl Debug for SymbolError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"SymbolError {{ name: {self.name:?}, message: {self.message:?} }}")
+    }
+}
+
+impl Error for SymbolError {}
+
+/// The index of the first NUL byte in `s`.
+const fn nul_at(s: str) -> usize | none {
+    for i in 0..s.len() {
+        if s.byte(i) == 0u8 {
+            return i;
+        }
+    }
+    none
+}
+
+/// A loaded shared library, or the program itself (`Library::this`).
+pub struct Library {
+    /// The `dlopen` / `LoadLibraryW` handle.
+    handle: CPtr<c_void>;
+    /// What `open` was given.
+    path: str;
+    /// From `open`, not `this`: `close` unloads it.
+    own: bool;
+}
+
+impl Clone for Library {
+    const fn clone(self) -> Library { self }
+}
+
+impl Debug for Library {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        if self.own {
+            try f.write_str(f"Library({self.path:?})")
+        } else {
+            try f.write_str("Library(this)")
+        }
+    }
+}
+
+impl Library {
+    /// Load the shared library at `path` (a bare name searches the
+    /// system's library path). Throws with the system's reason.
+    pub fn open(path: str) throws (LoadError) -> Library {
+        if let i: usize = nul_at(path) {
+            throw LoadError { path, message: f"the path has a NUL byte at {i}; remove it", closing: false };
+        }
+        Library { handle: try sys_open(path), path, own: true }
+    }
+
+    /// The program itself: its own symbols and, on Unix, those of every
+    /// library it was linked with (`strlen`). On Windows only what the
+    /// executable exports.
+    pub fn this() -> Library { Library { handle: sys_this(), path: "", own: false } }
+
+    /// The address of symbol `name`, never null.
+    pub fn raw_symbol(self, name: str) throws (SymbolError) -> CPtr<c_void> {
+        if let i: usize = nul_at(name) {
+            throw SymbolError { name, message: f"the name has a NUL byte at {i}; remove it" };
+        }
+        try sys_symbol(self.handle, name)
+    }
+
+    /// Symbol `name` as `F`, a C function pointer type
+    /// (`extern "C" fn(f64) -> f64`).
+    ///
+    /// Safety: `F` must be the symbol's real signature.
+    #[track_caller]
+    pub unsafe fn symbol<F>(self, name: str) throws (SymbolError) -> F {
+        // Run time only: a bound "F is a C function pointer" has no
+        // compile-time form.
+        if size_of::<F>() != size_of::<usize>() || !F::type_name().starts_with("extern ") {
+            panic(f"`symbol::<{F::type_name()}>`: write the C function pointer type, `extern \"C\" fn(..) -> R`");
+        }
+        let at = (try self.raw_symbol(name)).addr();
+        unsafe { transmute_unchecked(at) }
+    }
+
+    /// Unload the library; `this()` stays loaded.
+    ///
+    /// Safety: no pointer taken from it (`symbol`, data it returned) may
+    /// be used afterwards.
+    pub unsafe fn close(self) throws (LoadError) {
+        if !self.own {
+            return;
+        }
+        try sys_close(self.handle, self.path);
+    }
+}
+
+/// `dlerror`'s message, or `none`.
+#[cfg(target_family = "unix")]
+fn dl_message() -> str | none {
+    match unsafe { ffi_dlerror() } {
+        p: ConstPtr<c_char> => match unsafe { CStr::from_ptr(p) } {
+            c: CStr => str::from_utf8_lossy(c.as_bytes()),
+            none => none,
+        },
+        none => none,
+    }
+}
+
+#[cfg(target_family = "unix")]
+fn sys_open(path: str) throws (LoadError) -> CPtr<c_void> {
+    let h = unsafe { ffi_dlopen(path, RTLD_NOW | RTLD_LOCAL) };
+    if h.is_null() {
+        throw LoadError { path, message: dl_message() ?? "dlopen failed", closing: false };
+    }
+    h
+}
+
+#[cfg(target_family = "unix")]
+fn sys_this() -> CPtr<c_void> { unsafe { ffi_dlopen_self(CPtr::null(), RTLD_NOW | RTLD_LOCAL) } }
+
+#[cfg(target_family = "unix")]
+fn sys_symbol(handle: CPtr<c_void>, name: str) throws (SymbolError) -> CPtr<c_void> {
+    // Clear a stale error: a null result alone is no failure.
+    let _ = dl_message();
+    let p = unsafe { ffi_dlsym(handle, name) };
+    if p.is_null() {
+        throw SymbolError { name, message: dl_message() ?? "the symbol's address is null" };
+    }
+    p
+}
+
+#[cfg(target_family = "unix")]
+fn sys_close(handle: CPtr<c_void>, path: str) throws (LoadError) {
+    if unsafe { ffi_dlclose(handle) } != 0 {
+        throw LoadError { path, message: dl_message() ?? "dlclose failed", closing: true };
+    }
+}
+
+/// The text of the calling thread's last Win32 error.
+#[cfg(target_os = "windows")]
+fn last_error() -> str {
+    let code = unsafe { ffi_get_last_error() };
+    let buf: List<u16> = List::with_capacity(512);
+    for _ in 0..512 {
+        buf.push(0u16);
+    }
+    let held = pin(buf);
+    // FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS
+    let at = CPtr::<u16>::from_addr(held.as_data_ptr().addr());
+    let n = unsafe { ffi_format_message_w(0x1200u32, CPtr::null(), code, 0u32, at, 512u32, CPtr::null()) };
+    let text = str::from_utf16_lossy(buf[0:n as usize]).trim_end();
+    if text.is_empty() {
+        return f"os error {code}";
+    }
+    f"{text} (os error {code})"
+}
+
+#[cfg(target_os = "windows")]
+fn sys_open(path: str) throws (LoadError) -> CPtr<c_void> {
+    let w = try WideCString::new(path) catch e { throw LoadError { path, message: f"{e}", closing: false }; };
+    let h = unsafe { ffi_load_library_w(w.as_ptr()) };
+    if h.is_null() {
+        throw LoadError { path, message: last_error(), closing: false };
+    }
+    h
+}
+
+#[cfg(target_os = "windows")]
+fn sys_this() -> CPtr<c_void> { unsafe { ffi_get_module_handle_w(CPtr::null()) } }
+
+#[cfg(target_os = "windows")]
+fn sys_symbol(handle: CPtr<c_void>, name: str) throws (SymbolError) -> CPtr<c_void> {
+    let p = unsafe { ffi_get_proc_address(handle, name) };
+    if p.is_null() {
+        throw SymbolError { name, message: last_error() };
+    }
+    p
+}
+
+#[cfg(target_os = "windows")]
+fn sys_close(handle: CPtr<c_void>, path: str) throws (LoadError) {
+    if unsafe { ffi_free_library(handle) } == 0 {
+        throw LoadError { path, message: last_error(), closing: true };
+    }
+}
+
+#[cfg(not(any(target_family = "unix", target_os = "windows")))]
+const NO_DL: str = "this target has no dynamic loading";
+
+#[cfg(not(any(target_family = "unix", target_os = "windows")))]
+fn sys_open(path: str) throws (LoadError) -> CPtr<c_void> { throw LoadError { path, message: NO_DL, closing: false }; }
+
+#[cfg(not(any(target_family = "unix", target_os = "windows")))]
+fn sys_this() -> CPtr<c_void> { CPtr::null() }
+
+#[cfg(not(any(target_family = "unix", target_os = "windows")))]
+fn sys_symbol(handle: CPtr<c_void>, name: str) throws (SymbolError) -> CPtr<c_void> {
+    let _ = handle;
+    throw SymbolError { name, message: NO_DL };
+}
+
+#[cfg(not(any(target_family = "unix", target_os = "windows")))]
+fn sys_close(handle: CPtr<c_void>, path: str) throws (LoadError) {
+    let _ = handle;
+    throw LoadError { path, message: NO_DL, closing: true };
+}

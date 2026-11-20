@@ -1,0 +1,9 @@
+// expect-error: `#[nabion(..)]`: unknown key `deny_unknwn_fields`; write one of `deny_unknown_fields`
+// A misspelled `#[nabion(..)]` key is an error, so it cannot
+// turn strict reading off without a word.
+#[derive(Nabion)]
+#[nabion(deny_unknwn_fields)]
+struct Conf { a: i32; }
+
+fn main() {}
+

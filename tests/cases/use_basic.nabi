@@ -1,0 +1,17 @@
+// expect-exit: 0
+// expect-stdout: 1 2 3
+
+mod a {
+    pub fn one() -> i32 { 1i32 }
+    pub fn two() -> i32 { 2i32 }
+    pub fn three() -> i32 { 3i32 }
+}
+
+use a::one;                 // single
+use a::two as second;       // alias
+use a::{three};             // group with one element
+
+fn main() {
+    println(f"{one()} {second()} {three()}");
+}
+

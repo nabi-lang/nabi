@@ -1,0 +1,8 @@
+// expect-error: a value of type `Spline` is not callable
+// expect-error: implement `ops::Call` for it
+
+// A value of a type without `ops::Call` is not callable; the help says
+// what to write.
+struct Spline { a: f64; }
+let s = Spline { a: 2.0 };
+println(s(1.5));

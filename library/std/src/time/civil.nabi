@@ -1,0 +1,236 @@
+// std::time::civil: `Time` (a time of day) and `DateTime` (a date
+// and a time of day), both with no time zone.
+
+use core::time::Duration;
+use std::time::date::{Date, Period, fdiv};
+use std::time::format::{Parts, render, scan};
+use std::time::zone::{Disambiguation, TimeZone};
+use std::time::zoned::Zoned;
+
+pub(pkg) const NS_PER_SEC: i64 = 1000000000;
+pub(pkg) const SECS_PER_DAY: i64 = 86400;
+
+/// A time of day with no date or zone: hour (0..=23), minute, second
+/// (0..=59) and nanosecond. No leap second: 23:59:60 is not a `Time`.
+/// `Display` is ISO 8601 (`09:05:00`, `09:05:00.25`).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Time {
+    hour: i32;
+    minute: i32;
+    second: i32;
+    nano: i32;
+}
+
+impl Time {
+    /// 00:00:00.
+    pub const MIDNIGHT: Time = Time { hour: 0, minute: 0, second: 0, nano: 0 };
+
+    /// `hour:minute:second`; `ValueError` outside 00:00:00..=23:59:59.
+    pub const fn new(hour: i32, minute: i32, second: i32) throws (ValueError) -> Time {
+        if hour < 0 || hour > 23 { throw ValueError::new(f"hour {hour} is out of range (0..=23)"); }
+        if minute < 0 || minute > 59 { throw ValueError::new(f"minute {minute} is out of range (0..=59)"); }
+        if second < 0 || second > 59 { throw ValueError::new(f"second {second} is out of range (0..=59)"); }
+        Time { hour, minute, second, nano: 0 }
+    }
+
+    /// The same time with nanosecond `nano` (0..=999999999).
+    pub const fn with_nanosecond(self, nano: i32) throws (ValueError) -> Time {
+        if nano < 0 || nano > 999999999 {
+            throw ValueError::new(f"nanosecond {nano} is out of range (0..=999999999)");
+        }
+        Time { hour: self.hour, minute: self.minute, second: self.second, nano }
+    }
+
+    /// The time `ns` nanoseconds after midnight. Panics outside one day.
+    #[track_caller]
+    pub const fn from_nanos_of_day(ns: i64) -> Time {
+        if ns < 0 || ns >= SECS_PER_DAY * NS_PER_SEC { panic(f"{ns} ns is not within one day"); }
+        let s = ns / NS_PER_SEC;
+        Time { hour: (s / 3600) as i32, minute: (s / 60 % 60) as i32, second: (s % 60) as i32, nano: (ns % NS_PER_SEC) as i32 }
+    }
+
+    /// The hour, 0..=23.
+    pub const fn hour(self) -> i32 { self.hour }
+    /// The minute, 0..=59.
+    pub const fn minute(self) -> i32 { self.minute }
+    /// The second, 0..=59.
+    pub const fn second(self) -> i32 { self.second }
+    /// The nanosecond within the second, 0..=999999999.
+    pub const fn nanosecond(self) -> i32 { self.nano }
+    /// Whole seconds since midnight.
+    pub const fn secs_of_day(self) -> i64 { (self.hour as i64) * 3600 + (self.minute as i64) * 60 + (self.second as i64) }
+    /// Nanoseconds since midnight.
+    pub const fn nanos_of_day(self) -> i64 { self.secs_of_day() * NS_PER_SEC + (self.nano as i64) }
+
+    /// The time written by strftime-style `pattern` (`%H:%M`). Panics on
+    /// a bad pattern or a directive that needs a date.
+    #[track_caller]
+    pub const fn format(self, pattern: str) -> str { render(pattern, Parts::of(none, self, none, none, none)) }
+
+    /// The time in `text`, read by `pattern`; missing fields are 0.
+    #[track_caller]
+    pub fn parse_with(text: str, pattern: str) throws (ParseError) -> Time { try (try scan(text, pattern)).time(text) }
+}
+
+impl Display for Time {
+    /// `HH:MM:SS`, then the fraction in 3, 6 or 9 digits when not zero.
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"{self.hour:02}:{self.minute:02}:{self.second:02}{frac(self.nano)}")
+    }
+}
+
+impl Debug for Time {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+/// `.250`, `.000001`, `.123456789`: the fewest groups of three digits
+/// that hold `nano`; empty for 0.
+const fn frac(nano: i32) -> str {
+    if nano == 0 { return ""; }
+    if nano % 1000000 == 0 { return f".{nano / 1000000:03}"; }
+    if nano % 1000 == 0 { return f".{nano / 1000:06}"; }
+    f".{nano:09}"
+}
+
+/// A date and a time of day with no time zone ("naive" or "local" time,
+/// as on a wall calendar). `DateTime + Duration` counts exact time;
+/// attach a zone with `in_zone` to get an instant. `Display` is ISO 8601
+/// (`2024-03-10T02:30:00`).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DateTime {
+    date: Date;
+    time: Time;
+}
+
+impl DateTime {
+    /// `year-month-day hour:minute:second`; `ValueError` when it is not
+    /// a valid date and time.
+    pub const fn new(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: i32) throws (ValueError) -> DateTime {
+        DateTime { date: try Date::new(year, month, day), time: try Time::new(hour, minute, second) }
+    }
+
+    /// `date` at `time`.
+    pub const fn of(date: Date, time: Time) -> DateTime { DateTime { date, time } }
+
+    /// The civil time `secs` seconds and `nano` nanoseconds after
+    /// 1970-01-01T00:00:00, counting every day as 86400 seconds (UTC).
+    /// Panics outside the `Date` range.
+    #[track_caller]
+    pub const fn from_unix(secs: i64, nano: u32) -> DateTime {
+        let s = secs + (nano as i64) / NS_PER_SEC;
+        let n = (nano as i64) % NS_PER_SEC;
+        let days = fdiv(s, SECS_PER_DAY);
+        let sod = s - days * SECS_PER_DAY;
+        DateTime { date: Date::from_unix_days(days), time: Time::from_nanos_of_day(sod * NS_PER_SEC + n) }
+    }
+
+    /// Seconds from 1970-01-01T00:00:00 to this civil time, reading it
+    /// as UTC: `from_unix(dt.unix_secs(), dt.nanosecond() as u32) == dt`.
+    pub const fn unix_secs(self) -> i64 { self.date.unix_days() * SECS_PER_DAY + self.time.secs_of_day() }
+
+    /// The date.
+    pub const fn date(self) -> Date { self.date }
+    /// The time of day.
+    pub const fn time(self) -> Time { self.time }
+    /// The year.
+    pub const fn year(self) -> i32 { self.date.year() }
+    /// The month, 1..=12.
+    pub const fn month(self) -> i32 { self.date.month() }
+    /// The day of the month.
+    pub const fn day(self) -> i32 { self.date.day() }
+    /// The hour, 0..=23.
+    pub const fn hour(self) -> i32 { self.time.hour() }
+    /// The minute.
+    pub const fn minute(self) -> i32 { self.time.minute() }
+    /// The second.
+    pub const fn second(self) -> i32 { self.time.second() }
+    /// The nanosecond within the second.
+    pub const fn nanosecond(self) -> i32 { self.time.nanosecond() }
+
+    /// `n` days later, same time of day.
+    #[must_use]
+    #[track_caller]
+    pub const fn add_days(self, n: i64) -> DateTime { DateTime { date: self.date.add_days(n), time: self.time } }
+    /// `n` months later, same time of day; the day clamps as
+    /// `Date::add_months`.
+    #[must_use]
+    #[track_caller]
+    pub const fn add_months(self, n: i64) -> DateTime { DateTime { date: self.date.add_months(n), time: self.time } }
+    /// `n` years later, same time of day.
+    #[must_use]
+    #[track_caller]
+    pub const fn add_years(self, n: i64) -> DateTime { DateTime { date: self.date.add_years(n), time: self.time } }
+
+    /// `self - earlier` as exact time, negative when `earlier` is later.
+    /// Panics past the `Duration` range (about 292 years).
+    #[track_caller]
+    pub const fn duration_since(self, earlier: DateTime) -> Duration {
+        Duration::secs(self.unix_secs() - earlier.unix_secs()) + Duration::ns(self.time.nanosecond() as i64 - earlier.time.nanosecond() as i64)
+    }
+
+    /// This civil time in `tz`. A time the clocks skip (a gap) or show
+    /// twice (an overlap) resolves as `Disambiguation::Compatible`.
+    pub fn in_zone(self, tz: TimeZone) -> Zoned { Zoned::resolve(self, tz, Disambiguation::Compatible) }
+
+    /// This civil time in `tz`, with `choice` for a gap or an overlap;
+    /// `Disambiguation::Reject` throws there.
+    pub fn in_zone_with(self, tz: TimeZone, choice: Disambiguation) throws (ValueError) -> Zoned {
+        try Zoned::resolve_or_throw(self, tz, choice)
+    }
+
+    /// The date and time written by strftime-style `pattern`
+    /// (`%Y-%m-%d %H:%M`). Panics on a bad pattern or an offset directive.
+    #[track_caller]
+    pub const fn format(self, pattern: str) -> str { render(pattern, Parts::of(self.date, self.time, none, none, none)) }
+
+    /// The date and time in `text`, read by `pattern`; missing time
+    /// fields are 0.
+    #[track_caller]
+    pub fn parse_with(text: str, pattern: str) throws (ParseError) -> DateTime {
+        let f = try scan(text, pattern);
+        DateTime { date: try f.date(text), time: try f.time(text) }
+    }
+}
+
+// Exact `Duration` arithmetic on the civil time line (every day 86400 s).
+#[track_caller]
+const fn shift(dt: DateTime, d: Duration) -> DateTime {
+    let secs = d.as_secs();
+    let ns = (dt.time.nanosecond() as i64) + (d.as_ns() - secs * NS_PER_SEC);
+    DateTime::from_unix(dt.unix_secs() + secs + fdiv(ns, NS_PER_SEC), (ns %% NS_PER_SEC) as u32)
+}
+
+impl Add<Duration> for DateTime {
+    type Output = DateTime;
+    #[track_caller]
+    const fn add(self, rhs: Duration) -> DateTime { shift(self, rhs) }
+}
+
+impl Sub<Duration> for DateTime {
+    type Output = DateTime;
+    #[track_caller]
+    const fn sub(self, rhs: Duration) -> DateTime { shift(self, Duration::ZERO - rhs) }
+}
+
+impl Add<Period> for DateTime {
+    type Output = DateTime;
+    #[track_caller]
+    const fn add(self, rhs: Period) -> DateTime { DateTime { date: self.date + rhs, time: self.time } }
+}
+
+impl Sub<Period> for DateTime {
+    type Output = DateTime;
+    #[track_caller]
+    const fn sub(self, rhs: Period) -> DateTime { DateTime { date: self.date - rhs, time: self.time } }
+}
+
+impl Display for DateTime {
+    /// `2024-03-10T02:30:00`.
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"{self.date}T{self.time}")
+    }
+}
+
+impl Debug for DateTime {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}

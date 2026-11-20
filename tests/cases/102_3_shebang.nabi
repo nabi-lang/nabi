@@ -1,0 +1,9 @@
+#!/usr/bin/env nabi
+// expect-exit: 0
+// expect-stdout:
+// after #!
+
+// A first line starting with `#!` (and not `#![`) is a shebang line,
+// skipped like a comment, so `./script.nabi` runs with `nabi`.
+let s = "after #!";
+println(s);

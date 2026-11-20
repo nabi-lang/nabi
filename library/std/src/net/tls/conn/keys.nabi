@@ -1,0 +1,95 @@
+// std::net::tls::conn::keys: the key schedule (RFC 8446 7.1) and one
+// direction of the record layer.
+
+use core::crypto::HashAlgorithm;
+use core::crypto::Secret;
+use core::crypto::aead::{Aead, AeadAlgorithm};
+use core::crypto::hkdf;
+use core::crypto::sha2::Digest;
+use std::net::tls::CipherSuite;
+use std::net::tls::conn::wire::{put, put_u16, vec8};
+
+// key schedule (RFC 8446 7.1)
+
+pub(pkg) const fn suite_hash(s: CipherSuite) -> HashAlgorithm {
+    match s {
+        CipherSuite::Aes256GcmSha384 => HashAlgorithm::Sha384,
+        _ => HashAlgorithm::Sha256,
+    }
+}
+
+const fn suite_aead(s: CipherSuite) -> AeadAlgorithm {
+    match s {
+        CipherSuite::Aes128GcmSha256 => AeadAlgorithm::Aes128Gcm,
+        CipherSuite::Aes256GcmSha384 => AeadAlgorithm::Aes256Gcm,
+        CipherSuite::ChaCha20Poly1305Sha256 => AeadAlgorithm::ChaCha20Poly1305,
+    }
+}
+
+pub(pkg) fn expand_label(h: HashAlgorithm, secret: Secret, label: str, ctx: List<u8>, len: usize) -> Secret {
+    let info: List<u8> = [];
+    put_u16(info, len);
+    let full = "tls13 " + label;
+    info.push(full.len() as u8);
+    put(info, full.as_bytes());
+    vec8(info, ctx);
+    // `len` is at most a hash length: within HKDF's limit.
+    try hkdf::expand(h, secret, info, len) catch _ { Secret::zeroed(0) }
+}
+
+pub(pkg) fn derive_secret(h: HashAlgorithm, secret: Secret, label: str, transcript: Digest) -> Secret {
+    expand_label(h, secret, label, transcript.finish(), h.output_len())
+}
+
+pub(pkg) const fn zeros(n: usize) -> List<u8> {
+    let z: List<u8> = List::with_capacity(n);
+    for _ in 0..n { z.push(0u8); }
+    z
+}
+
+/// One direction of the record layer. It owns its traffic secret and
+/// key; the IV is not secret (every record nonce derives from it).
+pub(pkg) struct Dir {
+    pub(pkg) aead: Aead | none;
+    iv: List<u8>;
+    pub(pkg) seq: u64;
+    pub(pkg) secret: Secret;
+}
+
+pub(pkg) fn plain_dir() -> Dir { Dir { aead: none, iv: [], seq: 0u64, secret: Secret::zeroed(0) } }
+
+pub(pkg) fn dir_of(suite: CipherSuite, secret: Secret) -> Dir {
+    let h = suite_hash(suite);
+    let alg = suite_aead(suite);
+    let key = expand_label(h, secret, "key", [], alg.key_len());
+    let iv = expand_label(h, secret, "iv", [], 12).as_bytes().to_list();
+    // The key has the suite's length.
+    let aead = try Aead::new(alg, key) catch _ { panic("AEAD key length") };
+    key.wipe();
+    Dir { aead, iv, seq: 0u64, secret: Secret::new(secret) }
+}
+
+impl Dir {
+    pub(pkg) fn wipe(self) {
+        if let a: Aead = self.aead { a.wipe(); }
+        self.secret.wipe();
+    }
+}
+
+/// `a || b` as one secret.
+pub(pkg) fn joined(a: Secret, b: Secret) -> Secret {
+    let s = Secret::zeroed(a.len() + b.len());
+    for i in 0..a.len() { s[i] = a[i]; }
+    for i in 0..b.len() { s[a.len() + i] = b[i]; }
+    s
+}
+
+pub(pkg) const fn nonce(d: Dir) -> List<u8> {
+    let n: List<u8> = List::with_capacity(12);
+    for i in 0..12 {
+        let b = d.iv[i];
+        if i >= 4 { b = b ^ ((d.seq >> (8 * (11 - i)) as u64) as u8); }
+        n.push(b);
+    }
+    n
+}

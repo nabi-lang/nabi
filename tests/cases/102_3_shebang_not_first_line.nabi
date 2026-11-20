@@ -1,0 +1,5 @@
+// expect-error: 4:1: stray `#` (expected `#[` or `#![`)
+
+// Only the first line can be a shebang line.
+#!/usr/bin/env nabi
+println("x");

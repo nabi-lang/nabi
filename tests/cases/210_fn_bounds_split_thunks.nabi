@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout: 7 -1 -2 7
+
+// A throwing `fn` value widened into a `+ Send + Sync` slot and into a
+// plain one: the error adapters are two thunks, each typing its
+// captured callee with its slot's bounds.
+enum E { A, B }
+
+fn run(g: fn() throws (E | str) -> i32) -> i32 { try g() catch _e { -1 } }
+fn run_send(g: fn() throws (E | str) -> i32 + Send + Sync) -> i32 { try g() catch _e { -2 } }
+
+fn ok() throws (E) -> i32 { 7 }
+fn bad() throws (E) -> i32 { throw E::B }
+
+fn main() {
+    let a: fn() throws (E) -> i32 + Send + Sync = ok;
+    let b: fn() throws (E) -> i32 = bad;
+    let c: fn() throws (E) -> i32 + Send + Sync = bad;
+    println(f"{run_send(a)} {run(b)} {run_send(c)} {run(a)}");
+}

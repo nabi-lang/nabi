@@ -1,0 +1,33 @@
+// expect-error: error[E0133]: `a` was moved at line 12, and is used here
+// expect-error: using_twice_error.nabi:13:15: `a` was moved at line 12, and is used here
+// expect-error: using_twice_error.nabi:19:5: `a` was moved at line 18, and is used here
+
+// A value is released once: a second `using` of it, or a use after its
+// `using` released it, is an error.
+
+use bare::alloc::Allocation;
+
+pub fn twice(a: Allocation<i64>) -> usize {
+    let n = 0usize;
+    using x = a { n += x.len(); }
+    using y = a { n += y.len(); }
+    n
+}
+
+pub fn after(a: Allocation<i64>) -> usize {
+    using x = a { println(f"{x.len()}"); }
+    a.len()
+}
+
+// Fine: each `using` releases the value it makes.
+fn fresh() -> usize {
+    let n = 0usize;
+    for _ in 0..2 {
+        using x = try! Allocation::<i64>::new(1usize) { n += x.len(); }
+    }
+    n
+}
+
+fn main() {
+    println(f"{fresh()}");
+}

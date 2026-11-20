@@ -1,0 +1,111 @@
+//! Cryptographic algorithms: pure computation, no OS (randomness is
+//! `std::random`). Secret data is handled in constant time:
+//! no branch or memory index depends on it.
+//!
+//! Experimental: tested against NIST CAVP and Wycheproof vectors, not
+//! independently audited.
+
+pub mod aead;
+pub mod ecdsa;
+pub mod ed25519;
+pub mod hkdf;
+pub mod hmac;
+pub mod mlkem;
+pub mod rsa;
+pub mod secret;
+pub mod sha2;
+pub mod sha3;
+pub mod x25519;
+
+mod aes;
+mod bignum;
+mod chacha;
+mod curve25519;
+mod ecfield;
+
+pub use aead::{AeadAlgorithm, Aead};
+pub use ecdsa::EcCurve;
+pub use hmac::Hmac;
+pub use secret::Secret;
+pub use sha2::Digest;
+pub use sha3::{Sha3_256, Sha3_512, Shake128, Shake256};
+
+use core::sync::{Atomic, LoadOrdering};
+
+/// Always 0, but loaded at run time: a mask built through `ct_mask*`
+/// is a value the optimizer cannot prove is 0 or all ones, so the
+/// and/or selects it drives are not rewritten into branches (an
+/// optimizer does that to masks it can see are 0 or -1).
+static CT_ZERO: Atomic<u32> = Atomic::new(0u32);
+
+/// All ones when `bit` is 1, zero when it is 0.
+pub(pkg) fn ct_mask(bit: u32) -> u32 {
+    0u32.wrapping_sub(bit) ^ CT_ZERO.load(LoadOrdering::Relaxed)
+}
+
+pub(pkg) fn ct_mask64(bit: u64) -> u64 {
+    0u64.wrapping_sub(bit) ^ (CT_ZERO.load(LoadOrdering::Relaxed) as u64)
+}
+
+pub(pkg) fn ct_mask_i64(bit: i64) -> i64 {
+    -bit ^ (CT_ZERO.load(LoadOrdering::Relaxed) as i64)
+}
+
+/// Whether `a` and `b` are equal, in time that depends only on their
+/// lengths.
+pub fn constant_time_eq<A: AsBytes, B: AsBytes>(a: A, b: B) -> bool {
+    let x = a.byte_slice();
+    let y = b.byte_slice();
+    if x.len() != y.len() { return false; }
+    let d = 0u8;
+    for i in 0..x.len() {
+        d = d | (x[i] ^ y[i]);
+    }
+    d == 0u8
+}
+
+/// A hash function chosen at run time (HMAC, HKDF, signatures, TLS).
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum HashAlgorithm {
+    Sha256,
+    Sha384,
+    Sha512,
+    Sha3_256,
+    Sha3_512,
+}
+
+impl HashAlgorithm {
+    /// The digest length in bytes.
+    pub const fn output_len(self) -> usize {
+        match self {
+            HashAlgorithm::Sha256 => 32,
+            HashAlgorithm::Sha384 => 48,
+            HashAlgorithm::Sha512 => 64,
+            HashAlgorithm::Sha3_256 => 32,
+            HashAlgorithm::Sha3_512 => 64,
+        }
+    }
+
+    /// The block length; for SHA-3 the sponge rate (HMAC's block).
+    pub const fn block_len(self) -> usize {
+        match self {
+            HashAlgorithm::Sha256 => 64,
+            HashAlgorithm::Sha384 => 128,
+            HashAlgorithm::Sha512 => 128,
+            HashAlgorithm::Sha3_256 => 136,
+            HashAlgorithm::Sha3_512 => 72,
+        }
+    }
+
+    /// The digest of `data`: `Digest::new`, `update`, `finish`.
+    pub fn digest<B: AsBytes>(self, data: B) -> List<u8> {
+        let d = Digest::new(self);
+        d.update(data);
+        d.finish()
+    }
+
+    pub(pkg) const fn is_sha3(self) -> bool {
+        self == HashAlgorithm::Sha3_256 || self == HashAlgorithm::Sha3_512
+    }
+}

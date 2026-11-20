@@ -1,0 +1,43 @@
+//! std::os::unix::io: raw file descriptors. `File`,
+//! the sockets, the child pipes and the standard streams implement
+//! `AsRawFd`; `FromRawFd` takes ownership of a descriptor and
+//! `IntoRawFd` gives it up.
+
+use core::io::{Stdin, Stdout, Stderr};
+
+/// A file descriptor.
+pub type RawFd = i32;
+
+/// The descriptor behind a handle, still owned by it (`-1` once the
+/// handle is closed).
+pub trait AsRawFd {
+    /// The file descriptor, still owned by `self`.
+    fn as_raw_fd(self) -> RawFd;
+}
+
+/// A handle that owns descriptor `fd` from now on: closing the handle
+/// closes `fd`.
+pub trait FromRawFd {
+    /// Safety: `fd` must be open, and nothing else may close it.
+    unsafe fn from_raw_fd(fd: RawFd) -> Self;
+}
+
+/// A handle that gives up its descriptor: the handle is consumed and
+/// nothing closes the fd; the caller owns it.
+pub trait IntoRawFd {
+    /// The file descriptor, now the caller's to close (`-1` if `self`
+    /// was closed).
+    fn into_raw_fd(self) -> RawFd;
+}
+
+impl AsRawFd for Stdin {
+    const fn as_raw_fd(self) -> RawFd { 0 }
+}
+
+impl AsRawFd for Stdout {
+    const fn as_raw_fd(self) -> RawFd { 1 }
+}
+
+impl AsRawFd for Stderr {
+    const fn as_raw_fd(self) -> RawFd { 2 }
+}

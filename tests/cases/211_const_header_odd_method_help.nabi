@@ -1,0 +1,15 @@
+// expect-error: no method `sqrt` found for type `Q<1>`
+// expect-error: the impl of `ops::Sqrt` for `Q<{ 2 * L }>` has it, but its argument `{ 2 * L }` is `1` for no integer `L`
+
+// A method from a generic impl whose header computes an argument
+// (`Q<{ 2 * L }>`) that never takes the receiver's value: the help says so.
+pub struct Q<const L: i32> { v: f64; }
+impl<const L: i32> ops::Sqrt for Q<{ 2 * L }> {
+    type Output = Q<L>;
+    fn sqrt(self) -> Q<L> { Q { v: self.v.sqrt() } }
+}
+
+fn main() {
+    let q: Q<1> = Q { v: 4.0 };
+    println(q.sqrt().v);
+}

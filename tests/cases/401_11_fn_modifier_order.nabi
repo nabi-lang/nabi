@@ -1,0 +1,13 @@
+// expect-error: 9:7: fn modifier `unsafe` after `async`: modifiers go in the order `unsafe async yield`
+// expect-error: help: write `unsafe async fn`
+// expect-error: 10:7: fn modifier `async` after `yield`
+// expect-error: help: write `async yield fn`
+// expect-error: 11:8: fn modifier `unsafe` written twice
+// expect-error: help: write `unsafe fn`
+
+// Fn modifiers go in the order `unsafe async yield`.
+async unsafe fn bad1() {}
+yield async fn bad2() -> i32 { yield 1; }
+unsafe unsafe fn bad3() {}
+
+fn main() {}

@@ -1,0 +1,14 @@
+// expect-error: evaluating the const generic argument panicked: boom
+// expect-error: help: the argument runs at compile time
+// forbid-error: type annotations needed
+// forbid-error: must be a compile-time integer
+
+// A const argument whose evaluation panics says so, with the message,
+// and the call reports nothing more.
+fn g<const OK: bool>() {}
+
+const fn f(s: str) -> bool { panic(s) }
+
+fn main() {
+    g::<{ f("boom") }>();
+}

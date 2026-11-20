@@ -1,0 +1,17 @@
+// expect-exit: 0
+// expect-stdout: 3 3 3 [2, 4] 7
+
+// After a call, `|` starts a trailing closure only as `|params|`, an
+// optional `-> R`, then `{`; anything else is binary `|`.
+fn f(x: i64) -> i64 { x }
+fn apply(x: i64, g: fn(i64) -> i64) -> i64 { g(x) }
+
+fn main() {
+    let a = f(1) | f(2);
+    let b = f(1) | 2;
+    let c = (f(1)) | f(2);
+    let xs: List<i64> = [1, 2];
+    let d: List<i64> = xs.iter().map |x: i64| -> i64 { x * 2 }.collect();
+    let e = apply(3) |x| { x + 4 };
+    println(f"{a} {b} {c} {d:?} {e}");
+}

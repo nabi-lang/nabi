@@ -1,0 +1,11 @@
+//! A type stored into `any anytr::Tr`.
+
+use anytr::Tr;
+
+pub struct S { pub v: i64; }
+
+impl Tr for S {
+    fn f(self) -> i64 { self.v }
+}
+
+pub fn mk(v: i64) -> any Tr { S { v: v } }

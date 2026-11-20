@@ -1,0 +1,21 @@
+// A `const` or `static` array indexed in a function that is not inlined
+// reads its element in place; an index past the end still panics.
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/cg_const_table_in_place.nabi:13:26:
+// expect-stderr: index out of bounds
+// expect-stdout:
+// 2.5 4 19.5
+
+const C: [f64; 40] = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0, 10.5, 11.0, 11.5, 12.0, 12.5, 13.0, 13.5, 14.0, 14.5, 15.0, 15.5, 16.0, 16.5, 17.0, 17.5, 18.0, 18.5, 19.0, 19.5];
+static S: [i64; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+#[inline(never)]
+fn at(i: usize) -> f64 { C[i] }
+
+#[inline(never)]
+fn st(i: usize) -> i64 { S[i] }
+
+fn main() {
+    println(f"{at(5)} {st(3)} {at(39)}");
+    println(f"{at(40)}");
+}

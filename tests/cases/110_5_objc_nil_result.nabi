@@ -1,0 +1,27 @@
+// needs: objc
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at *
+// expect-stderr: `-[NSArray firstObject]` returned nil, but its declaration returns an object: declare the result `Id<T> | none`
+// expect-stdout:
+// none for the nullable one
+
+// nil from a method declared to return `Id<T>` panics, naming the
+// method; `Id<T> | none` takes it as `none`.
+use bare::ffi::objc::Id;
+
+#[link(name = "Foundation", kind = "framework")]
+#[objc::class(NSArray)]
+extern "objc" {
+    fn array() -> Id<Self>;
+    fn lastObject(self) -> Id<NSArray> | none;
+    fn firstObject(self) -> Id<NSArray>;
+}
+
+fn main() {
+    let a = NSArray::array();
+    match a.lastObject() {
+        o: Id<NSArray> => println(f"{o}"),
+        none => println("none for the nullable one"),
+    }
+    println(f"{a.firstObject()}");
+}

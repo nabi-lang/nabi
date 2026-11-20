@@ -1,0 +1,27 @@
+// only-os: macos linux
+// expect-exit: 0
+// expect-stdout:
+// true: success true code 0
+// false: success false code 1
+// killed: code none true, signal Kill
+// out: [a b]
+
+// `status()` waits without output; `ExitStatus::success`
+// / `code` (none when signal-terminated) / `signal` (`ExitStatusExt`); `Child::kill` then
+// `wait`; `output()` collects stdout.
+use std::process::{Command, Stdio};
+use core::io::IoError;
+
+fn main() throws (IoError) {
+    let t = try Command::new("true").status();
+    println(f"true: success {t.success()} code {t.code() ?? -1}");
+    let f = try Command::new("false").status();
+    println(f"false: success {f.success()} code {f.code() ?? -1}");
+    let c = try Command::new("sleep").arg("30").spawn();
+    try c.kill();
+    let s = try c.wait();
+    println(f"killed: code none {s.code() is none}, signal {s.signal():?}");
+    let o = try Command::new("echo").args(["a", "b"]).output();
+    println("out: [" + (try! str::from_utf8(o.stdout)).trim() + "]");
+}
+// only-os: macos linux

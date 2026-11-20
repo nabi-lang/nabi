@@ -1,0 +1,10 @@
+//! A trait a private module declares, re-exported at the root.
+
+mod input {
+    pub trait AsVec { fn as_vec(self) -> List<f64>; }
+    impl AsVec for Range<i64> {
+        fn as_vec(self) -> List<f64> { self.map(|x| x as f64).collect() }
+    }
+}
+
+pub use input::AsVec;

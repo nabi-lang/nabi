@@ -1,0 +1,28 @@
+[package]
+name = "nabicc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# `NABI_COMMIT_INFO` and `NABI_HOST`, as nabic's.
+build = "../../compiler/nabic/build.rs"
+
+[dependencies]
+nabic_codegen_native = { workspace = true }
+nabic_core = { workspace = true }
+nabic_diagnostic = { workspace = true }
+nabic_driver = { workspace = true }
+nabic_interface = { workspace = true }
+nabic_mir = { workspace = true }
+nabic_target = { workspace = true }
+nabicc_lex = { workspace = true }
+nabicc_lower = { workspace = true }
+nabicc_parse = { workspace = true }
+nabicc_pp = { workspace = true }
+nabicc_sema = { workspace = true }
+nabicc_target = { workspace = true }
+nabild = { workspace = true }
+
+[lints]
+workspace = true

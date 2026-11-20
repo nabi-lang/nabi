@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout:
+// received 3
+
+
+// A task owns what its `async` block captured, and releases it when it
+// ends: the sender it took closes the channel then.
+
+use core::channel::channel;
+
+async fn main() {
+    let (tx, rx) = channel::<i32>();
+    let t = task::spawn(async {
+        for i in 0..3 { try! await tx.send_async(i); }
+    });
+    let n = 0;
+    while let v: i32 = await rx.recv_async() { n += 1; }
+    await t;
+    println(f"received {n}");
+}

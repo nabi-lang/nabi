@@ -1,0 +1,120 @@
+{
+ "backend": "llvm",
+ "commit": "pre-rename b12067d4649d",
+ "date": "2026-10-13T15:31:16+00:00",
+ "host": "Darwin-arm64",
+ "note": "The LLVM -O2 backend the compiler had before its own, on the same bench sources (renamed since), from that tree's bench/history.jsonl",
+ "results": {
+  "allocboxes": {
+   "insns": 626117893,
+   "rss_kb": 6016,
+   "user": 0.03
+  },
+  "allocstrings": {
+   "insns": 1963467680,
+   "rss_kb": 55520,
+   "user": 0.11
+  },
+  "allocthreads": {
+   "insns": 633166024,
+   "rss_kb": 6208,
+   "user": 0.06
+  },
+  "binarytrees": {
+   "insns": 16464210746,
+   "rss_kb": 115328,
+   "user": 0.99
+  },
+  "c/binarytrees": {
+   "insns": 20603703100,
+   "rss_kb": 34704,
+   "user": 0.92
+  },
+  "c/fannkuch": {
+   "insns": 793936383,
+   "rss_kb": 1760,
+   "user": 0.13
+  },
+  "c/jsontokenizer": {
+   "insns": 488088922,
+   "rss_kb": 9840,
+   "user": 0.03
+  },
+  "c/nbody": {
+   "insns": 504081472,
+   "rss_kb": 1776,
+   "user": 0.04
+  },
+  "c/spectralnorm": {
+   "insns": 413258376,
+   "rss_kb": 1808,
+   "user": 0.03
+  },
+  "c/wordcount": {
+   "insns": 2366400425,
+   "rss_kb": 17296,
+   "user": 0.11
+  },
+  "fannkuch": {
+   "insns": 2387656669,
+   "rss_kb": 1856,
+   "user": 0.15
+  },
+  "fstringheavy": {
+   "insns": 8441260760,
+   "rss_kb": 6112,
+   "user": 0.45
+  },
+  "gcbigbuffer": {
+   "insns": 22231127455,
+   "rss_kb": 281952,
+   "user": 1.02
+  },
+  "gcfragment": {
+   "insns": 4498675645,
+   "rss_kb": 334960,
+   "user": 0.33
+  },
+  "gcoldheap": {
+   "insns": 4005202031,
+   "rss_kb": 278960,
+   "user": 0.24
+  },
+  "jsontokenizer": {
+   "insns": 583892483,
+   "rss_kb": 27056,
+   "user": 0.03
+  },
+  "nbody": {
+   "insns": 1543121071,
+   "rss_kb": 1920,
+   "user": 0.05
+  },
+  "spectralnorm": {
+   "insns": 816154306,
+   "rss_kb": 1952,
+   "user": 0.03
+  },
+  "storeheavy": {
+   "insns": 6616970046,
+   "rss_kb": 1984,
+   "user": 0.19
+  },
+  "timers": {
+   "insns": 1958870227,
+   "rss_kb": 77120,
+   "user": 0.21
+  },
+  "wbthreads": {
+   "insns": 14893420947,
+   "rss_kb": 340224,
+   "user": 1.03
+  },
+  "wordcount": {
+   "insns": 3050976978,
+   "rss_kb": 61216,
+   "user": 0.18
+  }
+ },
+ "runs": 3
+}

@@ -1,0 +1,195 @@
+//! bare::alloc - raw allocation outside the GC.
+//! Over the runtime's `nabi_alloc_raw` / `nabi_realloc_raw` / `nabi_free`
+//! (system malloc); failure is a null `CPtr`, never an abort.
+//!
+//! `Allocation<T>` frees its block where its owner leaves scope.
+
+use bare::mem::{align_of, size_of};
+use bare::ptr::{CPtr, ManyPtr, Ptr};
+
+extern "nabi" {
+    fn nabi_alloc_raw(size: usize, align: usize, zeroed: i32) -> usize;
+    fn nabi_realloc_raw(ptr: usize, old_size: usize, align: usize, new_size: usize) -> usize;
+    fn nabi_free(ptr: usize);
+}
+
+/// Why a `Layout` cannot be made.
+// By hand: bare cannot use the derives, which expand to core paths.
+pub struct LayoutError {
+    message: str;
+}
+
+impl LayoutError {
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { self.message }
+}
+
+impl PartialEq for LayoutError {
+    const fn eq(self, rhs: LayoutError) -> bool { self.message == rhs.message }
+}
+
+impl Eq for LayoutError {}
+
+impl Clone for LayoutError {
+    fn clone(self) -> LayoutError { LayoutError { message: self.message } }
+}
+
+impl Display for LayoutError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message) }
+}
+
+impl Debug for LayoutError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"LayoutError({self.message:?})") }
+}
+
+impl Error for LayoutError {}
+
+/// Size and alignment of a raw block.
+pub struct Layout {
+    size: usize;
+    align: usize;
+}
+
+// By hand: `bare` cannot use `#[derive]` (its impls name `core`).
+impl Clone for Layout {
+    const fn clone(self) -> Layout { self }
+}
+
+impl Copy for Layout {}
+
+impl PartialEq for Layout {
+    const fn eq(self, rhs: Layout) -> bool { self.size == rhs.size && self.align == rhs.align }
+}
+
+impl Eq for Layout {}
+
+impl Hash for Layout {
+    const fn hash<H: Hasher>(self, ref h: H) {
+        self.size.hash(ref h);
+        self.align.hash(ref h);
+    }
+}
+
+impl Debug for Layout {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"Layout {{ size: {self.size}, align: {self.align} }}")
+    }
+}
+
+impl Layout {
+    /// The layout of one `T`.
+    pub const fn new<T>() -> Layout { Layout { size: size_of::<T>(), align: align_of::<T>() } }
+
+    /// The layout of `n` `T`s.
+    pub const fn array<T>(n: usize) throws (LayoutError) -> Layout {
+        let size = size_of::<T>();
+        // usize::MAX without overflowing on the way.
+        let half = 1usize << (size_of::<usize>() * 8usize - 1usize);
+        let max = half - 1usize + half;
+        if size != 0 && n > max / size {
+            throw LayoutError { message: "array size overflows usize" };
+        }
+        Layout { size: size * n, align: align_of::<T>() }
+    }
+
+    /// `align` must be a power of two.
+    pub const fn from_size_align(size: usize, align: usize) throws (LayoutError) -> Layout {
+        if align == 0 || (align & (align - 1)) != 0 {
+            throw LayoutError { message: "align is not a power of two" };
+        }
+        Layout { size, align }
+    }
+
+    /// The size in bytes.
+    pub const fn size(self) -> usize { self.size }
+    /// The alignment in bytes, a power of two.
+    pub const fn align(self) -> usize { self.align }
+}
+
+/// A block for `layout` outside the GC, uninitialized; null when out of
+/// memory or when the size is 0. Free it with `dealloc` and the same layout.
+pub unsafe fn alloc(layout: Layout) -> CPtr<u8> {
+    CPtr::from_addr(nabi_alloc_raw(layout.size, layout.align, 0))
+}
+
+/// Like `alloc`, with every byte zero; null when out of memory or when
+/// the size is 0.
+pub unsafe fn alloc_zeroed(layout: Layout) -> CPtr<u8> {
+    CPtr::from_addr(nabi_alloc_raw(layout.size, layout.align, 1))
+}
+
+/// Free a block from `alloc` / `alloc_zeroed` / `realloc`. UB unless
+/// `ptr` came from one of them and is not freed yet.
+pub unsafe fn dealloc(ptr: Ptr<u8>, layout: Layout) {
+    nabi_free(ptr.addr());
+}
+
+/// On failure (null) `ptr` is still valid.
+pub unsafe fn realloc(ptr: Ptr<u8>, old_layout: Layout, new_size: usize) -> CPtr<u8> {
+    CPtr::from_addr(
+        nabi_realloc_raw(ptr.addr(), old_layout.size, old_layout.align, new_size),
+    )
+}
+
+/// An uninitialized block for one `T`; null when out of memory or when
+/// `T` has size 0. Free it with `dealloc_one`.
+pub unsafe fn alloc_one<T>() -> CPtr<T> {
+    CPtr::from_addr(nabi_alloc_raw(size_of::<T>(), align_of::<T>(), 0))
+}
+
+/// An uninitialized block for `n` `T`s; null when out of memory, when
+/// the size is 0 or when `n * size_of::<T>()` overflows. Free it with
+/// `dealloc_array`.
+pub unsafe fn alloc_array<T>(n: usize) -> CPtr<T> {
+    let elem = size_of::<T>();
+    if elem != 0 && n > usize::MAX / elem {
+        return CPtr::null();
+    }
+    CPtr::from_addr(nabi_alloc_raw(elem * n, align_of::<T>(), 0))
+}
+
+/// Free a block from `alloc_one`. UB unless `ptr` came from it and is not
+/// freed yet; the `T` is not dropped.
+pub unsafe fn dealloc_one<T>(ptr: Ptr<T>) { nabi_free(ptr.addr()); }
+
+/// Free a block of `n` `T`s from `alloc_array`. UB unless `ptr` came
+/// from it and is not freed yet; the elements are not dropped.
+pub unsafe fn dealloc_array<T>(ptr: Ptr<T>, n: usize) { nabi_free(ptr.addr()); }
+
+/// `n` `T`s outside the GC. It has one owner (`let b = a`
+/// moves it), and the block is freed where that owner leaves scope.
+pub struct Allocation<T> {
+    ptr: Ptr<T>;
+    len: usize;
+}
+
+impl<T> Debug for Allocation<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"Allocation {{ len: {self.len} }}") }
+}
+
+impl<T> Allocation<T> {
+    /// Room for `n` `T`s (zeroed); `LayoutError` when the size overflows
+    /// or the system has no memory.
+    pub fn new(n: usize) throws (LayoutError) -> Allocation<T> {
+        let layout = try Layout::array::<T>(n);
+        let size = if layout.size == 0 { 1 } else { layout.size };
+        let at = unsafe { nabi_alloc_raw(size, layout.align, 1) };
+        if at == 0 {
+            throw LayoutError { message: "out of memory" };
+        }
+        Allocation { ptr: Ptr::<T>::dangling().with_addr(at), len: n }
+    }
+
+    /// The first element.
+    pub const fn as_ptr(self) -> Ptr<T> { self.ptr }
+    /// The first element, as a pointer to the run.
+    pub const fn as_many(self) -> ManyPtr<T> { self.ptr.as_many() }
+    /// The number of `T`s it has room for.
+    pub const fn len(self) -> usize { self.len }
+}
+
+impl<T> Drop for Allocation<T> {
+    fn drop(ref self) {
+        unsafe { nabi_free(self.ptr.addr()) };
+    }
+}

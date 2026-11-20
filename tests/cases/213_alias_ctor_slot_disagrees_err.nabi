@@ -1,0 +1,8 @@
+// expect-error: `Matrix::zeros` can't infer `Matrix`'s arguments
+// expect-error: or give the slot its type
+
+// A slot of another rank than the alias fixes gives nothing.
+use core::array::{Array, Matrix};
+
+let e: Array<f64, 3> = Matrix::zeros([0, 3, 1]);
+println(f"{e.shape():?}");

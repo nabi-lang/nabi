@@ -1,0 +1,39 @@
+// expect-exit: 0
+// expect-stdout:
+// none 3
+// 0 9
+// 1 1
+// -1 2
+// false true
+
+// A branch whose condition is a constant false in an instance never
+// runs: its constant arithmetic is not checked (`N - 1` at `N = 0`),
+// whether in the other arm of an `if`, after an early `return` or on
+// the right of `&&` / `||`.
+fn last<const N: usize>(a: [i32; N]) -> i32 | none {
+    if N == 0 {
+        return none;
+    }
+    a[N - 1]
+}
+
+fn top<const N: usize>(a: [i32; N]) -> i32 {
+    if N == 0 { 0 } else { a[N - 1] }
+}
+
+fn rows<const N: usize>() -> isize {
+    if N > 0 && N < 3 { (N - 1) as isize } else if !(N == 0) { 1 } else { -1 }
+}
+
+fn ends<const N: usize>(a: [i32; N]) -> bool {
+    N > 0 && a[N - 1] == 3
+}
+
+fn main() {
+    let e: [i32; 0] = [];
+    println(f"{last(e):?} {last([1, 2, 3]):?}");
+    println(f"{top(e)} {top([7, 8, 9])}");
+    println(f"{rows::<2>()} {rows::<5>()}");
+    println(f"{rows::<0>()} {[1, 2].len()}");
+    println(f"{ends(e)} {ends([1, 2, 3])}");
+}

@@ -1,0 +1,104 @@
+// GC pause probe: a live heap of a given size and shape, then
+// short-lived churn, split over N threads (each owns live/N and churn/N).
+//
+//     live <ptr|tree|flat> <live MiB> <churn MiB> <threads>
+//
+// ptr:  List<any Weigh>, one 48-byte box per element (~64 B each)
+// tree: binary trees of depth 15 (~1.5 MiB each), pure pointer chasing
+// flat: List<f64> chunks of 1 Mi elements (8 MiB, large objects), no refs
+//
+// Every 1024th churn step overwrites one live element (old -> young
+// store, old garbage), so full collections happen too. Run with
+// NABIR_GC_LOG=1 (`bench.py --pauses` does).
+use std::env;
+use std::thread;
+
+trait Weigh { fn w(self) -> i64; }
+struct Blob { a: i64; b: i64; c: i64; d: i64; }
+impl Weigh for Blob { fn w(self) -> i64 { return self.a + self.d; } }
+
+trait Tree { fn check(self) -> i64; }
+struct Node { l: any Tree; r: any Tree; }
+struct Leaf { x: i64; y: i64; }
+impl Tree for Node {
+    fn check(self) -> i64 { return 1 + self.l.check() + self.r.check(); }
+}
+impl Tree for Leaf { fn check(self) -> i64 { return 1 + self.x; } }
+
+fn tree(d: i64) -> any Tree {
+    if d == 0 { return Leaf { x: 0, y: 0 }; }
+    return Node { l: tree(d - 1), r: tree(d - 1) };
+}
+
+fn make(i: i64) -> any Weigh { return Blob { a: i, b: i, c: i, d: 1 }; }
+
+// 48 B per churned box.
+fn work(kind: str, live_mb: i64, churn_mb: i64) -> i64 {
+    let total: i64 = 0;
+    let steps = churn_mb * 1048576 / 48;
+    if kind == "ptr" {
+        let n = live_mb * 1048576 / 64;
+        let keep: List<any Weigh> = [];
+        let i: i64 = 0;
+        while i < n { keep.push(make(i)); i += 1; }
+        i = 0;
+        while i < steps {
+            let x = make(i);
+            total += x.w();
+            if i & 1023 == 0 { keep[((i >> 10) % n) as usize] = x; }
+            i += 1;
+        }
+        total += keep[7].w();
+    } else if kind == "tree" {
+        let n = live_mb * 2 / 3 + 1;
+        let keep: List<any Tree> = [];
+        let i: i64 = 0;
+        while i < n { keep.push(tree(15)); i += 1; }
+        i = 0;
+        while i < steps {
+            let x = make(i);
+            total += x.w();
+            if i & 1048575 == 0 { keep[((i >> 20) % n) as usize] = tree(15); }
+            i += 1;
+        }
+        total += keep[0].check();
+    } else {
+        let n = live_mb / 8 + 1;
+        let keep: List<List<f64>> = [];
+        let i: i64 = 0;
+        while i < n {
+            let c: List<f64> = List::with_capacity(1048576);
+            let j = 0;
+            while j < 1048576 { c.push(j as f64); j += 1; }
+            keep.push(c);
+            i += 1;
+        }
+        i = 0;
+        while i < steps {
+            let x = make(i);
+            total += x.w();
+            if i & 1023 == 0 { keep[((i >> 10) % n) as usize][(i & 1023) as usize] = 1.0; }
+            i += 1;
+        }
+        total += keep[0][3] as i64;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    let args = env::args();
+    let kind = args[1];
+    let live = try! args[2].parse::<i64>();
+    let churn = try! args[3].parse::<i64>();
+    let t = try! args[4].parse::<i64>();
+    let hs: List<thread::JoinHandle<i64>> = [];
+    let k: i64 = 0;
+    while k < t {
+        hs.push(thread::spawn(|| work(kind, live / t, churn / t)));
+        k += 1;
+    }
+    let total: i64 = 0;
+    for h in hs { total += try! h.join(); }
+    println(f"{total}");
+    return 0;
+}

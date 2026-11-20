@@ -1,0 +1,50 @@
+// expect-exit: 0
+// expect-stdout:
+// 0 0 0 0
+// 7
+// 7 7 0 9
+
+// Associated functions called through an associated type, in every spelling.
+
+use core::num::Zero;
+
+trait Bag {
+    type Elem;
+    fn first(self) -> Elem;
+    fn zero_elem(self) -> Elem where Elem: Zero { Elem::zero() }
+    fn zero_elem2(self) -> Self::Elem where Self::Elem: Zero { Self::Elem::zero() }
+}
+
+struct B { v: i32; }
+
+impl Bag for B {
+    type Elem = i32;
+    fn first(self) -> i32 { self.v + Elem::zero() }
+}
+
+struct Seven;
+
+impl Seven {
+    fn make() -> i32 { 7 }
+    fn plus(self, n: i32) -> i32 { 7 + n }
+}
+
+struct S;
+
+impl Bag for S {
+    type Elem = Seven;
+    fn first(self) -> Seven { Seven }
+}
+
+fn z<T: Bag>(t: T) -> T::Elem where T::Elem: Zero { T::Elem::zero() }
+
+fn made<T: Bag<Elem = Seven>>(t: T) -> i32 { T::Elem::make() }
+
+fn main() -> i32 {
+    let b = B { v: 3 };
+    println(f"{b.zero_elem()} {b.zero_elem2()} {z(b)} {b.first() - 3}");
+    println(f"{made(S)}");
+    let m = <S as Bag>::Elem::make();
+    println(f"{m} {<S as Bag>::Elem::make()} {<B as Bag>::Elem::zero()} {<S as Bag>::Elem::plus(Seven, 2)}");
+    return 0;
+}

@@ -1,0 +1,3 @@
+use pkg::Q;
+
+pub type Length<V> = Q<V, 1>;

@@ -1,0 +1,17 @@
+// needs: objc
+// expect-error: `writeToFile_error`: an Objective-C method reports errors through its last `NSError **`: write `throws (objc::Error)`
+// expect-error: `checkResourceIsReachableAndReturnError`: a throwing method returns nothing (a `BOOL` result) or an `Id<T>`
+
+// `throws (objc::Error)` stands for a last `NSError **`, after a `BOOL`
+// or object result.
+use bare::ffi::objc;
+use bare::ffi::objc::{Id, NSString};
+
+#[objc::category(NSString)]
+extern "objc" {
+    fn writeToFile_error(self, path: Id<NSString>) throws (str) -> bool;
+    #[selector("checkResourceIsReachableAndReturnError:")]
+    fn checkResourceIsReachableAndReturnError(self) throws (objc::Error) -> usize;
+}
+
+fn main() {}

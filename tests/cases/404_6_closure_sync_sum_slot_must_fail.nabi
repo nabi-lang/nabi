@@ -1,0 +1,14 @@
+// expect-error: mismatched types: argument `cb` of `par` expects `fn(Step) -> bool + Send + Sync`, found `closure(Step) -> bool` - the closure's captures don't meet the `fn` type's bounds
+// expect-error: which is not `Sync`
+// forbid-error: expects `fn(Step) -> bool + Send + Sync | none`
+
+// A `+ Send + Sync` member of an optional slot still needs `Sync`
+// captures: one error, saying which capture and what to write.
+pub struct Step { pub k: usize; }
+fn par(cb: fn(Step) -> bool + Send + Sync | none) -> bool {
+    match cb { none => false, c: fn(Step) -> bool + Send + Sync => c(Step { k: 1 }) }
+}
+fn main() {
+    let seen = [0];
+    let _ = par(|s: Step| -> bool { seen[0] = s.k; true });
+}

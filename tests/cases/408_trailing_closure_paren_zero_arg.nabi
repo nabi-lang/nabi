@@ -1,0 +1,12 @@
+// expect-exit: 99
+// expect-stdout:
+
+// `f() { body }` is a zero-parameter trailing closure: a `{`
+// right after `()` attaches as the closure.
+fn run(f: fn() -> i32) -> i32 {
+    return f();
+}
+
+fn main() -> i32 {
+    return run() { 99 };
+}

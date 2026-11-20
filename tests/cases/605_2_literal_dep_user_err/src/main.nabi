@@ -1,0 +1,10 @@
+// nabic-arg: --extern litdep=tests/cases/605_2_literal_dep
+// expect-error: unknown numeric literal suffix `hport`
+// expect-error: help: did you mean `80port`?
+
+// A dependency's `#[literal]` with a handler that is not `pub` does
+// not change how its dependents parse: only its `pub` `port` is offered.
+use litdep::Port;
+
+let p: Port = 80hport;
+println(f"{p.n}");

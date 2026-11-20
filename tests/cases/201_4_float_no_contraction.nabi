@@ -1,0 +1,48 @@
+// expect-exit: 0
+//
+// `a * b + c` rounds the product, then the sum: no backend or optimizer
+// level fuses them (0.1 * 10 rounds to 1 exactly, a fused form would
+// leave 2^-54). Only `mul_add` fuses. Scalar, in a loop the vectorizer
+// takes, and folded at compile time.
+// expect-stdout:
+// 0 0
+// 0 0
+// 0 0 0 0
+// 0 0
+// 5.551115123125783e-17 1.4901161e-8
+
+use core::hint::black_box;
+
+const FOLDED: f64 = 0.1 * 10.0 - 1.0;
+
+fn fma_shape(a: f64, b: f64, c: f64) -> f64 { a * b + c }
+
+fn main() {
+    let a = black_box(0.1);
+    let b = black_box(10.0);
+    let c = black_box(-1.0);
+    let af = black_box(0.1f32);
+    let bf = black_box(10.0f32);
+    let cf = black_box(-1.0f32);
+    println(f"{a * b + c} {af * bf + cf}");
+    println(f"{fma_shape(a, b, c)} {c + a * b}");
+    let xs: List<f64> = [];
+    let ys: List<f32> = [];
+    for _ in 0..64 {
+        xs.push(a);
+        ys.push(af);
+    }
+    let out: List<f64> = [];
+    let outf: List<f32> = [];
+    for i in 0..xs.len() {
+        out.push(xs[i] * b + c);
+        outf.push(ys[i] * bf + cf);
+    }
+    let zs = [0.0; 64];
+    for i in 0..64 {
+        zs[i] = xs[i] * b - 1.0;
+    }
+    println(f"{out[0]} {out[63]} {outf[0]} {outf[63]}");
+    println(f"{zs[0]} {FOLDED}");
+    println(f"{a.mul_add(b, c):e} {af.mul_add(bf, cf):e}");
+}

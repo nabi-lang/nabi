@@ -1,0 +1,10 @@
+// expect-error: cannot infer the type of `te`
+// forbid-error: internal compiler error
+
+// Branches that are all `[]` leave the element type open: an error that
+// says to annotate, never an internal one.
+fn main() {
+    let c = true;
+    let te = if c { [] } else { [] };
+    println(f"{te.len()}");
+}

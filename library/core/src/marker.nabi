@@ -1,0 +1,597 @@
+//! Marker traits used by `#[derive(..)]` and other compiler-driven
+//! semantics.
+//! The comparison / hashing traits live in `cmp.nabi`.
+
+use bare::gc::{GcPtr, Pinnable};
+use core::collections::raw::{buf_cast, buf_erase};
+use core::rt::buf_copy;
+
+/// The type of the `none` literal: the compiler's
+/// built-in `none`, here under its library name.
+pub type NoneSentinel = none;
+
+/// An explicit duplicate: `x.clone()`; `#[derive(Clone)]` clones every
+/// field.
+#[lang("clone_trait")]
+pub trait Clone {
+    /// A copy of `self`; collections copy their elements.
+    fn clone(self) -> Self;
+}
+
+/// A type's default value (`0`, `false`, `'\0'`, `""`, empty
+/// collections); `#[derive(Default)]` defaults every field.
+pub trait Default {
+    /// The default value of `Self`.
+    fn default() -> Self;
+}
+
+/// `T::default()` where only the expected type names `T`
+/// (`#[derive(Default)]` field initializers).
+pub(pkg) const fn default_of<T: Default>() -> T {
+    T::default()
+}
+
+// One `Default` per primitive, with its zero value.
+#[impl_macro(default_impls)] @macro {
+    (@rep[sep = ","] { (@t: ty, @v: expr) }) => {
+        @for @t { impl Default for @t { const fn default() -> @t { @v } } }
+    }
+}
+default_impls!(
+    (i8, 0), (i16, 0), (i32, 0), (i64, 0), (isize, 0),
+    (u8, 0), (u16, 0), (u32, 0), (u64, 0), (usize, 0),
+    (f32, 0.0), (f64, 0.0), (bool, false), (char, '\0'), (str, "")
+);
+
+/// Bitwise copy is a correct duplicate. A marker: every
+/// value already copies on `let y = x;`; `#[derive(Copy)]` checks that
+/// every field is `Copy` and the type is not `Drop`.
+pub trait Copy: Clone {}
+
+// Primitives (and the immutable `(ptr, len)` `str`) clone by
+// copying, and are `Copy`. One pair of impls per type.
+#[impl_macro(copy_types)] @macro {
+    (@rep[sep = ","] { @t: ty }) => {
+        @for @t {
+            impl Clone for @t {
+                #[intrinsic("nabi.clone.copy")]
+                const fn clone(self) -> @t { self }
+            }
+            impl Copy for @t {}
+        }
+    }
+}
+copy_types!(
+    i8, i16, i32, i64, isize, u8, u16, u32, u64, usize, f32, f64, bool, char, c_char, str
+);
+
+/// Cleanup on release. A `Drop` value has one owner: `let b = a`
+/// moves it, and the compiler calls `drop` where its owner leaves scope (on
+/// every exit, and when a task ends) or where a `using` block
+/// ends.
+pub trait Drop {
+    /// Releases what `self` holds; called once, where the value is
+    /// released.
+    #[lang("drop_method")]
+    fn drop(ref self);
+}
+
+// Auto marker traits, derived by the compiler: a struct / enum / tuple /
+// array / sum has one iff every component does; primitives and `str`
+// have both; a closure is `Sync` iff its captures are and `Send` iff
+// its plain captures are `Send + Sync` (a plain capture copies a handle
+// the creator keeps) and its `[move x]` captures are `Send`; a `fn` type
+// has exactly the bounds it names, a named function both.
+// `unsafe impl Send for T {}` opts in, `impl !Send for T {}` opts out.
+// `Send`: safe to move to another thread. `Sync`: safe to read through
+// shared references from several threads.
+
+/// Safe to move to another thread.
+#[lang("send_trait")]
+pub trait Send {}
+
+/// Safe to read through shared references from several threads.
+#[lang("sync_trait")]
+pub trait Sync {}
+
+/// A value handed between threads under an outside protocol (a join,
+/// a lock, a channel hand-off) that keeps any two threads from using it
+/// at once: `Send + Sync` whenever the value is `Send`, even when it is
+/// not `Sync` (a collection). The toolchain's own: code elsewhere moves
+/// the value into the closure (`[move x]`) or hands it over.
+pub struct Handoff<T> {
+    value: T;
+}
+
+impl<T> Handoff<T> {
+    /// The caller guarantees the protocol: no two threads use `value`
+    /// (or another copy of its handle) at the same time.
+    #[internal("move the value into the closure (`[move x] || ..`), or pass it as the argument: `task::spawn_blocking_with_arg(x, |x| ..)`")]
+    pub const unsafe fn new(value: T) -> Handoff<T> {
+        Handoff { value }
+    }
+
+    /// The wrapped value.
+    pub const fn get(self) -> T {
+        self.value
+    }
+}
+
+impl<T> Debug for Handoff<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Handoff") }
+}
+
+unsafe impl<T: Send> Send for Handoff<T> {}
+unsafe impl<T: Send> Sync for Handoff<T> {}
+
+// A hand-off (`Mutex::new`, `RwLock::new`, a guard's `set` / `update`, a
+// channel send, a task's or thread's result) gives the new owner a copy
+// of every collection the value reaches: a handle the
+// sender kept, however it got it, then names an object no other thread
+// uses. `Sync` parts and types with `unsafe impl Send` stay shared.
+//
+// The walk is flat: a collection's copy takes its elements as they are
+// and queues its buffer on the memo; the queue is drained after, so
+// nesting depth costs no stack.
+
+extern "nabi" {
+    fn nabi_xfer_memo() -> GcBuf<u8>;
+    fn nabi_xfer_memo_for(n: usize) -> GcBuf<u8>;
+    fn nabi_visit_begin() -> u32;
+    fn nabi_visit_end(epoch: u32);
+    /// A visit's state: the header way, or the exact way (a memo).
+    fn nabi_visit_new(epoch: u32) -> GcBuf<u8>;
+    fn nabi_visit_exact(memo: GcBuf<u8>) -> GcBuf<u8>;
+    fn nabi_visit_reach(v: GcBuf<u8>, obj: GcBuf<u8>, how: u32) -> usize;
+    fn nabi_visit_done(v: GcBuf<u8>) -> bool;
+    /// Reach `buf` through a slice and note the span (`write`: 1 for a
+    /// `SliceMut`), checked by `nabi_visit_spans` once all items are in.
+    fn nabi_visit_span(v: GcBuf<u8>, buf: GcBuf<u8>, start: usize, len: usize, stride: isize, write: u32) -> usize;
+    /// Whether two items' spans of one buffer overlap, one of them written.
+    fn nabi_visit_spans(v: GcBuf<u8>) -> bool;
+    /// The copy of `orig` viewed as `(a, b, c)`, or `orig` when none.
+    fn nabi_xfer_find(memo: GcBuf<u8>, orig: GcBuf<u8>, a: usize, b: usize, c: usize) -> GcBuf<u8>;
+    fn nabi_xfer_note(memo: GcBuf<u8>, orig: GcBuf<u8>, a: usize, b: usize, c: usize, copy: GcBuf<u8>);
+    fn nabi_xfer_null(buf: GcBuf<u8>) -> bool;
+    fn nabi_xfer_slots(buf: GcBuf<u8>, size: usize) -> usize;
+}
+
+/// A copied buffer whose first `n` elements still name the originals'
+/// parts: `fix` passes each through `transfer`.
+struct Work {
+    buf: GcBuf<u8>;
+    n: usize;
+    fix: fn(GcBuf<u8>, usize, Memo);
+}
+
+/// The copies one hand-off made, by original object, and the copied
+/// buffers left to fix. `none` for one collection whose elements need no
+/// copy: nothing can be reached twice. A visit (`distinct`) notes what
+/// each item reaches in `vis` instead.
+pub(pkg) struct Memo {
+    obj: GcBuf<u8> | none;
+    work: List<Work> | none;
+    vis: GcBuf<u8> | none;
+}
+
+// What `nabi_visit_reach` answers (nabir `xfer`).
+const NEW: usize = 0;
+const AGAIN: usize = 1;
+
+impl Memo {
+    /// A memo for work this one cannot hold (it has none: the hand-off
+    /// of one handle of plain elements), drained with `finish`; else none.
+    pub(pkg) fn own(self) -> Memo | none {
+        if let _: GcBuf<u8> = self.obj {
+            return none;
+        }
+        let w: List<Work> = [];
+        Memo { obj: unsafe { nabi_xfer_memo() }, work: w, vis: none }
+    }
+
+    /// Fix up what `own`'s memo queued.
+    #[track_caller]
+    pub(pkg) fn finish(self) {
+        drain(self);
+    }
+
+    /// The hand-off cannot be done (`why`: a `HAND_*`): reported by the
+    /// `drain` that runs this memo's work, at the hand-off's caller; with
+    /// no work list, here. `buf` is any live object.
+    #[track_caller]
+    pub(pkg) const fn fail(self, buf: GcBuf<u8>, why: usize) {
+        if let w: List<Work> = self.work {
+            w.push(Work { buf, n: FAILED + why, fix: fix_slots::<u8> });
+            return;
+        }
+        hand_failed(why);
+    }
+
+    /// The copy of `orig` noted earlier in this hand-off.
+    #[must_use]
+    pub(pkg) const fn find<T>(self, orig: GcBuf<T>) -> GcBuf<T> | none {
+        self.find_at::<T, T>(orig, 0, 0, 0)
+    }
+
+    pub(pkg) const fn note<T>(self, orig: GcBuf<T>, copy: GcBuf<T>) {
+        self.note_at::<T, T>(orig, 0, 0, 0, copy);
+    }
+
+    /// `find` for `orig` viewed as `(a, b, c)` (a slice's range), the copy
+    /// kept in an object of another type (a box holding the handle).
+    pub(pkg) const fn find_at<T, U>(self, orig: GcBuf<T>, a: usize, b: usize, c: usize) -> GcBuf<U> | none {
+        if let m: GcBuf<u8> = self.obj {
+            let o = buf_erase(orig);
+            let got = unsafe { nabi_xfer_find(m, o, a, b, c) };
+            if buf_same(got, o) {
+                return none;
+            }
+            let copy: GcBuf<U> = unsafe { buf_cast(got) };
+            return copy;
+        }
+        none
+    }
+
+    pub(pkg) const fn note_at<T, U>(self, orig: GcBuf<T>, a: usize, b: usize, c: usize, copy: GcBuf<U>) {
+        if let m: GcBuf<u8> = self.obj {
+            unsafe { nabi_xfer_note(m, buf_erase(orig), a, b, c, buf_erase(copy)) };
+        }
+    }
+
+    /// `orig` is kept, not copied (what a guard already holds).
+    pub(pkg) const fn keep<T>(self, orig: GcBuf<T>) {
+        if let _: GcBuf<T> = self.find(orig) {
+            return;
+        }
+        self.note(orig, orig);
+    }
+
+    /// Elements `0..n` of the copied `buf` go through `transfer` later.
+    pub(pkg) const fn later<T>(self, buf: GcBuf<T>, n: usize) {
+        if transfer_needed::<T>() && n > 0 {
+            if let w: List<Work> = self.work {
+                w.push(Work { buf: buf_erase(buf), n, fix: fix_slots::<T> });
+            }
+        }
+    }
+
+    /// A visit reaches `orig` whole: whether its elements are to be
+    /// visited too.
+    pub(pkg) const fn visit<T>(self, orig: GcBuf<T>) -> bool {
+        if let v: GcBuf<u8> = self.vis {
+            let r = unsafe { nabi_visit_reach(v, buf_erase(orig), 0) };
+            return r == NEW || r == AGAIN;
+        }
+        true
+    }
+
+    /// A visit reaches slots `start + i * stride` (`i < len`) of `buf`
+    /// through a slice, and through them their elements.
+    pub(pkg) const fn visit_span<T>(self, buf: GcBuf<T>, start: usize, len: usize, stride: isize) {
+        self.span::<T>(buf, start, len, stride, 0);
+    }
+
+    /// `visit_span` for a writable view (`SliceMut`).
+    pub(pkg) const fn visit_span_mut<T>(self, buf: GcBuf<T>, start: usize, len: usize) {
+        self.span::<T>(buf, start, len, 1, 1);
+    }
+
+    const fn span<T>(self, buf: GcBuf<T>, start: usize, len: usize, stride: isize, write: u32) {
+        if let v: GcBuf<u8> = self.vis {
+            let o = buf_erase(buf);
+            if len == 0 {
+                return;
+            }
+            let r = unsafe { nabi_visit_span(v, o, start, len, stride, write) };
+            if r != NEW && r != AGAIN {
+                return;
+            }
+            if transfer_needed::<T>() {
+                for i in 0..len {
+                    let at = ((start as isize) + (i as isize) * stride) as usize;
+                    let _ = transfer_visit::<T>(unsafe { buf[at] }, self);
+                }
+            }
+        }
+    }
+
+    /// Elements `0..n` of `buf` are visited later.
+    pub(pkg) const fn later_visit<T>(self, buf: GcBuf<T>, n: usize) {
+        if transfer_needed::<T>() && n > 0 {
+            if let w: List<Work> = self.work {
+                w.push(Work { buf: buf_erase(buf), n, fix: visit_slots::<T> });
+            }
+        }
+    }
+}
+
+fn visit_slots<T>(b: GcBuf<u8>, n: usize, m: Memo) {
+    unsafe {
+        let buf: GcBuf<T> = buf_cast(b);
+        for i in 0..n {
+            let _ = transfer_visit::<T>(buf[i], m);
+        }
+    }
+}
+
+/// Whether no collection is reached from two of `items`: `par`
+/// gives each item to a worker. Each collection an item reaches is
+/// stamped for that item (nabir `xfer`), elements followed only where they
+/// hold collections. Slices only read: items may share a list through
+/// them, not with one that holds the list itself; writable views
+/// (`SliceMut`) may too when their ranges do not overlap the other items'
+/// views. A clash found by stamps is confirmed by the exact memo.
+#[track_caller]
+pub(pkg) fn distinct<T>(items: List<T>) -> bool {
+    if !transfer_needed::<T>() || items.len() < 2 {
+        return true;
+    }
+    unsafe {
+        let e = nabi_visit_begin();
+        let ok = visit_items(items, nabi_visit_new(e));
+        nabi_visit_end(e);
+        ok || visit_items(items, nabi_visit_exact(nabi_xfer_memo_for(items.len())))
+    }
+}
+
+#[track_caller]
+fn visit_items<T>(items: List<T>, v: GcBuf<u8>) -> bool {
+    let w: List<Work> = [];
+    let m = Memo { obj: none, work: w, vis: v };
+    unsafe {
+        for x in items {
+            let _ = transfer_visit::<T>(x, m);
+            drain(m);
+            if nabi_visit_done(v) {
+                return false;
+            }
+        }
+        !nabi_visit_spans(v)
+    }
+}
+
+fn fix_slots<T>(b: GcBuf<u8>, n: usize, m: Memo) {
+    unsafe {
+        let buf: GcBuf<T> = buf_cast(b);
+        for i in 0..n {
+            buf[i] = transfer::<T>(buf[i], m);
+        }
+    }
+}
+
+/// The elements GC object `buf` holds (with the rounding past the
+/// last). `buf` must be an object of its own: a `Slice`'s `whole`.
+pub(pkg) const unsafe fn buf_slots<T>(buf: GcBuf<T>) -> usize {
+    unsafe { nabi_xfer_slots(buf_erase(buf), size_of::<T>()) }
+}
+
+/// Whether `b` is the zero handle of a zeroed value (a vacated slot).
+pub(pkg) const fn buf_is_null<T>(b: GcBuf<T>) -> bool {
+    unsafe { nabi_xfer_null(buf_erase(b)) }
+}
+
+/// How a standard handle copies itself for a hand-off: `transfer_copy`
+/// makes the copy (its elements queued on the memo), `transfer_keep`
+/// notes the handle as its own copy. Only the compiler's list of
+/// standard types is called; other impls are ignored.
+pub(pkg) trait Transfer {
+    /// Copies `self` for the hand-off; its elements are queued on `m`.
+    fn transfer_copy(self, m: Memo) -> Self;
+    /// Notes `self` on `m` as its own copy and returns it.
+    fn transfer_keep(self, m: Memo) -> Self;
+    /// Note the handle for the memo's owner (`Memo::visit`), its
+    /// elements queued.
+    fn transfer_visit(self, m: Memo) -> Self;
+}
+
+/// `x` with every collection it reaches copied, one level: the copies'
+/// elements are queued on `m`.
+#[intrinsic("nabi.transfer")]
+pub(pkg) fn transfer<T>(x: T, m: Memo) -> T;
+
+/// Note every collection `x` reaches by value as its own copy.
+#[intrinsic("nabi.transfer_keep")]
+pub(pkg) fn transfer_keep<T>(x: T, m: Memo) -> T;
+
+/// Note every collection `x` reaches by value for `m`'s owner, one level:
+/// the elements are queued on `m`.
+#[intrinsic("nabi.transfer_visit")]
+pub(pkg) fn transfer_visit<T>(x: T, m: Memo) -> T;
+
+/// Whether `transfer::<T>` copies anything (a constant).
+#[intrinsic("nabi.transfer_needed")]
+pub(pkg) fn transfer_needed<T>() -> bool;
+
+/// Whether a `T` holds no GC reference, so its bytes copy as they are (a
+/// constant).
+#[intrinsic("nabi.transfer_plain")]
+pub(pkg) fn transfer_plain<T>() -> bool;
+
+/// Whether a `T` is one standard handle whose elements need no copy (a
+/// constant): its copy needs no memo.
+#[intrinsic("nabi.transfer_flat")]
+pub(pkg) fn transfer_flat<T>() -> bool;
+
+/// A second handle to `x`, which the compiler does not follow: it is
+/// neither moved nor released through it. The owner's
+/// rules still hold; using the handle after the owner released the
+/// value is the caller's to rule out.
+pub unsafe fn share<T>(x: T) -> T { x }
+
+/// `x` inside an adapter a `ref self` method returns (`r.lines()`): a
+/// scoped view of `x`, tied to its owner's scope like a lock guard's
+/// value. It neither moves nor releases `x`.
+#[internal]
+pub fn view<T>(x: T) -> T { x }
+
+/// Put `value` into `dest` and return what it held: the way to move a
+/// part out of a struct (`replace(ref s.part, none)`, as
+/// `Child::take_stdout` does).
+#[discardable]
+pub fn replace<T>(ref dest: T, value: T) -> T {
+    let old = dest;
+    dest = value;
+    old
+}
+
+/// `replace(ref dest, T::default())`.
+#[discardable]
+pub fn take<T: Default>(ref dest: T) -> T {
+    let old = dest;
+    dest = T::default();
+    old
+}
+
+/// What a hand-off gives the new owner: `x` with a copy of every
+/// collection it reaches (`x` itself, with no call, when there are none).
+#[intrinsic("nabi.hand_over")]
+#[internal]
+pub fn hand_over<T>(x: T) -> T;
+
+/// A `[move x]` capture's value: `x` handed over to the closure (the
+/// compiler calls it where the closure is made).
+#[track_caller]
+pub(pkg) fn move_into<T>(x: T) -> T { hand_over::<T>(x) }
+
+/// `hand_over` of `x` into a slot that holds `kept`: what `kept` reaches
+/// by value is not copied (a guard's `update`).
+#[intrinsic("nabi.hand_over")]
+pub(pkg) fn hand_over_into<T>(kept: T, x: T) -> T;
+
+/// `hand_over` for a `T` that has collections to copy.
+#[track_caller]
+pub(pkg) const fn hand_over_copy<T>(x: T) -> T {
+    if transfer_flat::<T>() {
+        let one = Memo { obj: none, work: none, vis: none };
+        return transfer::<T>(x, one);
+    }
+    // A local: `transfer` names its memo once per collection.
+    let w: List<Work> = [];
+    let m = Memo { obj: unsafe { nabi_xfer_memo() }, work: w, vis: none };
+    let y = transfer::<T>(x, m);
+    drain(m);
+    y
+}
+
+#[track_caller]
+pub(pkg) const fn hand_over_into_copy<T>(kept: T, x: T) -> T {
+    let w: List<Work> = [];
+    let m = Memo { obj: unsafe { nabi_xfer_memo() }, work: w, vis: none };
+    let _ = transfer_keep::<T>(kept, m);
+    let y = transfer::<T>(x, m);
+    drain(m);
+    y
+}
+
+#[track_caller]
+const fn drain(m: Memo) {
+    if let q: List<Work> = m.work {
+        while let w: Work = q.pop() {
+            if w.n >= FAILED {
+                hand_failed(w.n - FAILED);
+            }
+            (w.fix)(w.buf, w.n, m);
+        }
+    }
+}
+
+// A `Work` whose `n` is at least this reports a hand-off that cannot be
+// done (`Memo::fail`); the rest is the reason.
+const FAILED: usize = 1usize << (usize::BITS as usize - 2);
+pub(pkg) const HAND_STARTED: usize = 0;
+pub(pkg) const HAND_CELL: usize = 1;
+pub(pkg) const HAND_FINISHED: usize = 2;
+
+#[track_caller]
+const fn hand_failed(why: usize) -> ! {
+    if why == HAND_STARTED {
+        panic("a future that has started running cannot go to another task or thread: hand it over before anything polls it, or call the async fn again for a new one");
+    }
+    if why == HAND_CELL {
+        panic("a future with a `[ref x]` capture cannot go to another task or thread: the code that made it shares the cell; capture a value, or share it through a `Mutex`");
+    }
+    panic("a future that has finished or was cancelled (a `select` loser) cannot go to another task or thread: call the async fn again for a new future");
+}
+
+/// A new buffer of `slots` elements holding `n` elements of `buf` from
+/// `from` (`stride` apart), the rest zero; queued for `transfer`.
+pub(pkg) const fn copy_buf<T>(buf: GcBuf<T>, from: usize, n: usize, stride: isize, slots: usize, m: Memo) -> GcBuf<T> {
+    unsafe {
+        let copy: GcBuf<T> = buf_new(slots);
+        if transfer_plain::<T>() && stride == 1 {
+            let size = size_of::<T>();
+            buf_copy(buf_erase(copy), 0, buf_erase(buf), from * size, n * size);
+        } else {
+            for i in 0..n {
+                copy[i] = buf[((from as isize) + (i as isize) * stride) as usize];
+            }
+        }
+        m.later(copy, n);
+        copy
+    }
+}
+
+/// A list's buffer or a view's whole buffer: one copy per hand-off, so a
+/// list and every view of its buffer keep sharing it. `n` elements are
+/// in use, `slots` the copy's size (at least what the views reach).
+pub(pkg) const fn copy_shared<T>(buf: GcBuf<T>, n: usize, slots: usize, m: Memo) -> GcBuf<T> {
+    if let got: GcBuf<T> = m.find(buf) {
+        return got;
+    }
+    let copy = copy_buf(buf, 0, n, 1, slots, m);
+    m.note(buf, copy);
+    copy
+}
+
+// `GcPtr` (`bare::gc`) shares its object like `List`.
+impl<T> Transfer for GcPtr<T> {
+    fn transfer_copy(self, m: Memo) -> GcPtr<T> {
+        if let o: GcBuf<u8> = self.gc_object() {
+            if buf_is_null(o) {
+                return self;
+            }
+            unsafe {
+                if let got: GcBuf<GcPtr<T>> = m.find_at::<u8, GcPtr<T>>(o, 0, 0, 0) {
+                    return got[0];
+                }
+                let boxed: GcBuf<GcPtr<T>> = buf_new(1);
+                m.note_at::<u8, GcPtr<T>>(o, 0, 0, 0, boxed);
+                let p = GcPtr::new(self.get());
+                boxed[0] = p;
+                if let c: GcBuf<u8> = p.gc_object() {
+                    let slot: GcBuf<T> = buf_cast(c);
+                    m.later(slot, 1);
+                }
+                return p;
+            }
+        }
+        self
+    }
+
+    fn transfer_keep(self, m: Memo) -> GcPtr<T> {
+        if let o: GcBuf<u8> = self.gc_object() {
+            if buf_is_null(o) {
+                return self;
+            }
+            unsafe {
+                if let _: GcBuf<GcPtr<T>> = m.find_at::<u8, GcPtr<T>>(o, 0, 0, 0) {
+                    return self;
+                }
+                let boxed: GcBuf<GcPtr<T>> = buf_new(1);
+                boxed[0] = self;
+                m.note_at::<u8, GcPtr<T>>(o, 0, 0, 0, boxed);
+            }
+        }
+        self
+    }
+
+    fn transfer_visit(self, m: Memo) -> GcPtr<T> {
+        if let o: GcBuf<u8> = self.gc_object() {
+            if !buf_is_null(o) && m.visit(o) {
+                let slot: GcBuf<T> = unsafe { buf_cast(o) };
+                m.later_visit(slot, 1);
+            }
+        }
+        self
+    }
+}

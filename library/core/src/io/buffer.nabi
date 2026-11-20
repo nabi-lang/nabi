@@ -1,0 +1,273 @@
+// core::io::buffer: the buffers: `BufReader`, `BufWriter` and
+// `LineWriter`.
+
+use core::io::{AsyncBufRead, AsyncClose, AsyncRead, AsyncWrite, BufRead, CHUNK, Close, IoError, Read, Write, append, zeroed};
+
+/// Reads `inner` in chunks, so small reads (`read_line`, `bytes`) do not
+/// each cost a system call. It owns `inner`.
+pub struct BufReader<R> {
+    inner: R;
+    /// Bytes read but not yet handed out: `chunk[at[0]..at[1]]`.
+    chunk: List<u8>;
+    at: List<usize>;
+}
+
+impl<R> Debug for BufReader<R> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("BufReader") }
+}
+
+impl<R> BufReader<R> {
+    /// A buffered `inner` with the default capacity.
+    pub const fn new(inner: R) -> BufReader<R> { BufReader::with_capacity(CHUNK, inner) }
+
+    /// A buffered `inner` with a `cap`-byte buffer.
+    pub const fn with_capacity(cap: usize, inner: R) -> BufReader<R> {
+        BufReader { inner: inner, chunk: zeroed(if cap == 0 { 1 } else { cap }), at: [0usize, 0usize] }
+    }
+
+    /// The inner stream; buffered bytes are dropped.
+    pub const fn into_inner(self) -> R { self.inner }
+
+    /// Bytes buffered and not yet read.
+    pub const fn buffer_len(self) -> usize { self.at[1] - self.at[0] }
+
+    /// The buffer's size in bytes.
+    pub const fn capacity(self) -> usize { self.chunk.len() }
+
+    const fn buffered(self) -> Slice<u8> { self.chunk[self.at[0]:self.at[1]] }
+
+    #[track_caller]
+    const fn take_buffered(self, n: usize) {
+        if n > self.buffer_len() {
+            panic(f"BufReader::consume: {n} bytes past the {self.buffer_len()} buffered; consume at most what fill_buf returned");
+        }
+        self.at[0] += n;
+    }
+
+    /// Copy buffered bytes into `buf`; the count.
+    const fn drain(self, buf: SliceMut<u8>) -> usize {
+        let n = self.buffer_len();
+        if n > buf.len() { n = buf.len(); }
+        let s = self.at[0];
+        buf[0:n].copy_from_slice(self.chunk[s:s + n]);
+        self.at[0] = s + n;
+        n
+    }
+}
+
+impl<R: Close> Close for BufReader<R> {
+    /// Close the inner stream; buffered bytes are dropped.
+    fn close(self) throws (IoError) { try self.inner.close(); }
+}
+
+impl<R: AsyncClose> AsyncClose for BufReader<R> {
+    /// As `close`.
+    async fn close_async(self) throws (IoError) { try await self.inner.close_async(); }
+}
+
+impl<R: Read> Read for BufReader<R> {
+    fn read(ref self, buf: SliceMut<u8>) throws (IoError) -> usize {
+        if buf.len() == 0 { return 0; }
+        // A read at least as big as the buffer skips it when it is empty.
+        if self.buffer_len() == 0 && buf.len() >= self.chunk.len() {
+            return try self.inner.read(buf);
+        }
+        if (try self.fill_buf()).len() == 0 { return 0; }
+        self.drain(buf)
+    }
+}
+
+impl<R: Read> BufRead for BufReader<R> {
+    fn fill_buf(ref self) throws (IoError) -> Slice<u8> {
+        if self.buffer_len() == 0 {
+            let n = try self.inner.read(self.chunk);
+            self.at[0] = 0;
+            self.at[1] = n;
+        }
+        self.buffered()
+    }
+
+    #[track_caller]
+    fn consume(ref self, n: usize) { self.take_buffered(n); }
+}
+
+impl<R: AsyncRead> AsyncRead for BufReader<R> {
+    async fn read_async(ref self, buf: SliceMut<u8>) throws (IoError) -> usize {
+        if buf.len() == 0 { return 0; }
+        if self.buffer_len() == 0 && buf.len() >= self.chunk.len() {
+            return try await self.inner.read_async(buf);
+        }
+        if (try await self.fill_buf_async()).len() == 0 { return 0; }
+        self.drain(buf)
+    }
+}
+
+impl<R: AsyncRead> AsyncBufRead for BufReader<R> {
+    async fn fill_buf_async(ref self) throws (IoError) -> Slice<u8> {
+        if self.buffer_len() == 0 {
+            let n = try await self.inner.read_async(self.chunk);
+            self.at[0] = 0;
+            self.at[1] = n;
+        }
+        self.buffered()
+    }
+
+    #[track_caller]
+    fn consume(ref self, n: usize) { self.take_buffered(n); }
+}
+
+/// Collects writes and passes them to `inner` in batches of `cap` bytes.
+/// `close()` (or `into_inner()`) writes out the rest. It owns `inner`.
+pub struct BufWriter<W> {
+    inner: W;
+    cap: usize;
+    pending: List<u8>;
+    /// Inside a `LineWriter`: write out through the last `\n`.
+    by_line: bool;
+}
+
+impl<W> Debug for BufWriter<W> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("BufWriter") }
+}
+
+impl<W> BufWriter<W> {
+    /// A buffered `inner` with the default capacity.
+    pub const fn new(inner: W) -> BufWriter<W> { BufWriter::with_capacity(CHUNK, inner) }
+
+    /// A buffered `inner` with a `cap`-byte buffer.
+    pub const fn with_capacity(cap: usize, inner: W) -> BufWriter<W> {
+        BufWriter { inner: inner, cap: cap, pending: List::with_capacity(cap), by_line: false }
+    }
+
+    /// Bytes buffered and not yet written.
+    pub const fn buffer_len(self) -> usize { self.pending.len() }
+
+    /// The buffer's size in bytes.
+    pub const fn capacity(self) -> usize { self.cap }
+
+    /// Append `buf`: whether the batch is due (full, or a line ended).
+    const fn add(self, buf: Slice<u8>) -> bool {
+        append(self.pending, buf);
+        self.pending.len() >= self.cap || (self.by_line && buf.contains(10u8))
+    }
+}
+
+impl<W: Write> BufWriter<W> {
+    /// Write out what is buffered, then hand back the inner writer.
+    pub fn into_inner(self) throws (IoError) -> W {
+        try self.write_out();
+        self.inner
+    }
+
+    /// Write the batch to `inner` (not flushing it).
+    fn write_out(self) throws (IoError) {
+        if self.pending.len() == 0 { return; }
+        try self.inner.write_all(self.pending);
+        self.pending.clear();
+    }
+}
+
+impl<W: AsyncWrite> BufWriter<W> {
+    async fn write_out_async(ref self) throws (IoError) {
+        if self.pending.len() == 0 { return; }
+        try await self.inner.write_all_async(self.pending);
+        self.pending.clear();
+    }
+}
+
+impl<W: Write> Write for BufWriter<W> {
+    fn write<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize {
+        let b = buf.byte_slice();
+        if self.add(b) { try self.write_out(); }
+        b.len()
+    }
+
+    fn flush(ref self) throws (IoError) {
+        try self.write_out();
+        try self.inner.flush();
+    }
+}
+
+impl<W: AsyncWrite> AsyncWrite for BufWriter<W> {
+    async fn write_async<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize {
+        let b = buf.byte_slice();
+        if self.add(b) { try await self.write_out_async(); }
+        b.len()
+    }
+
+    async fn flush_async(ref self) throws (IoError) {
+        try await self.write_out_async();
+        try await self.inner.flush_async();
+    }
+}
+
+impl<W: Write + Close> Close for BufWriter<W> {
+    /// Write out the rest, then close the inner writer.
+    fn close(self) throws (IoError) {
+        let inner = try self.into_inner();
+        try inner.close();
+    }
+}
+
+impl<W: AsyncWrite + AsyncClose> AsyncClose for BufWriter<W> {
+    /// As `close`.
+    async fn close_async(self) throws (IoError) {
+        try await self.write_out_async();
+        try await self.inner.close_async();
+    }
+}
+
+impl<W: Write> Drop for BufWriter<W> {
+    fn drop(ref self) {
+        try self.write_out() catch _ {};
+    }
+}
+
+/// Buffers like `BufWriter`, and writes out through the last `\n` when a
+/// write holds one.
+pub struct LineWriter<W> {
+    buf: BufWriter<W>;
+}
+
+impl<W> Debug for LineWriter<W> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("LineWriter") }
+}
+
+impl<W> LineWriter<W> {
+    /// `inner` behind a buffer flushed at each newline.
+    pub const fn new(inner: W) -> LineWriter<W> {
+        LineWriter { buf: BufWriter { inner: inner, cap: CHUNK, pending: List::with_capacity(CHUNK), by_line: true } }
+    }
+}
+
+impl<W: Write> LineWriter<W> {
+    /// Write out what is buffered, then hand back the inner writer.
+    pub fn into_inner(self) throws (IoError) -> W { try self.buf.into_inner() }
+}
+
+impl<W: Write> Write for LineWriter<W> {
+    fn write<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize { try self.buf.write(buf) }
+    fn flush(ref self) throws (IoError) { try self.buf.flush(); }
+}
+
+impl<W: AsyncWrite> AsyncWrite for LineWriter<W> {
+    async fn write_async<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize { try await self.buf.write_async(buf) }
+    async fn flush_async(ref self) throws (IoError) { try await self.buf.flush_async(); }
+}
+
+impl<W: Write + Close> Close for LineWriter<W> {
+    fn close(self) throws (IoError) {
+        let inner = try self.buf.into_inner();
+        try inner.close();
+    }
+}
+
+impl<W: AsyncWrite + AsyncClose> AsyncClose for LineWriter<W> {
+    async fn close_async(self) throws (IoError) { try await self.buf.close_async(); }
+}
+
+impl<W: Write> Drop for LineWriter<W> {
+    fn drop(ref self) {
+        try self.buf.write_out() catch _ {};
+    }
+}

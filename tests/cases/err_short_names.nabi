@@ -1,0 +1,8 @@
+// Messages name library items as they are written (`List::sort`,
+// `Ord`).
+// expect-error: 7:1: type `f64` does not satisfy trait bound `Ord` required by `List::sort`
+// expect-error: 8:1: print functions take values, `sep:` and `end:`; not `step:`
+// forbid-error: nabi::
+let xs: List<f64> = [1.5, 0.5];
+xs.sort();
+print(1, step: 2);

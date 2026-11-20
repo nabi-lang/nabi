@@ -1,0 +1,19 @@
+// expect-exit: 0
+// expect-stdout: 5 -1 8
+
+// `try` covers the pipes after its operand; `catch` binds looser.
+fn parse(s: str) throws (str) -> i32 {
+    if s == "" { throw "empty"; }
+    s.len() as i32
+}
+
+fn add(x: i32, y: i32) -> i32 { x + y }
+
+fn main() {
+    let a = try "abcd" |> parse |> add(1) catch _ { -1 };
+    let b = try "" |> parse catch _ { -1 };
+    let c = try "ab"
+        |> parse
+        |> add(6) catch _ { 0 };
+    println(f"{a} {b} {c}");
+}

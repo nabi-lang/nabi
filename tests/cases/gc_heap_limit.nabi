@@ -1,0 +1,26 @@
+// expect-exit: 0
+// gc-stress: 100
+// expect-stdout:
+// collected true
+// live true
+// kept 100
+
+// With `bare::gc::set_heap_limit`, collections come before the heap
+// passes the limit: 64 MiB of garbage under a 16 MiB limit.
+use bare::gc;
+
+fn main() {
+    gc::set_heap_limit(16 << 20);
+    let keep: List<List<i64>> = [];
+    for r in 0..100 { keep.push(List::filled(100, r)); }
+    let before = gc::stats();
+    for r in 0..64 {
+        let big: List<i64> = List::filled(131072, r);
+        if big[7] != r { println("bad"); }
+    }
+    let s = gc::stats();
+    println(f"collected {s.collections > before.collections}");
+    println(f"live {s.live_bytes < 48 << 20}");
+    gc::set_heap_limit(0);
+    println(f"kept {keep.len()}");
+}

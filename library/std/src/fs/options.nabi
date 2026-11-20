@@ -1,0 +1,144 @@
+// std::fs::options: how `open` opens: `Access`, `OpenFlags`,
+// `CreateFlags` and the target knobs.
+
+use core::io::IoError;
+use std::fs::stat::Permissions;
+#[cfg(target_family = "unix")]
+use std::os::unix::fs::{OsCreateFlags, OsOpenFlags, check_custom};
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::{OsCreateFlags, OsOpenFlags};
+
+// `OpenHow.access` / `.disposition` (the runtime's `nabi_os_open`).
+pub(pkg) const ACCESS_READ: u32 = 0u32;
+
+pub(pkg) const ACCESS_WRITE: u32 = 1u32;
+
+pub(pkg) const ACCESS_READ_WRITE: u32 = 2u32;
+
+pub(pkg) const ACCESS_APPEND: u32 = 3u32;
+
+pub(pkg) const ACCESS_READ_APPEND: u32 = 4u32;
+
+pub(pkg) const DISP_OPEN: u32 = 0u32;
+
+pub(pkg) const DISP_CREATE: u32 = 1u32;
+
+pub(pkg) const DISP_CREATE_NEW: u32 = 2u32;
+
+pub(pkg) const DISP_OPEN_OR_CREATE: u32 = 3u32;
+
+pub(pkg) const HOW_LEN: usize = 9;
+
+pub(pkg) const SHARE_ALL: u32 = 7u32;
+
+/// What `open` opens an existing file for.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Access {
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
+    /// Write, every write at the end.
+    Append,
+    /// Read, and every write at the end.
+    ReadAppend,
+}
+
+impl Access {
+    pub(pkg) const fn index(self) -> u32 {
+        match self {
+            Access::ReadOnly => ACCESS_READ,
+            Access::WriteOnly => ACCESS_WRITE,
+            Access::ReadWrite => ACCESS_READ_WRITE,
+            Access::Append => ACCESS_APPEND,
+            Access::ReadAppend => ACCESS_READ_APPEND,
+        }
+    }
+}
+
+/// Knobs of `open`.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct OpenFlags {
+    /// `false`: a final symbolic link is `FilesystemLoop`, not followed.
+    pub follow_symlinks: bool = true;
+    /// The target's own knobs (`os::unix::fs::OsOpenFlags`,
+    /// `os::windows::fs::OsOpenFlags`; empty elsewhere).
+    pub os: OsOpenFlags = OsOpenFlags {};
+}
+
+/// Knobs of the functions that may create the file.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct CreateFlags {
+    /// Open for reading too.
+    pub read: bool = false;
+    /// A created file's permissions, before the umask; an existing file
+    /// keeps its own. Windows: only the read-only attribute.
+    pub permissions: Permissions = Permissions::default();
+    /// `false`: a final symbolic link is `FilesystemLoop`, not followed.
+    pub follow_symlinks: bool = true;
+    /// The target's own knobs (`os::unix::fs::OsCreateFlags`,
+    /// `os::windows::fs::OsCreateFlags`; empty elsewhere).
+    pub os: OsCreateFlags = OsCreateFlags {};
+}
+
+/// No target knobs here.
+#[cfg(not(any(target_family = "unix", target_os = "windows")))]
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct OsOpenFlags {}
+
+/// No target knobs here.
+#[cfg(not(any(target_family = "unix", target_os = "windows")))]
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct OsCreateFlags {}
+
+/// The `os` record's part of an `OpenHow`.
+pub(pkg) struct Knobs {
+    pub(pkg) custom: u32;
+    pub(pkg) share: u32;
+    pub(pkg) attrs: u32;
+    pub(pkg) sqos: u32;
+}
+
+#[cfg(target_family = "unix")]
+pub(pkg) const fn open_knobs(o: OsOpenFlags) -> Knobs {
+    Knobs { custom: o.custom_flags as u32, share: SHARE_ALL, attrs: 0u32, sqos: 0u32 }
+}
+
+#[cfg(target_family = "unix")]
+pub(pkg) const fn create_knobs(o: OsCreateFlags) -> Knobs {
+    Knobs { custom: o.custom_flags as u32, share: SHARE_ALL, attrs: 0u32, sqos: 0u32 }
+}
+
+#[cfg(target_os = "windows")]
+pub(pkg) const fn open_knobs(o: OsOpenFlags) -> Knobs {
+    Knobs { custom: o.custom_flags, share: o.share_mode, attrs: 0u32, sqos: o.security_qos_flags }
+}
+
+#[cfg(target_os = "windows")]
+pub(pkg) const fn create_knobs(o: OsCreateFlags) -> Knobs {
+    Knobs { custom: o.custom_flags, share: o.share_mode, attrs: o.attributes, sqos: o.security_qos_flags }
+}
+
+#[cfg(not(any(target_family = "unix", target_os = "windows")))]
+pub(pkg) const fn open_knobs(_o: OsOpenFlags) -> Knobs {
+    Knobs { custom: 0u32, share: SHARE_ALL, attrs: 0u32, sqos: 0u32 }
+}
+
+#[cfg(not(any(target_family = "unix", target_os = "windows")))]
+pub(pkg) const fn create_knobs(_o: OsCreateFlags) -> Knobs {
+    Knobs { custom: 0u32, share: SHARE_ALL, attrs: 0u32, sqos: 0u32 }
+}
+
+/// `InvalidInput` when `os.custom_flags` sets a bit the open function
+/// `name` decides (Unix; Windows flags only add).
+#[cfg(target_family = "unix")]
+pub(pkg) fn check_knobs(custom: u32, path: str, name: str) throws (IoError) {
+    try check_custom(custom as i32, path, f"File::{name}");
+}
+
+#[cfg(not(target_family = "unix"))]
+pub(pkg) const fn check_knobs(_custom: u32, _path: str, _name: str) throws (IoError) {}

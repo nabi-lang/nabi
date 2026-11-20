@@ -1,0 +1,413 @@
+// std::time::date: `Date`, `Weekday` and `Period`, the proleptic
+// Gregorian calendar. Day counts use Howard Hinnant's civil algorithms
+// (eras of 400 years, March-based years), exact for every year.
+
+use std::time::civil::{DateTime, Time};
+use std::time::format::{Parts, render, scan};
+
+/// Lowest year a `Date` holds.
+pub const MIN_YEAR: i32 = -999999;
+/// Highest year a `Date` holds.
+pub const MAX_YEAR: i32 = 999999;
+
+// unix_days of Date::MIN / Date::MAX.
+const MIN_DAYS: i64 = -365961662;
+const MAX_DAYS: i64 = 364522971;
+
+/// `a / b` rounded toward negative infinity (`b > 0`).
+pub(pkg) const fn fdiv(a: i64, b: i64) -> i64 { (a - a %% b) / b }
+
+/// `true` when `year` has a February 29.
+pub const fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// Days in `month` (1..=12) of `year`; 0 for another month.
+pub const fn days_in_month(year: i32, month: i32) -> i32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => if is_leap_year(year) { 29 } else { 28 },
+        _ => 0,
+    }
+}
+
+/// Days from 1970-01-01 to `y-m-d` (a valid date).
+pub(pkg) const fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
+    let y = (y as i64) - (if m <= 2 { 1 } else { 0 });
+    let era = fdiv(y, 400);
+    let yoe = y - era * 400;
+    let mp = (m as i64) + (if m > 2 { -3 } else { 9 });
+    let doy = (153 * mp + 2) / 5 + (d as i64) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// The date `z` days after 1970-01-01.
+pub(pkg) const fn civil_from_days(z: i64) -> Date {
+    let z = z + 719468;
+    let era = fdiv(z, 146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + (if m <= 2 { 1 } else { 0 });
+    Date { year: y as i32, month: m as i32, day: d as i32 }
+}
+
+/// `ValueError` unless `year-month-day` is a date `Date` holds.
+pub(pkg) const fn check_ymd(year: i32, month: i32, day: i32) throws (ValueError) {
+    if year < MIN_YEAR || year > MAX_YEAR || month < 1 || month > 12 || day < 1 || day > days_in_month(year, month) {
+        throw ymd_error(year, month, day);
+    }
+}
+
+const fn ymd_error(year: i32, month: i32, day: i32) -> ValueError {
+    if year < MIN_YEAR || year > MAX_YEAR {
+        return ValueError::new(f"year {year} is out of range ({MIN_YEAR}..={MAX_YEAR})");
+    }
+    if month < 1 || month > 12 { return ValueError::new(f"month {month} is out of range (1..=12)"); }
+    let n = days_in_month(year, month);
+    ValueError::new(f"day {day} is out of range for {year}-{month:02} (1..={n})")
+}
+
+/// A day of the week, Monday first (ISO 8601).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Weekday {
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+    Sunday,
+}
+
+const WEEKDAYS: [Weekday; 7] = [
+    Weekday::Monday, Weekday::Tuesday, Weekday::Wednesday, Weekday::Thursday,
+    Weekday::Friday, Weekday::Saturday, Weekday::Sunday,
+];
+
+const WEEKDAY_NAMES: [str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+impl Weekday {
+    /// 1 for Monday .. 7 for Sunday (ISO 8601).
+    pub const fn number(self) -> i32 {
+        match self {
+            Monday => 1,
+            Tuesday => 2,
+            Wednesday => 3,
+            Thursday => 4,
+            Friday => 5,
+            Saturday => 6,
+            Sunday => 7,
+        }
+    }
+    /// The weekday `number` names (1 = Monday .. 7 = Sunday); `none` outside.
+    pub const fn from_number(number: i32) -> Weekday | none {
+        if number < 1 || number > 7 { return none; }
+        WEEKDAYS[(number - 1) as usize]
+    }
+    /// The English name: `"Monday"`.
+    pub const fn name(self) -> str { WEEKDAY_NAMES[(self.number() - 1) as usize] }
+    /// The day after.
+    pub const fn next(self) -> Weekday { WEEKDAYS[(self.number() % 7) as usize] }
+    /// The day before.
+    pub const fn prev(self) -> Weekday { WEEKDAYS[((self.number() + 5) % 7) as usize] }
+}
+
+impl Display for Weekday {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.name()) }
+}
+
+/// A calendar date with no time zone: year, month (1..=12) and day, in
+/// the proleptic Gregorian calendar, years `MIN_YEAR..=MAX_YEAR` (year 0
+/// is 1 BC). Ordered by time. `Display` is ISO 8601 (`2024-02-29`).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Date {
+    year: i32;
+    month: i32;
+    day: i32;
+}
+
+impl Date {
+    /// The first date: `-999999-01-01`.
+    pub const MIN: Date = Date { year: -999999, month: 1, day: 1 };
+    /// The last date: `+999999-12-31`.
+    pub const MAX: Date = Date { year: 999999, month: 12, day: 31 };
+
+    /// `year-month-day`; `ValueError` when it is not a date
+    /// (`Date::new(2023, 2, 29)`).
+    pub const fn new(year: i32, month: i32, day: i32) throws (ValueError) -> Date {
+        try check_ymd(year, month, day);
+        Date { year, month, day }
+    }
+
+    /// Day `ordinal` (1..=365, or 366 in a leap year) of `year`.
+    pub const fn from_ordinal(year: i32, ordinal: i32) throws (ValueError) -> Date {
+        try check_ymd(year, 1, 1);
+        let n = if is_leap_year(year) { 366 } else { 365 };
+        if ordinal < 1 || ordinal > n {
+            throw ValueError::new(f"day of year {ordinal} is out of range for {year} (1..={n})");
+        }
+        civil_from_days(days_from_civil(year, 1, 1) + (ordinal as i64) - 1)
+    }
+
+    /// The `weekday` of ISO week `week` (1..=52 or 53) of ISO year `year`.
+    pub const fn from_iso_week(year: i32, week: i32, weekday: Weekday) throws (ValueError) -> Date {
+        try check_ymd(year, 1, 1);
+        let weeks = iso_weeks_in_year(year);
+        if week < 1 || week > weeks {
+            throw ValueError::new(f"week {week} is out of range for {year} (1..={weeks})");
+        }
+        let monday = iso_week1_monday(year);
+        let d = monday + ((week - 1) * 7) as i64 + (weekday.number() - 1) as i64;
+        if d < MIN_DAYS || d > MAX_DAYS { throw ValueError::new(f"week {week} of {year} is out of range"); }
+        civil_from_days(d)
+    }
+
+    /// The date `days` days after 1970-01-01 (before it when negative).
+    /// Panics outside `Date::MIN..=Date::MAX`.
+    #[track_caller]
+    pub const fn from_unix_days(days: i64) -> Date {
+        if days < MIN_DAYS || days > MAX_DAYS { panic(f"{days} days from 1970-01-01 is out of the Date range"); }
+        civil_from_days(days)
+    }
+
+    /// Days from 1970-01-01, negative before it.
+    pub const fn unix_days(self) -> i64 { days_from_civil(self.year, self.month, self.day) }
+
+    /// The year (0 is 1 BC, -1 is 2 BC).
+    pub const fn year(self) -> i32 { self.year }
+    /// The month, 1..=12.
+    pub const fn month(self) -> i32 { self.month }
+    /// The day of the month, 1..=31.
+    pub const fn day(self) -> i32 { self.day }
+    /// The day of the week.
+    pub const fn weekday(self) -> Weekday {
+        WEEKDAYS[((self.unix_days() + 3) %% 7) as usize]
+    }
+    /// The day of the year, 1..=366.
+    pub const fn ordinal(self) -> i32 {
+        (self.unix_days() - days_from_civil(self.year, 1, 1)) as i32 + 1
+    }
+    /// The ISO 8601 week: `(year, week)`. Week 1 holds the year's first
+    /// Thursday, so 2021-01-03 is in week 53 of 2020.
+    pub const fn iso_week(self) -> (i32, i32) {
+        let days = self.unix_days();
+        let thursday = days + 4 - (self.weekday().number() as i64);
+        let y = civil_from_days(thursday).year;
+        let week = (thursday - days_from_civil(y, 1, 1)) / 7 + 1;
+        (y, week as i32)
+    }
+    /// `true` in a leap year.
+    pub const fn is_leap_year(self) -> bool { is_leap_year(self.year) }
+    /// Days in this date's month.
+    pub const fn days_in_month(self) -> i32 { days_in_month(self.year, self.month) }
+    /// Days in this date's year: 365 or 366.
+    pub const fn days_in_year(self) -> i32 { if is_leap_year(self.year) { 366 } else { 365 } }
+
+    /// The same month and year on day `day`.
+    pub const fn with_day(self, day: i32) throws (ValueError) -> Date { try Date::new(self.year, self.month, day) }
+    /// The first day of this month.
+    pub const fn first_of_month(self) -> Date { Date { year: self.year, month: self.month, day: 1 } }
+    /// The last day of this month.
+    pub const fn last_of_month(self) -> Date { Date { year: self.year, month: self.month, day: self.days_in_month() } }
+
+    /// `n` days later (earlier when negative); `none` outside the range.
+    #[must_use]
+    pub const fn checked_add_days(self, n: i64) -> Date | none {
+        let d = self.unix_days().checked_add(n)?;
+        if d < MIN_DAYS || d > MAX_DAYS { return none; }
+        civil_from_days(d)
+    }
+    /// `n` days later (earlier when negative). Panics outside the range.
+    #[must_use]
+    #[track_caller]
+    pub const fn add_days(self, n: i64) -> Date {
+        if let d = self.checked_add_days(n) { return d; }
+        panic(f"{self} + {n} days is out of the Date range")
+    }
+    /// `n` months later (earlier when negative); a day past the end of
+    /// the new month becomes its last day (2024-01-31 + 1 month is
+    /// 2024-02-29). `none` outside the range.
+    #[must_use]
+    pub const fn checked_add_months(self, n: i64) -> Date | none {
+        let m0 = (self.year as i64) * 12 + (self.month as i64) - 1;
+        let m = m0.checked_add(n)?;
+        let y = fdiv(m, 12);
+        if y < (MIN_YEAR as i64) || y > (MAX_YEAR as i64) { return none; }
+        let y = y as i32;
+        let mo = (m - (y as i64) * 12) as i32 + 1;
+        let dim = days_in_month(y, mo);
+        Date { year: y, month: mo, day: if self.day > dim { dim } else { self.day } }
+    }
+    /// `n` months later, clamping the day as `checked_add_months`.
+    /// Panics outside the range.
+    #[must_use]
+    #[track_caller]
+    pub const fn add_months(self, n: i64) -> Date {
+        if let d = self.checked_add_months(n) { return d; }
+        panic(f"{self} + {n} months is out of the Date range")
+    }
+    /// `n` years later; February 29 becomes February 28 in a common year.
+    /// Panics outside the range.
+    #[must_use]
+    #[track_caller]
+    pub const fn add_years(self, n: i64) -> Date {
+        let m = n.checked_mul(12);
+        if let m: i64 = m {
+            if let d = self.checked_add_months(m) { return d; }
+        }
+        panic(f"{self} + {n} years is out of the Date range")
+    }
+
+    /// Days from `earlier` to `self`, negative when `earlier` is later.
+    pub const fn days_since(self, earlier: Date) -> i64 { self.unix_days() - earlier.unix_days() }
+
+    /// The calendar span from `self` to `later`: whole years, then whole
+    /// months, then days, all negative when `later` is earlier.
+    /// `self + self.until(later) == later`.
+    pub const fn until(self, later: Date) -> Period {
+        let total = ((later.year - self.year) as i64) * 12 + ((later.month - self.month) as i64);
+        let mid = self.add_months(total);
+        if total > 0 && mid.unix_days() > later.unix_days() {
+            total -= 1;
+            mid = self.add_months(total);
+        } else if total < 0 && mid.unix_days() < later.unix_days() {
+            total += 1;
+            mid = self.add_months(total);
+        }
+        let days = later.days_since(mid);
+        Period { years: (total / 12) as i32, months: (total % 12) as i32, days: days as i32 }
+    }
+
+    /// This date at `time`.
+    pub const fn and_time(self, time: Time) -> DateTime { DateTime::of(self, time) }
+
+    /// The date written by strftime-style `pattern` (`%d %B %Y`); the
+    /// directives are listed under `std::time`. Panics on a bad
+    /// pattern or a directive that needs a time.
+    #[track_caller]
+    pub const fn format(self, pattern: str) -> str { render(pattern, Parts::of(self, none, none, none, none)) }
+
+    /// The date in `text`, read by `pattern` (as `format` writes it).
+    #[track_caller]
+    pub fn parse_with(text: str, pattern: str) throws (ParseError) -> Date { try (try scan(text, pattern)).date(text) }
+}
+
+/// Days of the Monday that starts ISO week 1 of `year`.
+const fn iso_week1_monday(year: i32) -> i64 {
+    let jan4 = days_from_civil(year, 1, 4);
+    let wd = (jan4 + 3) %% 7;
+    jan4 - wd
+}
+
+/// 52 or 53.
+const fn iso_weeks_in_year(year: i32) -> i32 {
+    ((iso_week1_monday(year + 1) - iso_week1_monday(year)) / 7) as i32
+}
+
+impl Add<Period> for Date {
+    type Output = Date;
+    /// Years and months together (clamping the day once), then days.
+    #[track_caller]
+    const fn add(self, rhs: Period) -> Date {
+        self.add_months((rhs.years as i64) * 12 + (rhs.months as i64)).add_days(rhs.days as i64)
+    }
+}
+
+impl Sub<Period> for Date {
+    type Output = Date;
+    #[track_caller]
+    const fn sub(self, rhs: Period) -> Date {
+        self.add_months(-((rhs.years as i64) * 12 + (rhs.months as i64))).add_days(-(rhs.days as i64))
+    }
+}
+
+impl Display for Date {
+    /// ISO 8601: `2024-02-29`; a year outside 0..=9999 gets a sign and six
+    /// digits (`-000044-03-15`).
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let y = self.year;
+        if y >= 0 && y <= 9999 { return try f.write_str(f"{y:04}-{self.month:02}-{self.day:02}"); }
+        let sign = if y < 0 { "-" } else { "+" };
+        try f.write_str(f"{sign}{if y < 0 { -y } else { y }:06}-{self.month:02}-{self.day:02}")
+    }
+}
+
+impl Debug for Date {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+/// A calendar span: years, months and days, each counted on its own
+/// (one month is not a fixed number of days). `Display` is ISO 8601
+/// (`P1Y2M10D`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Period {
+    years: i32;
+    months: i32;
+    days: i32;
+}
+
+impl Period {
+    /// No span.
+    pub const ZERO: Period = Period { years: 0, months: 0, days: 0 };
+
+    /// `years`, `months` and `days`, each kept as given.
+    pub const fn new(years: i32, months: i32, days: i32) -> Period { Period { years, months, days } }
+    /// `n` days.
+    pub const fn of_days(n: i32) -> Period { Period { years: 0, months: 0, days: n } }
+    /// `n` months.
+    pub const fn of_months(n: i32) -> Period { Period { years: 0, months: n, days: 0 } }
+    /// `n` years.
+    pub const fn of_years(n: i32) -> Period { Period { years: n, months: 0, days: 0 } }
+
+    /// The years part.
+    pub const fn years(self) -> i32 { self.years }
+    /// The months part.
+    pub const fn months(self) -> i32 { self.months }
+    /// The days part.
+    pub const fn days(self) -> i32 { self.days }
+    /// Years and months as months.
+    pub const fn total_months(self) -> i64 { (self.years as i64) * 12 + (self.months as i64) }
+    /// `true` when every part is zero.
+    pub const fn is_zero(self) -> bool { self.years == 0 && self.months == 0 && self.days == 0 }
+}
+
+impl Add for Period {
+    type Output = Period;
+    const fn add(self, rhs: Period) -> Period {
+        Period { years: self.years + rhs.years, months: self.months + rhs.months, days: self.days + rhs.days }
+    }
+}
+
+impl Sub for Period {
+    type Output = Period;
+    const fn sub(self, rhs: Period) -> Period {
+        Period { years: self.years - rhs.years, months: self.months - rhs.months, days: self.days - rhs.days }
+    }
+}
+
+impl Neg for Period {
+    type Output = Period;
+    const fn neg(self) -> Period { Period { years: -self.years, months: -self.months, days: -self.days } }
+}
+
+impl Display for Period {
+    /// `P1Y2M10D`; zero parts are left out, all zero is `P0D`; a negative
+    /// part keeps its sign (`P-1M-3D`).
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let s = "P";
+        if self.years != 0 { s += f"{self.years}Y"; }
+        if self.months != 0 { s += f"{self.months}M"; }
+        if self.days != 0 || s == "P" { s += f"{self.days}D"; }
+        try f.write_str(s)
+    }
+}
+
+impl Debug for Period {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}

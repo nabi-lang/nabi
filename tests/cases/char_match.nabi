@@ -1,0 +1,29 @@
+// expect-exit: 24
+// expect-stdout:
+// 28 1 2 3 4
+
+fn classify(c: c_char) -> i32 {
+    return match c {
+        'a' | 'e' | 'i' | 'o' | 'u' => 1,
+        'A' | 'E' | 'I' | 'O' | 'U' => 2,
+        '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => 3,
+        _ => 4,
+    };
+}
+
+fn main() -> i32 {
+    let total = 0;
+    total += classify('a');
+    total += classify('E');
+    total += classify('5');
+    total += classify('z');
+    total += classify('!');
+    total += classify('o');
+    total += classify('I');
+    total += classify('7');
+    total += classify('Q');
+    total += classify('m');
+    println(f"{total} {classify('u')} {classify('U')} {classify('0')} {classify(' ')}");
+    return total - 4;
+}
+

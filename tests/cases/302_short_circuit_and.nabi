@@ -1,0 +1,19 @@
+// expect-exit: 0
+// expect-stdout:
+// no_call
+
+// `&&` short-circuits: a false left side skips the right one.
+// If loud() runs, "called" changes stdout.
+fn loud() -> i32 {
+    println("called");
+    return 1;
+}
+
+fn main() -> i32 {
+    let cond = false;
+    if cond && (loud() == 1) {
+        println("then");
+    }
+    println("no_call");
+    return 0;
+}

@@ -1,0 +1,13 @@
+// expect-error: `m` throws but `T::m` is declared without `throws`, so an impl can't add one
+
+// An impl method's `throws` must be the trait method's.
+trait T { fn m(self) -> i32; }
+struct S {}
+impl T for S {
+    fn m(self) throws (str) -> i32 { 1 }
+}
+
+println(f"{S {}.m()}");
+// expect-error-extra: allow
+// (the call `S {}.m()` also reports the missing `try`, as the impl's
+// throwing method is still the one called)

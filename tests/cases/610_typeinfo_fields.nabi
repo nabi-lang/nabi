@@ -1,0 +1,78 @@
+// expect-exit: 0
+// expect-stdout:
+// Player game::Player true true
+// name: str pub=true default=false
+// hp: i32 pub=false default=true
+// pos: Vec2 pub=true default=false
+// offsets ok
+// 3 none
+// Box<f64> 1 f64
+// tags: Dict<str, i32> key=str element=i32
+// List<i64> element=i64 kind=List
+// Unit 0 Struct
+
+// `TypeInfo` of `#[derive(Inspect)]` structs: name, path, size and
+// alignment as `Reflect` gives them, the fields with types, offsets
+// and flags, type arguments, and containers' element types.
+mod game {
+    #[derive(Inspect)]
+    pub struct Vec2 { pub x: f64; pub y: f64; }
+
+    #[derive(Inspect)]
+    pub struct Player { pub name: str; hp: i32 = 100; pub pos: Vec2; }
+}
+
+#[derive(Inspect)]
+struct Box<T> { v: T; }
+
+#[derive(Inspect)]
+struct Bag { tags: Dict<str, i32>; ns: List<i64>; }
+
+#[derive(Inspect)]
+struct Unit;
+
+use core::reflect::{TypeInfo, TypeRef};
+
+fn name_of(r: TypeRef | none) -> str {
+    return match r {
+        x: TypeRef => x.name(),
+        none => "-",
+    };
+}
+
+let t = game::Player::type_info();
+println(f"{t.name()} {t.path()} {t.size() == game::Player::size()} {t.align() == game::Player::align()}");
+for f in t.fields() {
+    println(f"{f.name()}: {f.type_ref().name()} pub={f.is_pub()} default={f.has_default()}");
+}
+// The fields fit inside the struct, in order, each aligned.
+let last: usize = 0;
+let ok = true;
+for f in t.fields() {
+    let ft = f.type_ref().info();
+    match ft {
+        i: TypeInfo => {
+            if f.offset() < last || f.offset() % i.align() != 0 || f.offset() + i.size() > t.size() {
+                ok = false;
+            }
+            last = f.offset() + i.size();
+        },
+        none => ok = false,
+    }
+}
+println(if ok { "offsets ok" } else { "offsets wrong" });
+println(f"{t.field_count()} {if t.field("nope") is none { "none" } else { "some" }}");
+let b = Box::<f64>::type_info();
+println(f"{b.name()} {b.generic_count()} {b.generic_at(0).name()}");
+let bag = Bag::type_info();
+match bag.field("tags") {
+    f: core::reflect::Field => match f.type_ref().info() {
+        d: TypeInfo => println(f"tags: {d.name()} key={name_of(d.key())} element={name_of(d.element())}"),
+        none => println("no dict info"),
+    },
+    none => println("no tags"),
+}
+let ns = core::reflect::info::<List<i64>>();
+println(f"{ns.name()} element={name_of(ns.element())} kind={ns.kind():?}");
+let u = Unit::type_info();
+println(f"{u.name()} {u.field_count()} {u.kind():?}");

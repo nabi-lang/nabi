@@ -1,0 +1,442 @@
+//! std::thread: OS threads, 1:1. Each
+//! thread is a GC mutator; blocking calls let a collection run without it.
+//!
+//! A panic in any thread ends the process (exit 101), so `join` never
+//! sees one; `JoinError` is an OS join failure. A handle neither joined
+//! nor `detach`ed keeps its OS thread record (there is no implicit drop).
+//!
+//! `THREADS` maps a thread id to its `Rec` (name, park token, thread-local
+//! values): made before a spawned thread starts and dropped when its
+//! closure returns, or on another thread's first `current()` / `park` /
+//! thread-local use.
+
+use bare::mem::{GcBuf, buf_new, buf_same, size_of, transmute_unchecked};
+use bare::ptr::Ptr;
+use core::future::IntoFuture;
+use core::io::{IoError, IoErrorKind};
+use core::marker::hand_over;
+use core::task::Task;
+use core::time::Duration;
+
+/// Identifies a thread for its lifetime (its runtime worker id).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ThreadId {
+    id: u64;
+}
+
+impl ThreadId {
+    /// The id as a number, unique among the threads of the process.
+    pub const fn as_u64(self) -> u64 { self.id }
+}
+
+impl Debug for ThreadId {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"ThreadId({self.id})") }
+}
+
+/// What the library keeps per thread.
+struct Rec {
+    id: u64;
+    name: str | none;
+    /// 1 = an `unpark` is pending.
+    park: Atomic<i32>;
+    /// `ThreadLocal` key -> that local's one-slot `List<T>` on this thread.
+    locals: Dict<u64, any>;
+    /// Slots pinned by `ThreadLocal::as_ptr`, unpinned when the thread ends.
+    pins: List<GcBuf<u8>>;
+}
+
+// Every handle of a thread shares its `Rec`; `locals` is only touched by
+// that thread.
+unsafe impl Send for Rec {}
+unsafe impl Sync for Rec {}
+
+const fn new_rec(id: u64, name: str | none) -> Rec {
+    Rec { id: id, name: name, park: Atomic::new(0), locals: Dict::new(), pins: [] }
+}
+
+static THREADS: Mutex<Dict<u64, Rec>> = unsafe { Mutex::new_unshared(Dict::new()) };
+
+/// The calling thread's record, made on first use.
+fn this_rec() -> Rec {
+    let id = unsafe { nabi_thread_id() };
+    let found: Rec | none = none;
+    using g = THREADS.lock() { found = g.get().get(id); }
+    if let r: Rec = found {
+        return r;
+    }
+    // Only the thread itself makes its record: no race to insert.
+    let fresh = new_rec(id, none);
+    using g = THREADS.lock() { g.get().insert(id, fresh); }
+    fresh
+}
+
+/// A thread's identity (non-generic).
+pub struct Thread {
+    rec: Rec;
+}
+
+impl Debug for Thread {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"Thread {{ id: {self.id():?}, name: {self.name():?} }}") }
+}
+
+impl Thread {
+    /// The thread's id.
+    pub const fn id(self) -> ThreadId { ThreadId { id: self.rec.id } }
+    /// The name given by `Builder::name`; `none` when it has none.
+    pub const fn name(self) -> str | none { self.rec.name }
+    /// Wake the thread from `park` (or make its next `park` return at
+    /// once). No-op once the thread has ended.
+    pub fn unpark(self) {
+        self.rec.park.store(1);
+        self.rec.park.wake();
+    }
+}
+
+/// The thread could not be joined (`JoinError::kind`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct JoinError {
+    code: i32;
+}
+
+/// Why a join failed.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JoinErrorKind {
+    /// The OS refused: `pthread_join`'s error number (Windows: the
+    /// error code).
+    Os(i32),
+    /// A failed REPL cell's rollback ended the thread (the session went
+    /// back to before the cell; the thread is gone).
+    Lost,
+    /// The handle was already joined or detached, through it or a copy
+    /// of it: the OS thread handle is released once.
+    Taken,
+}
+
+impl Debug for JoinErrorKind {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        match self {
+            JoinErrorKind::Os(n) => try f.write_str(f"Os({n})"),
+            JoinErrorKind::Lost => try f.write_str("Lost"),
+            JoinErrorKind::Taken => try f.write_str("Taken"),
+        }
+    }
+}
+
+const fn code_of(k: JoinErrorKind) -> i32 {
+    match k {
+        JoinErrorKind::Os(n) => n,
+        JoinErrorKind::Lost => LOST,
+        JoinErrorKind::Taken => TAKEN,
+    }
+}
+
+// `JoinError.code` of the two kinds that are not OS errors.
+const LOST: i32 = -1;
+const TAKEN: i32 = -2;
+
+impl JoinError {
+    /// An error of `kind`.
+    pub const fn new(kind: JoinErrorKind) -> JoinError { JoinError { code: code_of(kind) } }
+
+    /// The OS's error number of an `Os` kind, else `none`.
+    pub const fn os_code(self) -> i32 | none {
+        match self.kind() {
+            JoinErrorKind::Os(n) => n,
+            _ => none,
+        }
+    }
+
+    /// Why the join failed.
+    pub const fn kind(self) -> JoinErrorKind {
+        if self.code == LOST { return JoinErrorKind::Lost; }
+        if self.code == TAKEN { return JoinErrorKind::Taken; }
+        JoinErrorKind::Os(self.code)
+    }
+
+    /// What went wrong, without context.
+    pub const fn message(self) -> str {
+        match self.kind() {
+            JoinErrorKind::Lost => "thread join failed: the thread ended with a failed REPL cell",
+            JoinErrorKind::Taken => "thread join failed: the handle was already joined or detached",
+            JoinErrorKind::Os(n) => f"thread join failed (error {n})",
+        }
+    }
+}
+
+impl Display for JoinError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Error for JoinError {}
+
+/// The running thread's result, once joined.
+#[must_use("thread is never joined, so the program may end before it finishes: join it with `try {}.join()`, or write `{}.detach()` to let it run on its own")]
+pub struct JoinHandle<T> {
+    handle: usize;
+    result: GcBuf<T>;
+    thread: Thread;
+    /// Set by the first `join` / `detach`; copies share it.
+    taken: Atomic<bool>;
+}
+
+impl<T> Debug for JoinHandle<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("JoinHandle") }
+}
+
+impl<T> JoinHandle<T> {
+    /// Wait for the thread and take its result.
+    pub fn join(self) throws (JoinError) -> T {
+        unsafe {
+            if nabi_thread_lost(self.thread.rec.id) != 0 {
+                throw JoinError { code: LOST };
+            }
+            if self.taken.swap(true) {
+                throw JoinError { code: TAKEN };
+            }
+            let code = nabi_thread_join(self.handle);
+            if code != 0 { throw JoinError { code }; }
+            self.result[0]
+        }
+    }
+
+    /// The thread this handle joins.
+    pub const fn thread(self) -> Thread { self.thread }
+
+    /// Let the thread run on its own; its OS resources are released when
+    /// it ends. A later `join` throws `JoinError` (`Taken`); a
+    /// handle already joined or detached is left alone.
+    pub fn detach(self) {
+        if !self.taken.swap(true) {
+            unsafe { nabi_thread_detach(self.handle) };
+        }
+    }
+}
+
+/// `await handle`: the join runs on the executor's blocking
+/// lane, so only the task waits; a failed OS join panics.
+impl<T: Send> IntoFuture for JoinHandle<T> {
+    type Output = T;
+    type IntoFuture = Task<T>;
+    fn into_future(self) -> Task<T> {
+        core::task::spawn_blocking([move self] || try! self.join())
+    }
+}
+
+/// Spawn configuration.
+#[derive(Debug)]
+#[must_use("thread builder is never used: start the thread with `{}.spawn(f)`")]
+pub struct Builder {
+    name: str | none;
+    stack_size: usize | none;
+}
+
+impl Builder {
+    /// A builder with no name and the default stack size.
+    pub const fn new() -> Builder { Builder { name: none, stack_size: none } }
+
+    /// The name of the new thread (`Thread::name`).
+    pub const fn name(self, name: str) -> Builder {
+        Builder { name: name, stack_size: self.stack_size }
+    }
+
+    /// Stack bytes for the new thread (default 8 MiB).
+    pub const fn stack_size(self, size: usize) -> Builder {
+        Builder { name: self.name, stack_size: size }
+    }
+
+    /// Start `f` on a new thread with this name and stack size; throws the
+    /// OS error when the thread cannot be created.
+    pub fn spawn<T: Send>(self, f: fn() -> T + Send) throws (IoError) -> JoinHandle<T> {
+        unsafe {
+            let result: GcBuf<T> = buf_new(1);
+            let id = nabi_thread_new_id();
+            let rec = new_rec(id, self.name);
+            using g = THREADS.lock() { g.get().insert(id, rec); }
+            // Written once by the thread, read by `join` after it.
+            let cell = Handoff::new(result);
+            let name = self.name;
+            let run: fn() + Send = [move f] || {
+                if let n: str = name {
+                    unsafe { nabi_thread_set_name(n) };
+                }
+                let result = cell.get();
+                result[0] = hand_over::<T>(f());
+                unpin_all(rec);
+                using g = THREADS.lock() { g.get().remove(id); }
+            };
+            let h = unsafe { nabi_thread_spawn(run, self.stack_size ?? 0usize, id) };
+            if h == 0usize {
+                using g = THREADS.lock() { g.get().remove(id); }
+                // No threads on this target (wasm32-wasip2, the browser).
+                if unsafe { nabi_cpu_count() } == 0 {
+                    throw IoError::new(IoErrorKind::Unsupported, "threads are not supported on this target");
+                }
+                throw IoError::new(IoErrorKind::Other, "could not create an OS thread");
+            }
+            JoinHandle { handle: h, result: cell.get(), thread: Thread { rec: rec }, taken: Atomic::new(false) }
+        }
+    }
+}
+
+/// Run `f` on a new OS thread. Panics when the OS cannot create one (and
+/// always on wasm); `Builder::spawn` throws instead.
+#[track_caller]
+pub fn spawn<T: Send>(f: fn() -> T + Send) -> JoinHandle<T> {
+    try! Builder::new().spawn(f)
+}
+
+/// The calling thread.
+pub fn current() -> Thread {
+    Thread { rec: this_rec() }
+}
+
+/// Let the OS run another thread.
+pub fn yield_now() {
+    unsafe { nabi_thread_yield_now() };
+}
+
+/// Block the calling thread for `dur`.
+pub fn sleep(dur: Duration) {
+    unsafe { nabi_thread_sleep_ns(dur.as_ns()) };
+}
+
+extern "nabi" {
+    fn nabi_thread_panicking() -> i32;
+}
+
+/// Whether this thread panicked. A panic ends the process, so only code
+/// that runs while it ends (an embedder's exit hook) sees `true`.
+pub const fn panicking() -> bool { unsafe { nabi_thread_panicking() } != 0 }
+
+/// Block until this thread is `unpark`ed (an earlier `unpark` makes it
+/// return at once). May also return spuriously: re-check the condition.
+pub fn park() {
+    let token = this_rec().park;
+    if token.swap(0) == 1 {
+        return;
+    }
+    token.wait(0);
+    token.store(0);
+}
+
+/// `park`, for at most `dur`.
+pub fn park_timeout(dur: Duration) {
+    let token = this_rec().park;
+    if token.swap(0) == 1 {
+        return;
+    }
+    token.wait_timeout(0, dur);
+    token.store(0);
+}
+
+/// A value per thread, made by `init` on each thread's first use.
+/// It lives in the thread's record and goes with it.
+pub struct ThreadLocal<T> {
+    init: fn() -> T + Sync;
+    key: u64;
+}
+
+impl<T> Debug for ThreadLocal<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("ThreadLocal") }
+}
+
+static NEXT_LOCAL: Atomic<u64> = Atomic::new(1);
+
+// Each slot is only reached from its own thread.
+unsafe impl<T> Send for ThreadLocal<T> {}
+unsafe impl<T> Sync for ThreadLocal<T> {}
+
+impl<T> ThreadLocal<T> {
+    /// This thread's slot; only this thread touches its `locals`.
+    fn cell(self) -> List<T> {
+        let locals = this_rec().locals;
+        if let v: any = locals.get(self.key) {
+            if let c: List<T> = core::reflect::cast::<List<T>>(v) {
+                return c;
+            }
+        }
+        let init = self.init;
+        let c: List<T> = List::new();
+        c.push(init());
+        locals.insert(self.key, c);
+        c
+    }
+
+    /// `f` of this thread's value. The value is a scoped view: it may not
+    /// leave `f` (returned, stored, sent), so `f` is not `async` (E0136).
+    pub fn with<R>(self, f: fn(T) -> R) -> R {
+        f(self.cell()[0])
+    }
+
+    /// Replace this thread's value.
+    pub fn set(self, value: T) {
+        self.cell()[0] = value;
+    }
+
+    /// Replace this thread's value, returning the old one.
+    pub fn replace(self, value: T) -> T {
+        let c = self.cell();
+        let old = c[0];
+        c[0] = value;
+        old
+    }
+
+    /// A pointer to this thread's value, valid until the thread ends (the
+    /// slot stays pinned until then). Reads and writes through it are the
+    /// caller's: nothing tracks them.
+    pub unsafe fn as_ptr(self) -> Ptr<T> {
+        let c = self.cell();
+        let (buf, start, _) = unsafe { c[0:1].raw_parts() };
+        let b: GcBuf<u8> = unsafe { transmute_unchecked::<GcBuf<T>, GcBuf<u8>>(buf) };
+        let rec = this_rec();
+        if !pinned(rec, b) {
+            unsafe { nabi_gc_pin(b) };
+            rec.pins.push(b);
+        }
+        let at: usize = unsafe { transmute_unchecked::<GcBuf<u8>, usize>(b) };
+        // The payload follows the 16-byte object header.
+        Ptr::<T>::dangling().with_addr(at + 16 + start * size_of::<T>())
+    }
+}
+
+impl<T: Copy> ThreadLocal<T> {
+    /// A copy of this thread's value.
+    pub fn get(self) -> T {
+        self.cell()[0]
+    }
+}
+
+impl<T: Default> ThreadLocal<T> {
+    /// This thread's value, leaving `T::default()` in its place.
+    pub fn take(self) -> T {
+        self.replace(T::default())
+    }
+}
+
+extern "nabi" {
+    fn nabi_gc_pin(obj: GcBuf<u8>) -> GcBuf<u8>;
+    fn nabi_gc_unpin(obj: GcBuf<u8>);
+}
+
+fn pinned(rec: Rec, b: GcBuf<u8>) -> bool {
+    for p in rec.pins {
+        if buf_same(p, b) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Release the slots `as_ptr` pinned on a thread that ends.
+fn unpin_all(rec: Rec) {
+    for b in rec.pins {
+        unsafe { nabi_gc_unpin(b) };
+    }
+    rec.pins.clear();
+}
+
+/// A `ThreadLocal` whose per-thread value starts as `init()`.
+pub fn local<T>(init: fn() -> T + Sync) -> ThreadLocal<T> {
+    ThreadLocal { init: init, key: NEXT_LOCAL.fetch_add(1) }
+}

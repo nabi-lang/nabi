@@ -1,0 +1,412 @@
+//! RSA (RFC 8017): PKCS #1 v1.5 and PSS verification and signing (MGF1
+//! with the message hash), moduli of 2048 to 4096 bits.
+
+use core::crypto::HashAlgorithm;
+use core::crypto::bignum::{Nat, Modulus};
+use core::crypto::hkdf;
+use core::crypto::sha2::Digest;
+use core::crypto::{Secret, constant_time_eq};
+
+/// An RSA public key `(n, e)`.
+pub struct PublicKey {
+    md: Modulus;
+    e: List<u8>;
+    bits: usize;
+}
+
+impl Debug for PublicKey {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"PublicKey {{ bits: {self.bits} }}") }
+}
+
+/// Immutable: a copy is the same key.
+impl Clone for PublicKey {
+    const fn clone(self) -> PublicKey { self }
+}
+
+/// Equal when `n` and `e` are.
+impl PartialEq for PublicKey {
+    fn eq(self, rhs: PublicKey) -> bool { self.e == rhs.e && self.modulus() == rhs.modulus() }
+}
+
+impl Eq for PublicKey {}
+
+impl Hash for PublicKey {
+    fn hash<H: Hasher>(self, ref h: H) {
+        self.modulus().hash(ref h);
+        self.e.hash(ref h);
+    }
+}
+
+/// `b` without its leading zero bytes.
+const fn strip(b: Slice<u8>) -> Slice<u8> {
+    let i = 0usize;
+    while i < b.len() && b[i] == 0u8 { i += 1; }
+    b[i:b.len()]
+}
+
+/// A DER length at `s[at..]`: the length and the index past it
+/// (definite, minimal, below 2^16).
+const fn der_len(s: Slice<u8>, at: usize) -> (usize, usize) | none {
+    if at >= s.len() { return none; }
+    let b = s[at];
+    if b < 0x80u8 { return (b as usize, at + 1); }
+    if b == 0x81u8 {
+        if at + 1 >= s.len() || s[at + 1] < 0x80u8 { return none; }
+        return (s[at + 1] as usize, at + 2);
+    }
+    if b == 0x82u8 {
+        if at + 2 >= s.len() || s[at + 1] == 0u8 { return none; }
+        return (((s[at + 1] as usize) << 8) | (s[at + 2] as usize), at + 3);
+    }
+    none
+}
+
+/// A positive DER INTEGER at `s[at..]`: its magnitude and the index
+/// past it.
+const fn der_uint(s: Slice<u8>, at: usize) -> (Slice<u8>, usize) | none {
+    if at >= s.len() || s[at] != 0x02u8 { return none; }
+    let t1: (usize, usize) = der_len(s, at + 1) else { return none; };
+    let (len, start) = t1;
+    if len == 0 || start + len > s.len() { return none; }
+    let v = s[start:start + len];
+    if v[0] >= 0x80u8 { return none; }
+    if v[0] == 0u8 && len > 1 && v[1] < 0x80u8 { return none; }
+    (strip(v), start + len)
+}
+
+/// The DER `DigestInfo` prefix of `hash` (RFC 8017 9.2 note 1).
+const fn digest_info(hash: HashAlgorithm) -> List<u8> {
+    let id = match hash {
+        HashAlgorithm::Sha256 => 1u8,
+        HashAlgorithm::Sha384 => 2u8,
+        HashAlgorithm::Sha512 => 3u8,
+        HashAlgorithm::Sha3_256 => 8u8,
+        HashAlgorithm::Sha3_512 => 10u8,
+    };
+    let hl = hash.output_len() as u8;
+    [0x30u8, 0x0du8 + 4u8 + hl, 0x30u8, 0x0du8, 0x06u8, 0x09u8, 0x60u8, 0x86u8, 0x48u8, 0x01u8,
+        0x65u8, 0x03u8, 0x04u8, 0x02u8, id, 0x05u8, 0x00u8, 0x04u8, hl]
+}
+
+/// EMSA-PKCS1-v1_5 of digest `h` in `k` bytes (`k` >= 256: room for
+/// the 8-byte minimum padding with any digest).
+const fn pkcs1_encoding(hash: HashAlgorithm, h: List<u8>, k: usize) -> List<u8> {
+    let t = digest_info(hash);
+    for x in h { t.push(x); }
+    let em: List<u8> = List::with_capacity(k);
+    em.push(0u8);
+    em.push(1u8);
+    while em.len() + t.len() + 1 < k { em.push(0xffu8); }
+    em.push(0u8);
+    for x in t { em.push(x); }
+    em
+}
+
+/// MGF1 (RFC 8017 B.2.1): `len` bytes from `seed`.
+fn mgf1(hash: HashAlgorithm, seed: Slice<u8>, len: usize) -> List<u8> {
+    let out: List<u8> = List::with_capacity(len);
+    let c = 0u32;
+    while out.len() < len {
+        let d = Digest::new(hash);
+        d.update(seed);
+        d.update([(c >> 24) as u8, (c >> 16) as u8, (c >> 8) as u8, c as u8]);
+        for x in d.finish() {
+            if out.len() < len { out.push(x); }
+        }
+        c += 1u32;
+    }
+    out
+}
+
+impl PublicKey {
+    /// From big-endian `n` and `e`: `n` odd, 2048 to 4096 bits; `e` odd,
+    /// `3 <= e < 2^33` (verification costs a square and a multiply per
+    /// exponent bit; a peer's certificate must not choose that).
+    pub fn new<N: AsBytes, E: AsBytes>(n: N, e: E) throws (ValueError) -> PublicKey {
+        let nb = strip(n.byte_slice());
+        let eb = strip(e.byte_slice());
+        if nb.len() == 0 || nb.len() > 512 {
+            throw ValueError::new("RSA modulus must be 2048 to 4096 bits");
+        }
+        let m: List<u32> = Nat::from_be(nb, (nb.len() + 3) / 4) else { throw ValueError::new("bad RSA modulus"); };
+        let bits = Nat::bits(m);
+        if bits < 2048 || bits > 4096 {
+            throw ValueError::new("RSA modulus must be 2048 to 4096 bits");
+        }
+        if m[0] & 1u32 == 0u32 {
+            throw ValueError::new("RSA modulus must be odd");
+        }
+        if eb.len() == 0 || eb.len() > 5 || (eb.len() == 5 && eb[0] > 1u8) || eb[eb.len() - 1] & 1u8 == 0u8 || (eb.len() == 1 && eb[0] < 3u8) {
+            throw ValueError::new("RSA exponent must be odd, at least 3 and below 2^33");
+        }
+        PublicKey { md: Modulus::new(m), e: eb.to_list(), bits }
+    }
+
+    /// From a DER `RSAPublicKey ::= SEQUENCE { modulus INTEGER,
+    /// publicExponent INTEGER }`.
+    pub fn from_pkcs1_der<B: AsBytes>(der: B) throws (ValueError) -> PublicKey {
+        let s = der.byte_slice();
+        let bad = ValueError::new("malformed RSAPublicKey");
+        if s.len() < 2 || s[0] != 0x30u8 { throw bad; }
+        let t2: (usize, usize) = der_len(s, 1) else { throw bad; };
+        let (len, at) = t2;
+        if at + len != s.len() { throw bad; }
+        let t3: (Slice<u8>, usize) = der_uint(s, at) else { throw bad; };
+        let (n, next) = t3;
+        let t4: (Slice<u8>, usize) = der_uint(s, next) else { throw bad; };
+        let (e, end) = t4;
+        if end != s.len() { throw bad; }
+        try PublicKey::new(n, e)
+    }
+
+    /// The modulus length in bits.
+    pub const fn bits(self) -> usize { self.bits }
+
+    /// The modulus, big-endian without leading zeros.
+    pub const fn modulus(self) -> List<u8> {
+        let k = (self.bits + 7) / 8;
+        Nat::to_be(self.md.m, k)
+    }
+
+    /// The public exponent, big-endian without leading zeros.
+    pub const fn exponent(self) -> List<u8> { self.e.clone() }
+
+    /// `signature^e mod n` as `k` bytes; `none` if the signature is not
+    /// `k` bytes or not below `n`.
+    fn open<B: AsBytes>(self, signature: B) -> List<u8> | none {
+        let k = (self.bits + 7) / 8;
+        let sig = signature.byte_slice();
+        if sig.len() != k { return none; }
+        let s: List<u32> = Nat::from_be(sig, self.md.n) else { return none; };
+        if !Nat::lt(s, self.md.m) { return none; }
+        let m = self.md.from_mont(self.md.pow(self.md.to_mont(s), self.e[0:self.e.len()]));
+        Nat::to_be(m, k)
+    }
+
+    /// RSASSA-PKCS1-v1_5 verification: the whole encoding is rebuilt
+    /// and compared.
+    pub fn verify_pkcs1v15<M: AsBytes, S: AsBytes>(self, hash: HashAlgorithm, msg: M, signature: S) -> bool {
+        let em: List<u8> = self.open(signature) else { return false; };
+        constant_time_eq(em, pkcs1_encoding(hash, hash.digest(msg), em.len()))
+    }
+
+    /// RSASSA-PSS verification, MGF1 with `hash`; the salt is
+    /// `salt_len` bytes (none: the hash length).
+    pub fn verify_pss<M: AsBytes, S: AsBytes>(self, hash: HashAlgorithm, msg: M, signature: S, salt_len: usize | none = none) -> bool {
+        let full: List<u8> = self.open(signature) else { return false; };
+        let em_bits = self.bits - 1;
+        let em_len = (em_bits + 7) / 8;
+        // `full` is k bytes; with em_bits a multiple of 8 the extra top
+        // byte must be zero.
+        if full.len() > em_len && full[0] != 0u8 { return false; }
+        let em = full[full.len() - em_len:full.len()];
+        let hl = hash.output_len();
+        let sl = salt_len ?? hl;
+        if em_len < hl + sl + 2 || em[em_len - 1] != 0xbcu8 { return false; }
+        let db_len = em_len - hl - 1;
+        let masked = em[0:db_len];
+        let h = em[db_len:db_len + hl];
+        let top = (8 * em_len - em_bits) as u8;
+        let top_mask = if top > 0u8 { 0xffu8 << (8u8 - top) } else { 0u8 };
+        if top > 0u8 && masked[0] & top_mask != 0u8 { return false; }
+        let db = mgf1(hash, h, db_len);
+        for i in 0..db_len { db[i] = db[i] ^ masked[i]; }
+        if top > 0u8 { db[0] = db[0] & ~top_mask; }
+        let ps = db_len - sl - 1;
+        for i in 0..ps {
+            if db[i] != 0u8 { return false; }
+        }
+        if db[ps] != 1u8 { return false; }
+        let d = Digest::new(hash);
+        d.update([0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]);
+        d.update(hash.digest(msg));
+        d.update(db[db_len - sl:db_len]);
+        constant_time_eq(d.finish(), h)
+    }
+}
+
+/// An RSA private key with its CRT parameters (RFC 8017 3.2, two
+/// primes), big-endian in secret storage.
+pub struct PrivateKey {
+    public: PublicKey;
+    p: Secret;
+    q: Secret;
+    // The CRT exponents, padded to the primes' width.
+    dp: Secret;
+    dq: Secret;
+    // `q^-1 mod p`.
+    qinv: Secret;
+}
+
+impl !Sync for PrivateKey {}
+
+/// `b` with leading zeros to `len` bytes (`b.len() <= len`).
+const fn pad_be(b: Slice<u8>, len: usize) -> List<u8> {
+    let out: List<u8> = List::with_capacity(len);
+    for _ in b.len()..len { out.push(0u8); }
+    for x in b { out.push(x); }
+    out
+}
+
+/// A prime factor as a modulus: odd, at most `nlimbs` limbs.
+fn factor(b: Slice<u8>, nlimbs: usize) throws (ValueError) -> Modulus {
+    let bad = ValueError::new("bad RSA private key");
+    if b.len() == 0 { throw bad; }
+    let m: List<u32> = Nat::from_be(b, (b.len() + 3) / 4) else { throw bad; };
+    if m[0] & 1u32 == 0u32 || m.len() > nlimbs { throw bad; }
+    Modulus::new(m)
+}
+
+impl PrivateKey {
+    /// From a DER `RSAPrivateKey` (RFC 8017 A.1.2, version 0: n, e, d,
+    /// p, q, d mod (p - 1), d mod (q - 1), q^-1 mod p).
+    pub fn from_pkcs1_der<B: AsBytes>(der: B) throws (ValueError) -> PrivateKey {
+        let s = der.byte_slice();
+        let bad = ValueError::new("malformed RSAPrivateKey");
+        if s.len() < 2 || s[0] != 0x30u8 { throw bad; }
+        let t: (usize, usize) = der_len(s, 1) else { throw bad; };
+        let (len, start) = t;
+        if start + len != s.len() { throw bad; }
+        let fields: List<Slice<u8>> = [];
+        let at = start;
+        while at < s.len() {
+            let f: (Slice<u8>, usize) = der_uint(s, at) else { throw bad; };
+            let (v, next) = f;
+            fields.push(v);
+            at = next;
+        }
+        // Version 0 strips to an empty magnitude.
+        if fields.len() != 9 || fields[0].len() != 0 { throw bad; }
+        let public = try PublicKey::new(fields[1], fields[2]);
+        let n = public.md.n;
+        let fp = try factor(fields[4], n);
+        let fq = try factor(fields[5], n);
+        let qi: List<u32> = Nat::from_be(fields[8], fp.n) else { throw bad; };
+        if !Nat::lt(qi, fp.m) || fields[6].len() > 4 * fp.n || fields[7].len() > 4 * fq.n { throw bad; }
+        PrivateKey {
+            public,
+            p: Secret::new(fields[4]),
+            q: Secret::new(fields[5]),
+            // Padded to the primes' width: `pow` takes the same number of
+            // steps whatever the exponents' leading zeros.
+            dp: Secret::new(pad_be(fields[6], 4 * fp.n)),
+            dq: Secret::new(pad_be(fields[7], 4 * fq.n)),
+            qinv: Secret::new(fields[8]),
+        }
+    }
+
+    /// Overwrite the private values with zeros now (every copy shares
+    /// them); signing is meaningless afterwards.
+    pub fn wipe(self) {
+        for x in [self.p, self.q, self.dp, self.dq, self.qinv] { x.wipe(); }
+    }
+
+    /// The public half.
+    pub const fn public_key(self) -> PublicKey { self.public }
+
+    /// The modulus length in bits.
+    pub const fn bits(self) -> usize { self.public.bits }
+
+    /// `m^d mod n` for `m < n` by the CRT, blinded with `r` (`r^e`
+    /// multiplied in, `r^-1` taken out per prime), then checked against
+    /// `s^e = m`: a fault in either half would reveal a factor.
+    fn private_op(self, m: List<u32>, r: List<u32>) throws (ValueError) -> List<u32> {
+        let md = self.public.md;
+        // The primes as moduli, rebuilt per operation: at rest they are
+        // only in secret storage.
+        let fp = try factor(self.p[0:self.p.len()], md.n);
+        let fq = try factor(self.q[0:self.q.len()], md.n);
+        let qi: List<u32> = Nat::from_be(self.qinv[0:self.qinv.len()], fp.n) else { throw ValueError::new("bad RSA private key"); };
+        let qinv = fp.to_mont(qi);
+        let e = self.public.e[0:self.public.e.len()];
+        let blinded = md.from_mont(md.mul(md.to_mont(m), md.pow(md.to_mont(r), e)));
+        // Per prime: (m r^e)^dp = m^dp r, times r^-1.
+        let rp: List<u32> = fp.inv(fp.reduce(r)) else { throw ValueError::new("RSA blinding factor not invertible"); };
+        let rq: List<u32> = fq.inv(fq.reduce(r)) else { throw ValueError::new("RSA blinding factor not invertible"); };
+        let sp = fp.mul(fp.pow(fp.to_mont(fp.reduce(blinded)), self.dp[0:self.dp.len()]), fp.to_mont(rp));
+        let sq = fq.mul(fq.pow(fq.to_mont(fq.reduce(blinded)), self.dq[0:self.dq.len()]), fq.to_mont(rq));
+        // Garner: s = sq + q ((sp - sq) q^-1 mod p); q h < n, so the
+        // product and the sum mod n are exact.
+        let sq_plain = fq.from_mont(sq);
+        let h = fp.from_mont(fp.mul(fp.sub(sp, fp.to_mont(fp.reduce(sq_plain))), qinv));
+        let qh = md.from_mont(md.mul(md.to_mont(Nat::resize(fq.m, md.n)), md.to_mont(Nat::resize(h, md.n))));
+        let s = md.add(qh, Nat::resize(sq_plain, md.n));
+        let back = md.from_mont(md.pow(md.to_mont(s), e));
+        if !Nat::eq(back, m) { throw ValueError::new("RSA private key is inconsistent"); }
+        s
+    }
+
+    /// An RSASSA-PSS signature of `msg`: MGF1 with `hash`, `salt` as
+    /// long as the hash. `salt` must be fresh random bytes; the
+    /// blinding factor is derived from it, the message and the key.
+    pub fn sign_pss<M: AsBytes, S: AsBytes>(self, hash: HashAlgorithm, msg: M, salt: S) throws (ValueError) -> List<u8> {
+        let hl = hash.output_len();
+        let sb = salt.byte_slice();
+        if sb.len() != hl { throw ValueError::new("PSS salt must be as long as the hash"); }
+        let bits = self.public.bits;
+        let k = (bits + 7) / 8;
+        let em_bits = bits - 1;
+        let em_len = (em_bits + 7) / 8;
+        let mh = hash.digest(msg);
+        let d = Digest::new(hash);
+        d.update([0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]);
+        d.update(mh);
+        d.update(sb);
+        let h = d.finish();
+        // DB = PS || 0x01 || salt, masked with MGF1(H).
+        let db_len = em_len - hl - 1;
+        let db = mgf1(hash, h[0:hl], db_len);
+        let ps = db_len - hl - 1;
+        db[ps] = db[ps] ^ 1u8;
+        for i in 0..hl { db[ps + 1 + i] = db[ps + 1 + i] ^ sb[i]; }
+        let top = 8 * em_len - em_bits;
+        if top > 0 { db[0] = db[0] & (0xffu8 >> top as u8); }
+        let em: List<u8> = [];
+        for _ in em_len..k { em.push(0u8); }
+        for x in db { em.push(x); }
+        for x in h { em.push(x); }
+        em.push(0xbcu8);
+        try self.sign_encoded(em, sb, mh)
+    }
+
+    /// An RSASSA-PKCS1-v1_5 signature of `msg` (deterministic: the
+    /// blinding factor is derived from the message and the key).
+    pub fn sign_pkcs1v15<B: AsBytes>(self, hash: HashAlgorithm, msg: B) throws (ValueError) -> List<u8> {
+        let mh = hash.digest(msg);
+        let k = (self.public.bits + 7) / 8;
+        try self.sign_encoded(pkcs1_encoding(hash, mh, k), "", mh)
+    }
+
+    /// The signature of the `k`-byte encoding `em`, blinded with a
+    /// factor derived from `salt`, the message hash `mh` and the key.
+    fn sign_encoded<B: AsBytes>(self, em: List<u8>, salt: B, mh: List<u8>) throws (ValueError) -> List<u8> {
+        let k = em.len();
+        let n = self.public.md.n;
+        let m: List<u32> = Nat::from_be(em[0:k], n) else { throw ValueError::new("RSA encoding"); };
+        // The blinding factor, below 2^(8 (k - 1)) <= 2^(bits - 1) < n.
+        let dl = self.dp.len();
+        let ikm = Secret::zeroed(dl + self.dq.len());
+        for i in 0..dl { ikm[i] = self.dp[i]; }
+        for i in 0..self.dq.len() { ikm[dl + i] = self.dq[i]; }
+        let info = "nabi rsa blinding".as_bytes().to_list();
+        for x in mh { info.push(x); }
+        let prk = hkdf::extract(HashAlgorithm::Sha512, salt, ikm);
+        ikm.wipe();
+        let rb = try hkdf::expand(HashAlgorithm::Sha512, prk, info, k);
+        prk.wipe();
+        rb[0] = 0u8;
+        let r: List<u32> = Nat::from_be(rb[0:k], n) else { throw ValueError::new("RSA blinding"); };
+        rb.wipe();
+        Nat::to_be(try self.private_op(m, r), k)
+    }
+}
+
+/// Wiped where it is released.
+impl Drop for PrivateKey {
+    fn drop(ref self) { self.wipe(); }
+}
+
+/// The public key only.
+impl Debug for PrivateKey {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"PrivateKey {{ bits: {self.public.bits}, .. }}") }
+}

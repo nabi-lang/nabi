@@ -1,0 +1,83 @@
+Third-party software in the Nabi toolchain
+
+Nabi is licensed under the MIT license (LICENSE-MIT) or the Apache License
+v2.0 (LICENSE-APACHE), at your option. A toolchain archive also carries the
+works below, each under its own license. The full texts are in licenses/
+and, where named, at the top of the archive.
+
+Programs that nabic links contain the Nabi runtime (lib/libnabir.a) and,
+for the targets named below, the C runtime pieces of that target. When you
+distribute such a program, the notices of what it contains apply to it:
+Rust core and compiler_builtins always; musl for *-linux-musl*; wasi-libc
+for wasm32-*; FreeBSD's crt objects for *-freebsd. glibc's crt objects
+carry a linking exception and need no notice in a linked program.
+
+Unicode Character Database 18.0.0
+  Where:   compiler/nabic_lexer/ucd/ in the source; tables built from it are
+           compiled into bin/nabic and bin/nabils (identifier, width and
+           normalization data) and into lib/libnabir.a (char properties
+           and case mappings).
+  License: Unicode License V3
+  Text:    licenses/unicode.txt
+
+Geist and Geist Mono (Vercel, with basement.studio)
+  Where:   bin/nabi and bin/nabic (`nabi doc` writes them, with their
+           license, into every documentation output).
+  License: SIL Open Font License 1.1
+  Text:    licenses/geist.txt
+
+The Rust standard library 1.85.1 and the libc crate 0.2.191
+  Where:   bin/nabi, bin/nabic, bin/nabils; core in lib/libnabir.a and in
+           each target's runtime under lib/nabi/targets/.
+  License: MIT OR Apache-2.0
+  Text:    licenses/rust.txt, LICENSE-APACHE
+
+compiler_builtins 0.1.140 (with libm)
+  Where:   linked into the same binaries and runtimes as Rust core.
+  License: MIT AND Apache-2.0 WITH LLVM-exception; libm MIT (derived
+           from musl)
+  Text:    licenses/builtins.txt, LICENSE-LLVM.txt
+
+Clang's intrinsic and ACLE headers (LLVM Project)
+  Where:   embedded in bin/nabic for C header imports.
+  License: Apache-2.0 WITH LLVM-exception (arm_neon.h and arm_fp16.h
+           carry the MIT notice clang generates them with)
+  Text:    LICENSE-LLVM.txt
+
+mingw-w64 module definitions
+  Where:   embedded in bin/nabic; the Windows import libraries it writes
+           are built from them.
+  License: ZPL-2.1, with parts in the public domain (COPYING.mingw-w64)
+  Text:    COPYING.mingw-w64
+
+musl libc
+  Where:   lib/nabi/targets/*-linux-musl*/ (crt1.o, crti.o, crtn.o, libc.a)
+           from the Rust 1.85.1 toolchain's self-contained musl.
+  License: MIT
+  Text:    licenses/musl.txt
+
+The GNU C Library 2.36 (Debian 12)
+  Where:   lib/nabi/targets/*-linux-gnu*/ (Scrt1.o, crti.o, crtn.o,
+           libc_nonshared.a and empty compatibility archives; the stub
+           libc.so and libm.so list symbols only).
+  License: LGPL-2.1-or-later WITH the GCC/glibc runtime linking exception
+  Text:    licenses/glibc.txt
+
+wasi-libc
+  Where:   lib/nabi/targets/wasm32-*/ (crt objects and libc.a) from the
+           Rust 1.85.1 toolchain's self-contained wasi-libc.
+  License: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT, with
+           parts under MIT (musl), BSD-2-Clause (cloudlibc),
+           BSD-3-Clause (musl-fts) and CC0 (dlmalloc)
+  Text:    licenses/wasi.txt
+
+Wasmtime wasi_snapshot_preview1 adapters
+  Where:   lib/nabi/targets/wasm32-wasip2/wasi_snapshot_preview1.*.wasm
+  License: Apache-2.0 WITH LLVM-exception
+  Text:    licenses/wasi.txt, LICENSE-LLVM.txt
+
+FreeBSD 14.4-RELEASE base
+  Where:   lib/nabi/targets/*-freebsd/ when that target is built (Scrt1.o,
+           crti.o, crtn.o, libc_nonshared.a, libc, libm and libthr).
+  License: BSD-2-Clause (with BSD-3-Clause parts from 4.4BSD)
+  Text:    licenses/freebsd.txt

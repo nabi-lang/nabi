@@ -1,0 +1,20 @@
+// expect-error: 11:33: `const fn h` calls `g`, which is not a `const fn`
+// expect-error: 12:30: `const fn io` calls `println`, which is not a `const fn`
+// expect-error: 13:24: `const fn st` reads the static `S`
+
+// A `const fn` calls only `const fn`s and does no I/O nor
+// reads a global, checked even when it is never evaluated. The standard
+// library marks its pure functions `const fn` (`abs`, `str` concatenation
+// and `len` here); `println` is not one.
+static S: i32 = 4;
+fn g() -> i32 { 3 }
+const fn h(x: i32) -> i32 { x + g() }
+const fn io(x: i32) -> i32 { println("x"); x }
+const fn st() -> i32 { S }
+const fn ok(x: i32) -> i32 { let s = "ab" + "c"; x.abs() + s.len() as i32 }
+const fn make<T>(x: T) -> T { x }
+const fn rec(n: i64) -> i64 { if n == 0 { 0 } else { rec(n - 1) + 1 } }
+fn main() -> i32 {
+    println(f"{ok(-1)} {make(1)} {rec(3)}");
+    return 0;
+}

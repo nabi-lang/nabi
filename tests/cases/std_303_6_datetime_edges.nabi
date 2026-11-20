@@ -1,0 +1,67 @@
+// expect-exit: 0
+// expect-stdout:
+// time 00:00:00 23:59:59 23:59:59.000000005 23:59:59.000005 23:59:59.005 23:59:59.999999999
+// of day 86399 86399000000000 01:02:03.000000123 true
+// order true true
+// epoch 1970-01-01T00:00:00 0 1969-12-31T23:59:59 1969-12-31T23:59:59.500 1969-12-30T23:59:59
+// y2038 2038-01-19T03:14:07 2038-01-19T03:14:08 9999-12-31T23:59:59
+// fields 1999 12 31 23 59 59 0 1999-12-31 23:59:59
+// plus 2000-01-01T00:00:00 2000-01-01T00:00:00.500 1998-12-30T23:59:59 1999-12-31T23:59:58.999
+// leap 2024-02-29T12:00:00 2024-03-01T12:00:00 2024-02-29T12:00:00 2024-03-28T12:00:00 2025-02-28T12:00:00 2024-03-29T12:00:00
+// since 31622399.999999999s -31622399.999999999s 172800s
+// round 2023-11-14T22:13:20.123456789 true true
+// text 2024-03-10T02:30:00 2024-03-10T02:30:05.500 2024-03-10T02:30:05.000001
+// time text 07:08:00 07:08:09.100 23:59:59.999999999
+// error: hour 24 is out of range (0..=23)
+// error: minute 60 is out of range (0..=59)
+// error: second 60 is out of range (0..=59)
+// error: hour -1 is out of range (0..=23)
+// error: nanosecond 1000000000 is out of range (0..=999999999)
+// error: day 29 is out of range for 2023-02 (1..=28)
+// error: cannot parse "2024-03-10T24:00:00": hour 24 is out of range (00..=23) at byte 11
+// error: cannot parse "2024-03-10T23:59:60": leap second 60 is not supported (no leap seconds) at byte 17; use `59`
+// error: cannot parse "2024-03-10T12:00:00Z": a `DateTime` has no offset at byte 19; parse the text as a `Zoned` or a `SystemTime`
+// error: cannot parse "2024-03-10": expected `T` between the date and the time at byte 10, found the end of the text
+// error: cannot parse "2024-03-10T1:00": expected a two-digit hour (`00`..`23`) at byte 12, found `:`
+// error: cannot parse "2024-03-10T12:00:00.": expected digits after the decimal point at byte 20, found the end of the text
+// error: cannot parse "2024-03-10T12:00:00.1234567891": more than nine fraction digits (nanoseconds are the finest) at byte 29
+
+// `Time` and `DateTime`: fractions in 3/6/9 digits, unix seconds before
+// the epoch, exact `Duration` arithmetic across midnight and year ends,
+// calendar arithmetic that keeps the time of day, and field errors.
+use std::time::{Date, DateTime, Period, Time};
+
+fn show(r: str) { println(r); }
+
+fn main() throws {
+    let t = try Time::new(23, 59, 59);
+    println(f"time {Time::MIDNIGHT} {t} {try t.with_nanosecond(5)} {try t.with_nanosecond(5000)} {try t.with_nanosecond(5000000)} {try t.with_nanosecond(999999999)}");
+    println(f"of day {t.secs_of_day()} {t.nanos_of_day()} {Time::from_nanos_of_day(3723000000123)} {Time::from_nanos_of_day(0) == Time::MIDNIGHT}");
+    println(f"order {Time::MIDNIGHT < t} {try t.with_nanosecond(1) > t}");
+
+    let e = DateTime::from_unix(0, 0u32);
+    println(f"epoch {e} {e.unix_secs()} {DateTime::from_unix(-1, 0u32)} {DateTime::from_unix(-1, 500000000u32)} {DateTime::from_unix(-86401, 0u32)}");
+    println(f"y2038 {DateTime::from_unix(2147483647, 0u32)} {DateTime::from_unix(2147483648, 0u32)} {DateTime::from_unix(253402300799, 0u32)}");
+    let dt = try DateTime::new(1999, 12, 31, 23, 59, 59);
+    println(f"fields {dt.year()} {dt.month()} {dt.day()} {dt.hour()} {dt.minute()} {dt.second()} {dt.nanosecond()} {dt.date()} {dt.time()}");
+    println(f"plus {dt + Duration::secs(1)} {dt + Duration::ns(1500000000)} {dt - Duration::days(366)} {dt + Duration::ms(-1)}");
+    let leap = try DateTime::new(2024, 2, 28, 12, 0, 0);
+    println(f"leap {leap + Duration::days(1)} {leap + Duration::days(2)} {leap.add_days(1)} {leap.add_months(1)} {leap.add_years(1)} {leap + Period::new(0, 1, 1)}");
+    let a = try DateTime::new(2024, 1, 1, 0, 0, 0);
+    let b = DateTime::of(try Date::new(2024, 12, 31), try (try Time::new(23, 59, 59)).with_nanosecond(999999999));
+    println(f"since {b.duration_since(a)} {a.duration_since(b)} {(try DateTime::new(2024, 3, 1, 0, 0, 0)).duration_since(try DateTime::new(2024, 2, 28, 0, 0, 0))}");
+    let x = DateTime::from_unix(1700000000, 123456789u32);
+    println(f"round {x} {DateTime::from_unix(x.unix_secs(), x.nanosecond() as u32) == x} {try x.to_str().parse::<DateTime>() == x}");
+    println(f"text {try "2024-03-10T02:30".parse::<DateTime>()} {try "2024-03-10t02:30:05,5".parse::<DateTime>()} {try "2024-03-10 02:30:05.000001".parse::<DateTime>()}");
+    println(f"time text {try "07:08".parse::<Time>()} {try "07:08:09.1".parse::<Time>()} {try "23:59:59.999999999".parse::<Time>()}");
+
+    for args in [(24, 0, 0), (12, 60, 0), (12, 0, 60), (-1, 0, 0)] {
+        let (h, m, s) = args;
+        try { show(f"{try Time::new(h, m, s)}"); } catch e { show(f"error: {e}"); }
+    }
+    try { show(f"{try t.with_nanosecond(1000000000)}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try DateTime::new(2023, 2, 29, 0, 0, 0)}"); } catch e { show(f"error: {e}"); }
+    for s in ["2024-03-10T24:00:00", "2024-03-10T23:59:60", "2024-03-10T12:00:00Z", "2024-03-10", "2024-03-10T1:00", "2024-03-10T12:00:00.", "2024-03-10T12:00:00.1234567891"] {
+        try { show(f"{try s.parse::<DateTime>()}"); } catch e { show(f"error: {e}"); }
+    }
+}

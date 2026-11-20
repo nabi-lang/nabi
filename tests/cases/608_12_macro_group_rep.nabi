@@ -1,0 +1,18 @@
+// expect-exit: 0
+// expect-stdout:
+// 2 2 0 3 9
+
+// A bracketed group in a matcher matches a balanced group of the call,
+// a `@rep` inside it included, with or without a trailing separator.
+#[impl_macro(count)] pub @macro {
+    ([ @rep[sep = ",", trailing] { @x: expr } ]) => { 0usize @for @x { + 1 } }
+    (@v: tt) => { 100usize }
+}
+
+#[impl_macro(sum)] pub @macro {
+    (@rep[sep = ","] { (@a: expr, @b: expr) } ; @k: expr) => { 0 @for @a { + @a + @b } + @k }
+}
+
+fn main() {
+    println(f"{count!([5, 6])} {count!([5, 6,])} {count!([])} {count!([[1, 2], 3, 4])} {sum!((1, 2), (3, 0); 3)}");
+}

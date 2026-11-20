@@ -1,0 +1,38 @@
+// expect-exit: 0
+// expect-stdout:
+// 2 3 4 1.5 2 2.5
+// 3 3 4 5
+
+// A struct literal and a struct pattern name the struct through an alias,
+// plain or generic, as through the struct itself.
+mod m {
+    pub struct P<T> { pub x: T; }
+    pub type Q = P<f64>;
+}
+
+use m::P;
+use m::Q;
+
+struct R { a: i64; }
+type A<T> = P<T>;
+type B = R;
+type D<T> = P<List<T>>;
+
+fn main() {
+    let q = Q { x: 2.0 };
+    let a = A { x: 3 };
+    let b = B { a: 4 };
+    let c = A<f32> { x: 1.5 };
+    let d = D<i64> { x: [1, 2] };
+    let e = m::Q { x: 2.5, ..q };
+    println(f"{q.x} {a.x} {b.a} {c.x} {d.x[1]} {e.x}");
+    let Q { x } = P { x: 3.0 };
+    let B { a: n } = b;
+    let s = P { x: 3.0 };
+    match s {
+        Q { x: y } => print(f"{x} {y} "),
+    }
+    match (R { a: 5 }) {
+        B { a: z } => println(f"{n} {z}"),
+    }
+}

@@ -1,0 +1,6 @@
+// expect-error: a glob import takes no alias
+
+// A glob import takes no alias.
+use std::env::* as e;
+
+fn main() {}

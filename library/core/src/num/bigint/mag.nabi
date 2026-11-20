@@ -1,0 +1,691 @@
+// core::num::bigint::mag: the magnitude `IntMag` and the division and
+// radix-conversion plans built on it.
+
+use core::collections::raw::{GcBuf, buf_new};
+use core::num::bigint::{digit_of, radix_chunk};
+
+/// Divisor limbs below which (or quotient limbs below which) division
+/// is schoolbook (Knuth D); limb / digit counts below which radix
+/// conversion is quadratic; power limbs from which output divides by a
+/// reciprocal. Measured on aarch64.
+pub(pkg) const BZ: usize = 60;
+
+const MU: usize = 3000;
+
+const STR_SMALL: usize = 40;
+
+pub(pkg) const PARSE_SMALL: usize = 400;
+
+const BARRETT: usize = 200;
+
+const RECIP_SMALL: usize = 120;
+
+/// A magnitude: little-endian base-2^32 limbs `d[0..n]`, no leading
+/// zero limb (`n == 0` is zero). `d` may be longer than `n`.
+pub(pkg) struct IntMag {
+    pub(pkg) d: GcBuf<u32>;
+    pub(pkg) n: usize;
+}
+
+impl IntMag {
+    const fn zero() -> IntMag {
+        unsafe {
+            IntMag { d: buf_new(0), n: 0 }
+        }
+    }
+
+    /// `d[0..n]` without its leading zero limbs (shares `d`).
+    #[must_use]
+    pub(pkg) const fn trim(d: GcBuf<u32>, n: usize) -> IntMag {
+        unsafe {
+            let k = n;
+            while k > 0 && d[k - 1] == 0u32 { k -= 1; }
+            IntMag { d: d, n: k }
+        }
+    }
+
+    #[must_use]
+    pub(pkg) const fn from_u64(v: u64) -> IntMag {
+        unsafe {
+            let d: GcBuf<u32> = buf_new(2);
+            d[0] = v as u32;
+            d[1] = (v >> 32u64) as u32;
+            IntMag::trim(d, 2)
+        }
+    }
+
+    /// Limb `i`, zero past the top.
+    pub(pkg) const fn limb(self, i: usize) -> u64 {
+        unsafe {
+            if i < self.n { self.d[i] as u64 } else { 0u64 }
+        }
+    }
+
+    /// The low 64 bits.
+    pub(pkg) const fn low64(self) -> u64 { (self.limb(1) << 32u64) | self.limb(0) }
+
+    /// Number of significant bits (0 for zero).
+    pub(pkg) const fn bits(self) -> u64 {
+        unsafe {
+            if self.n == 0 { return 0u64; }
+            (self.n as u64) * 32u64 - (self.d[self.n - 1].leading_zeros() as u64)
+        }
+    }
+
+    /// `self` vs `b`: -1, 0 or 1.
+    pub(pkg) const fn cmp3(self, b: IntMag) -> i32 {
+        unsafe {
+            if self.n != b.n { return if self.n < b.n { -1 } else { 1 }; }
+            let i = self.n;
+            while i > 0 {
+                i -= 1;
+                if self.d[i] != b.d[i] { return if self.d[i] < b.d[i] { -1 } else { 1 }; }
+            }
+            0
+        }
+    }
+
+    pub(pkg) const fn plus(self, b: IntMag) -> IntMag {
+        unsafe {
+            if self.n < b.n { return b.plus(self); }
+            let r: GcBuf<u32> = buf_new(self.n + 1);
+            r[self.n] = nabi_nat_add(r, self.d, self.n, b.d, b.n);
+            IntMag::trim(r, self.n + 1)
+        }
+    }
+
+    /// `self - b`, `self >= b`.
+    pub(pkg) const fn minus(self, b: IntMag) -> IntMag {
+        unsafe {
+            let r: GcBuf<u32> = buf_new(self.n);
+            nabi_nat_sub(r, self.d, self.n, b.d, b.n);
+            IntMag::trim(r, self.n)
+        }
+    }
+
+    /// `hi B^k + lo` for `lo < B^k`.
+    const fn join(hi: IntMag, lo: IntMag, k: usize) -> IntMag {
+        unsafe {
+            let r: GcBuf<u32> = buf_new(k + hi.n + 1);
+            nabi_nat_shl(r, 0, lo.d, lo.n, 0u32);
+            nabi_nat_shl(r, k, hi.d, hi.n, 0u32);
+            IntMag::trim(r, k + hi.n + 1)
+        }
+    }
+
+    /// Limbs `lo..hi` (a copy).
+    const fn slice(self, lo: usize, hi: usize) -> IntMag {
+        unsafe {
+            let h = if hi < self.n { hi } else { self.n };
+            if lo >= h { return IntMag::zero(); }
+            let r: GcBuf<u32> = buf_new(h - lo);
+            nabi_nat_shr(r, self.d, h, (lo as u64) * 32u64);
+            IntMag::trim(r, h - lo)
+        }
+    }
+
+    /// Limbs `0..k` (shares `d`).
+    const fn low(self, k: usize) -> IntMag {
+        IntMag::trim(self.d, if k < self.n { k } else { self.n })
+    }
+
+    /// B^n - 1.
+    const fn ones(n: usize) -> IntMag {
+        unsafe {
+            let d: GcBuf<u32> = buf_new(n);
+            let i = 0usize;
+            while i < n {
+                d[i] = 0xFFFF_FFFFu32;
+                i += 1;
+            }
+            IntMag { d: d, n: n }
+        }
+    }
+
+    /// `self * b` (squares when `b` is `self`).
+    pub(pkg) fn times(self, b: IntMag) -> IntMag {
+        unsafe {
+            if self.n == 0 || b.n == 0 { return IntMag::zero(); }
+            let n = self.n + b.n;
+            let r: GcBuf<u32> = buf_new(n);
+            let t: GcBuf<u32> = buf_new(nabi_nat_mul_scratch(self.n, b.n));
+            nabi_nat_mul(r, self.d, self.n, b.d, b.n, t);
+            IntMag::trim(r, n)
+        }
+    }
+
+    /// `self << s` bits.
+    pub(pkg) const fn shl(self, s: u64) -> IntMag {
+        unsafe {
+            if self.n == 0 { return self; }
+            let limbs = (s / 32u64) as usize;
+            let r: GcBuf<u32> = buf_new(self.n + limbs + 1);
+            nabi_nat_shl(r, limbs, self.d, self.n, (s % 32u64) as u32);
+            IntMag::trim(r, self.n + limbs + 1)
+        }
+    }
+
+    /// `self >> s` bits (floor).
+    pub(pkg) const fn shr(self, s: u64) -> IntMag {
+        unsafe {
+            if s / 32u64 >= self.n as u64 { return IntMag::zero(); }
+            let n = self.n - (s / 32u64) as usize;
+            let r: GcBuf<u32> = buf_new(n);
+            nabi_nat_shr(r, self.d, self.n, s);
+            IntMag::trim(r, n)
+        }
+    }
+
+    /// `(self / b, self % b)`, `b != 0`. Short divisors or quotients go
+    /// to Knuth D; otherwise the normalized dividend is divided in base
+    /// B^n digits (`n` the divisor's limbs), each a Burnikel-Ziegler
+    /// 2n/1n step over one plan of the divisor's levels.
+    pub(pkg) fn divmod(self, b: IntMag) -> (IntMag, IntMag) {
+        unsafe {
+            if self.cmp3(b) < 0 { return (IntMag::zero(), self); }
+            if b.n < BZ || self.n < b.n + BZ { return self.divmod_knuth(b); }
+            let s = b.d[b.n - 1].leading_zeros() as u64;
+            let bs = b.shl(s);
+            let a = self.shl(s);
+            if bs.n >= MU && a.n >= bs.n + MU {
+                let (q, r) = a.divmod_mu(bs);
+                return (q, r.shr(s));
+            }
+            let n = bs.n;
+            let (plan, w, wn) = bz_plan(bs);
+            let k = (a.n + n - 1) / n;
+            let q: GcBuf<u32> = buf_new(k * n);
+            let r = IntMag::zero();
+            let i = k;
+            while i > 0 {
+                i -= 1;
+                let (qd, rd) = IntMag::join(r, a.slice(i * n, i * n + n), n).div2n1n(plan, 0, w, wn);
+                let j = 0usize;
+                while j < qd.n {
+                    q[i * n + j] = qd.d[j];
+                    j += 1;
+                }
+                r = rd;
+            }
+            (IntMag::trim(q, k * n), r.shr(s))
+        }
+    }
+
+    /// `(self / b, self % b)` for `b` of `n` limbs with its top bit set,
+    /// `self.n > n` (Barrett): the dividend in base B^k digits from the
+    /// top, `k` the quotient's limbs up to `n`. Each digit of the
+    /// quotient is estimated from the top `dl = min(k + 1, n)` limbs of
+    /// the divisor (`d`; off by 1 at most) by `inv = floor(B^(dl+k) /
+    /// d)` (2 short at most); the remainder, a few `b` either way, comes
+    /// from `q b` mod B^m - 1.
+    fn divmod_mu(self, b: IntMag) -> (IntMag, IntMag) {
+        unsafe {
+            let n = b.n;
+            let qn = self.n - n;
+            let nb = (qn + n - 1) / n;
+            let c = mu_cost(qn, n, nb);
+            let j = nb + 1;
+            while j <= nb + 4 {
+                let cj = mu_cost(qn, n, j);
+                if cj < c {
+                    c = cj;
+                    nb = j;
+                }
+                j += 1;
+            }
+            let k = (qn + nb - 1) / nb;
+            let dl = if k + 1 < n { k + 1 } else { n };
+            let inv = b.slice(n - dl, n).recip_approx().shr(((dl - k) as u64) * 32u64);
+            let m = nabi_nat_mulmod_len(k + 1, n, n + 2);
+            // Every digit multiplies by `inv` and `b`: their transforms.
+            let len = nabi_nat_ntt_len(k + 1, k + 1);
+            let wn = if len > m { len } else { m };
+            let w: GcBuf<u32> = buf_new(if len > 0 { 6 * wn } else { 0 });
+            let invf: GcBuf<u32> = buf_new(if len > 0 { 3 * len } else { 0 });
+            let bf: GcBuf<u32> = buf_new(if len > 0 { 3 * m } else { 0 });
+            if len > 0 {
+                nabi_nat_ntt_roots(w, wn);
+                nabi_nat_ntt_prep(invf, inv.d, inv.n, len, w, wn);
+                nabi_nat_ntt_prep(bf, b.d, b.n, m, w, wn);
+            }
+            let one = IntMag::from_u64(1u64);
+            let q: GcBuf<u32> = buf_new(k * nb + 1);
+            let r = self.slice(k * nb, self.n);
+            if r.cmp3(b) >= 0 {
+                q[k * nb] = 1u32;
+                r = r.minus(b);
+            }
+            let i = nb;
+            while i > 0 {
+                i -= 1;
+                let y = IntMag::join(r, self.slice(i * k, i * k + k), k);
+                // floor(floor(y / B^(n - dl)) / B^(dl - 1) * inv / B^(k + 1)).
+                let qe = y.slice(n - 1, y.n).times_prep(inv, invf, len, w, wn).slice(k + 1, 2 * k + 3);
+                let qb = if len > 0 { qe.times_prep(b, bf, m, w, wn) } else { qe.mulmod(b, m) };
+                let (neg, rr) = y.fold(m).wrap_sub(qb, m);
+                while neg {
+                    qe = qe.minus(one);
+                    if rr.cmp3(b) <= 0 {
+                        neg = false;
+                        rr = b.minus(rr);
+                    } else {
+                        rr = rr.minus(b);
+                    }
+                }
+                while rr.cmp3(b) >= 0 {
+                    qe = qe.plus(one);
+                    rr = rr.minus(b);
+                }
+                let j = 0usize;
+                while j < qe.n {
+                    q[i * k + j] = qe.d[j];
+                    j += 1;
+                }
+                r = rr;
+            }
+            (IntMag::trim(q, k * nb + 1), r)
+        }
+    }
+
+    /// `(self / b, self % b)` for `self < b B^n`, `b` of `n` limbs with
+    /// its top bit set (`plan[d]`; Burnikel-Ziegler 1998, algorithm 1):
+    /// two 3n/2n steps on half-size digits.
+    fn div2n1n(self, plan: List<BzLevel>, d: usize, w: GcBuf<u32>, wn: usize) -> (IntMag, IntMag) {
+        let l = plan[d];
+        if l.n < BZ || self.n < l.n + BZ { return self.divmod_knuth(l.b); }
+        let a = if l.odd { self.shl(32u64) } else { self };
+        let e = 2 * l.h;
+        let (q1, r1) = IntMag::div3n2n(a.slice(e, a.n), a.slice(l.h, e), plan, d, w, wn);
+        let (q2, r2) = IntMag::div3n2n(r1, a.low(l.h), plan, d, w, wn);
+        let q = IntMag::join(q1, q2, l.h);
+        (q, if l.odd { r2.shr(32u64) } else { r2 })
+    }
+
+    /// `(a12 B^h + a3) / v` for `plan[d]`'s `v = v1 B^h + v2` (`a12 < v
+    /// B^h`, `a3 < B^h`; algorithm 2).
+    fn div3n2n(a12: IntMag, a3: IntMag, plan: List<BzLevel>, d: usize, w: GcBuf<u32>, wn: usize) -> (IntMag, IntMag) {
+        let l = plan[d];
+        let n = l.h;
+        let sh = (n as u64) * 32u64;
+        let (q, r) = if a12.shr(sh).cmp3(l.v1) == 0 {
+            (IntMag::ones(n), a12.minus(l.v1.shl(sh)).plus(l.v1))
+        } else {
+            a12.div2n1n(plan, d + 1, w, wn)
+        };
+        // The estimate is at most 2 too big.
+        let t = IntMag::join(r, a3, n);
+        let p = q.times_prep(l.v2, l.f, l.len, w, wn);
+        while t.cmp3(p) < 0 {
+            q = q.minus(IntMag::from_u64(1u64));
+            t = t.plus(l.v);
+        }
+        (q, t.minus(p))
+    }
+
+    /// floor(B^2n / self), `n = self.n`: `recip_approx` made exact. The
+    /// residue D = B^2n - x self is a few `self` at most, so it comes
+    /// from a product mod B^m - 1 (`m >= n + 2`).
+    #[must_use]
+    fn recip(self) -> IntMag {
+        let one = IntMag::from_u64(1u64);
+        let n = self.n;
+        let x = self.recip_approx();
+        let m = unsafe { nabi_nat_mulmod_len(x.n, n, n + 2) };
+        let (neg, d) = IntMag::wrap_pow(2 * n, m).wrap_sub(x.mulmod(self, m), m);
+        while neg {
+            x = x.minus(one);
+            if d.cmp3(self) <= 0 {
+                neg = false;
+                d = self.minus(d);
+            } else {
+                d = d.minus(self);
+            }
+        }
+        while d.cmp3(self) >= 0 {
+            x = x.plus(one);
+            d = d.minus(self);
+        }
+        x
+    }
+
+    /// floor(B^2n / self) or up to 2 less (`n = self.n`) from `up`, the
+    /// next power (`up.p = self^2` of `N` limbs, `up.inv` at most 2 below
+    /// floor(B^2N / up.p)): B^2n / self = self B^2N / up.p / B^e, `e = 2N
+    /// - 2n`; `up.inv` without its low `e - n - 2` limbs changes that by
+    /// less than 1.
+    fn recip_from(self, up: Pow) -> IntMag {
+        let e = 2 * up.p.n - 2 * self.n;
+        let j = e - self.n - 2;
+        self.times(up.inv.slice(j, up.inv.n)).shr(((e - j) as u64) * 32u64)
+    }
+
+    /// floor(B^2n / self) within a few units (`n = self.n`): one Newton
+    /// step from the reciprocal of the top `h = n/2 + 2` limbs. With
+    /// X = R_h B^(n-h), B^2n - self X = B^(n-h) E for E = B^(n+h) -
+    /// self R_h, so X' = X + R_h E / B^2h; the error squares. |E| is a
+    /// few B^n at most, so it comes from a product mod B^m - 1 (`m >=
+    /// n + 2`), and E below B^(h-1) changes R_h E / B^2h by less than 1.
+    fn recip_approx(self) -> IntMag {
+        let n = self.n;
+        let one = IntMag::from_u64(1u64);
+        if n < RECIP_SMALL {
+            let (q, _) = one.shl((n as u64) * 64u64).divmod(self);
+            return q;
+        }
+        let h = n / 2 + 2;
+        let rh = self.slice(n - h, n).recip_approx();
+        let x = rh.shl(((n - h) as u64) * 32u64);
+        let m = unsafe { nabi_nat_mulmod_len(n, rh.n, n + 2) };
+        if unsafe { nabi_nat_ntt_len(h + 1, h + 1) } == 0 {
+            let (neg, e) = IntMag::wrap_pow(n + h, m).wrap_sub(self.mulmod(rh, m), m);
+            let c = rh.times(e.slice(h - 1, e.n)).shr(((h + 1) as u64) * 32u64);
+            return if neg { x.minus(c).minus(one) } else { x.plus(c) };
+        }
+        // Both products take `rh`: its transform once (length m).
+        unsafe {
+            let w: GcBuf<u32> = buf_new(6 * m);
+            nabi_nat_ntt_roots(w, m);
+            let f: GcBuf<u32> = buf_new(3 * m);
+            nabi_nat_ntt_prep(f, rh.d, rh.n, m, w, m);
+            let p = self.times_prep(rh, f, m, w, m).fold(m);
+            let (neg, e) = IntMag::wrap_pow(n + h, m).wrap_sub(p, m);
+            let et = e.slice(h - 1, e.n);
+            let c = (if et.n + rh.n <= m { et.times_prep(rh, f, m, w, m) } else { rh.times(et) }).shr(((h + 1) as u64) * 32u64);
+            if neg { x.minus(c).minus(one) } else { x.plus(c) }
+        }
+    }
+
+    /// `self * b mod (B^m - 1)` (`m` from `nabi_nat_mulmod_len`).
+    fn mulmod(self, b: IntMag, m: usize) -> IntMag {
+        unsafe {
+            if self.n == 0 || b.n == 0 { return IntMag::zero(); }
+            let r: GcBuf<u32> = buf_new(m);
+            let t: GcBuf<u32> = buf_new(nabi_nat_mulmod_scratch(self.n, b.n, m));
+            nabi_nat_mulmod(r, self.d, self.n, b.d, b.n, m, t);
+            IntMag::trim(r, m)
+        }
+    }
+
+    /// `self mod (B^m - 1)`.
+    const fn fold(self, m: usize) -> IntMag {
+        unsafe {
+            let x = self;
+            while x.n > m { x = x.low(m).plus(x.slice(m, x.n)); }
+            if x.n < m { return x; }
+            let i = 0usize;
+            while i < m {
+                if x.d[i] != 0xFFFF_FFFFu32 { return x; }
+                i += 1;
+            }
+            IntMag::zero()
+        }
+    }
+
+    /// B^e mod (B^m - 1).
+    const fn wrap_pow(e: usize, m: usize) -> IntMag {
+        IntMag::from_u64(1u64).shl(((e % m) as u64) * 32u64)
+    }
+
+    /// The `v = self - y (mod B^m - 1)` of least magnitude, as its sign
+    /// and magnitude (`self`, `y` below B^m - 1).
+    const fn wrap_sub(self, y: IntMag, m: usize) -> (bool, IntMag) {
+        let neg = self.cmp3(y) < 0;
+        let d = if neg { y.minus(self) } else { self.minus(y) };
+        // Past B^m / 2: the other way round.
+        if d.bits() >= (m as u64) * 32u64 { return (!neg, IntMag::ones(m).minus(d)); }
+        (neg, d)
+    }
+
+    /// `self * v` for `f` the transforms of `v` (`nabi_nat_ntt_prep` for
+    /// length `len`, roots `w` of `wn`), mod B^len - 1 past `len` limbs;
+    /// `len == 0` is a plain product.
+    fn times_prep(self, v: IntMag, f: GcBuf<u32>, len: usize, w: GcBuf<u32>, wn: usize) -> IntMag {
+        unsafe {
+            if len == 0 || self.n == 0 || v.n == 0 { return self.times(v); }
+            let n = if self.n + v.n > len { len } else { self.n + v.n };
+            let r: GcBuf<u32> = buf_new(n);
+            let t: GcBuf<u32> = buf_new(3 * len);
+            nabi_nat_ntt_mul(r, self.d, self.n, f, v.n, len, w, wn, t);
+            IntMag::trim(r, n)
+        }
+    }
+
+    /// `(self / p, self % p)` for `self < B^2n` (`n = p.n`), by `d.inv`,
+    /// floor(B^2n / p) or up to 2 less (Barrett: the estimate is at most
+    /// 4 short, so the remainder, below 5p, comes from `q p` mod B^m - 1).
+    fn barrett(self, d: Pow, w: GcBuf<u32>, wn: usize) -> (IntMag, IntMag) {
+        let p = d.p;
+        let n = p.n;
+        let t = self.slice(n - 1, self.n).times_prep(d.inv, d.invf, d.len, w, wn);
+        let q = t.slice(n + 1, t.n);
+        let qp = if d.len > 0 { q.times_prep(p, d.pf, d.m, w, wn) } else { q.mulmod(p, d.m) };
+        let (_, r) = self.fold(d.m).wrap_sub(qp, d.m);
+        while r.cmp3(p) >= 0 {
+            q = q.plus(IntMag::from_u64(1u64));
+            r = r.minus(p);
+        }
+        (q, r)
+    }
+
+    /// Knuth TAOCP 4.3.1 algorithm D (a runtime kernel; `b != 0`).
+    fn divmod_knuth(self, b: IntMag) -> (IntMag, IntMag) {
+        unsafe {
+            if self.cmp3(b) < 0 { return (IntMag::zero(), self); }
+            if b.n == 1 {
+                let q: GcBuf<u32> = buf_new(self.n);
+                let rem = nabi_nat_divmod_small(q, self.d, self.n, b.d[0]);
+                return (IntMag::trim(q, self.n), IntMag::from_u64(rem as u64));
+            }
+            let m = self.n - b.n + 1;
+            let q: GcBuf<u32> = buf_new(m);
+            let r: GcBuf<u32> = buf_new(b.n);
+            let t: GcBuf<u32> = buf_new(nabi_nat_divmod_scratch(self.n, b.n));
+            nabi_nat_divmod(q, r, self.d, self.n, b.d, b.n, t);
+            (IntMag::trim(q, m), IntMag::trim(r, b.n))
+        }
+    }
+}
+
+/// The transforms `divmod_mu` takes with `nb` digits for a quotient of
+/// `qn` limbs by `n` (cycles about `t log t` for each of length `t`):
+/// the reciprocal (about 15 of length P, the digit's), the two
+/// prepared operands, and per digit the inverse and a forward transform
+/// of the quotient product (length L) and of the remainder's (m).
+const fn mu_cost(qn: usize, n: usize, nb: usize) -> u64 {
+    let k = (qn + nb - 1) / nb;
+    let lp = pow2_log(k + 2);
+    let ll = pow2_log(2 * k + 2);
+    let lm = pow2_log(n + 2);
+    let t = |l: u64| (l << l);
+    15u64 * t(lp) + t(ll) + t(lm) + (nb as u64) * 2u64 * (t(ll) + t(lm))
+}
+
+/// log2 of the smallest power of two at least `x`.
+const fn pow2_log(x: usize) -> u64 {
+    let l = 0u64;
+    while (1usize << (l as usize)) < x { l += 1u64; }
+    l
+}
+
+/// One level of a Burnikel-Ziegler division by `b` (`n` limbs, top bit
+/// set): `v` = `b`, times B when `n` is odd (`odd`), its halves `v1`,
+/// `v2` of `h` limbs, and the transforms of `v2` for the `h`-limb
+/// quotients times it (`len == 0`: plain products). A level with `n <
+/// BZ` ends the plan (Knuth D).
+struct BzLevel {
+    b: IntMag;
+    n: usize;
+    odd: bool;
+    v: IntMag;
+    v1: IntMag;
+    v2: IntMag;
+    h: usize;
+    f: GcBuf<u32>;
+    len: usize;
+}
+
+/// The levels dividing by `b` takes (each next one divides by `v1`),
+/// with roots `w` of `wn` for their transforms: every quotient product
+/// of a level multiplies by the same `v2`.
+fn bz_plan(b: IntMag) -> (List<BzLevel>, GcBuf<u32>, usize) {
+    unsafe {
+        let none_buf: GcBuf<u32> = buf_new(0);
+        let plan: List<BzLevel> = List::new();
+        let cur = b;
+        let wn = 0usize;
+        while true {
+            let n = cur.n;
+            if n < BZ {
+                plan.push(BzLevel { b: cur, n: n, odd: false, v: cur, v1: cur, v2: cur, h: 0, f: none_buf, len: 0 });
+                break;
+            }
+            let odd = n % 2 == 1;
+            let v = if odd { cur.shl(32u64) } else { cur };
+            let h = (n + 1) / 2;
+            let len = nabi_nat_ntt_len(h, h);
+            if len > wn { wn = len; }
+            let v1 = v.slice(h, 2 * h);
+            plan.push(BzLevel { b: cur, n: n, odd: odd, v: v, v1: v1, v2: v.low(h), h: h, f: none_buf, len: len });
+            cur = v1;
+        }
+        let w: GcBuf<u32> = buf_new(6 * wn);
+        if wn > 0 { nabi_nat_ntt_roots(w, wn); }
+        for i in 0..plan.len() {
+            let l = plan[i];
+            if l.len > 0 {
+                l.f = buf_new(3 * l.len);
+                nabi_nat_ntt_prep(l.f, l.v2.d, l.v2.n, l.len, w, wn);
+                plan[i] = l;
+            }
+        }
+        (plan, w, wn)
+    }
+}
+
+/// A power chunk^(2^i) of the radix conversion with what dividing by it
+/// takes: its reciprocal (`inv.n == 0`: plain division), the transforms
+/// of the reciprocal for products up to `len` limbs and of the power
+/// for products mod B^m - 1 (`len == 0`: plain products).
+struct Pow {
+    p: IntMag;
+    inv: IntMag;
+    pf: GcBuf<u32>;
+    invf: GcBuf<u32>;
+    len: usize;
+    m: usize;
+}
+
+/// The powers of a radix conversion: `pw[i]` = chunk^(2^i), `k` of
+/// them, roots `w` of `wn` for their transforms.
+struct PowTable {
+    pub(pkg) pw: List<Pow>;
+    pub(pkg) k: usize;
+    pub(pkg) w: GcBuf<u32>;
+    pub(pkg) wn: usize;
+}
+
+/// The table for writing `m` in base `radix`: powers up to the first
+/// whose square exceeds `m`, those below it with their reciprocals and
+/// transforms (every level but the top divides more than once).
+pub(pkg) fn str_levels(radix: u32, m: IntMag) -> PowTable {
+    unsafe {
+        let none_buf: GcBuf<u32> = buf_new(0);
+        let (chunk, _) = radix_chunk(radix);
+        let pw: List<Pow> = List::new();
+        pw.push(Pow { p: IntMag::from_u64(chunk as u64), inv: IntMag::zero(), pf: none_buf, invf: none_buf, len: 0, m: 0 });
+        while m.n > STR_SMALL && pw[pw.len() - 1].p.bits() * 2u64 <= m.bits() + 1u64 {
+            let p = pw[pw.len() - 1].p;
+            pw.push(Pow { p: p.times(p), inv: IntMag::zero(), pf: none_buf, invf: none_buf, len: 0, m: 0 });
+        }
+        let k = pw.len();
+        let wn = 0usize;
+        let i = k - 1;
+        while i > 0 {
+            i -= 1;
+            let d = pw[i];
+            if d.p.n >= BARRETT {
+                d.inv = if i + 2 < k && pw[i + 1].inv.n > 0 { d.p.recip_from(pw[i + 1]) } else { d.p.recip() };
+                d.len = nabi_nat_ntt_len(d.p.n + 1, d.p.n + 1);
+                d.m = nabi_nat_mulmod_len(d.p.n + 1, d.p.n, d.p.n + 2);
+                if d.len > wn { wn = d.len; }
+                pw[i] = d;
+            }
+        }
+        let w: GcBuf<u32> = buf_new(6 * wn);
+        if wn > 0 { nabi_nat_ntt_roots(w, wn); }
+        for i in 0..k - 1 {
+            let d = pw[i];
+            if d.len > 0 {
+                d.pf = buf_new(3 * d.m);
+                nabi_nat_ntt_prep(d.pf, d.p.d, d.p.n, d.m, w, wn);
+                d.invf = buf_new(3 * d.len);
+                nabi_nat_ntt_prep(d.invf, d.inv.d, d.inv.n, d.len, w, wn);
+                pw[i] = d;
+            }
+        }
+        PowTable { pw: pw, k: k, w: w, wn: wn }
+    }
+}
+
+/// The digits of `x` in base `radix` ending at `out[end]` (exclusive),
+/// zero-padded to `width`; the start. By halves: `x < pw[k - 1]^2`
+/// splits at `pw[k - 1]` (`per 2^(k-1)` digits) into two `put_digits`
+/// on `k - 1`, down to a runtime kernel at `STR_SMALL` (<= 64) limbs.
+/// `w` (of `wn`) holds the transforms' roots.
+pub(pkg) fn put_digits(x: IntMag, pw: List<Pow>, w: GcBuf<u32>, wn: usize, k: usize, per: usize, out: GcBuf<u8>, end: usize, width: usize, radix: u32) -> usize {
+    if k == 0 || x.n <= STR_SMALL { return unsafe { nabi_nat_put_digits(out, end, x.d, x.n, width, radix) }; }
+    let d = pw[k - 1];
+    // A leading part may be short: no padding then.
+    if x.cmp3(d.p) < 0 { return put_digits(x, pw, w, wn, k - 1, per, out, end, width, radix); }
+    let (q, r) = if d.inv.n > 0 { x.barrett(d, w, wn) } else { x.divmod(d.p) };
+    let s = per << (k - 1);
+    _ = put_digits(r, pw, w, wn, k - 1, per, out, end, s, radix);
+    put_digits(q, pw, w, wn, k - 1, per, out, end - s, if width > s { width - s } else { 0 }, radix)
+}
+
+/// The value of the checked digits `bs[lo..hi]`, folded `per` at a
+/// time: acc = acc * radix^k + chunk (quadratic).
+const fn fold_digits(bs: Slice<u8>, lo: usize, hi: usize, radix: u32, per: u32) -> IntMag {
+    unsafe {
+        let acc: GcBuf<u32> = buf_new((hi - lo) / (per as usize) + 2);
+        let len = 0usize;
+        let i = lo;
+        while i < hi {
+            let v = 0u64;
+            let mul = 1u64;
+            let k = 0u32;
+            while k < per && i < hi {
+                v = v * (radix as u64) + (digit_of(bs[i]) as u64);
+                mul = mul * (radix as u64);
+                k += 1u32;
+                i += 1;
+            }
+            // mul <= chunk < 2^32.
+            let carry = v;
+            let j = 0usize;
+            while j < len {
+                let t = (acc[j] as u64) * mul + carry;
+                acc[j] = t as u32;
+                carry = t >> 32u64;
+                j += 1;
+            }
+            if carry != 0u64 {
+                acc[len] = carry as u32;
+                len += 1;
+            }
+        }
+        IntMag::trim(acc, len)
+    }
+}
+
+/// `fold_digits` by halves: the low part is the largest `per 2^j`
+/// digits shorter than the run, its weight `pw[j]`.
+pub(pkg) fn parse_digits(bs: Slice<u8>, lo: usize, hi: usize, radix: u32, per: u32, pw: List<IntMag>) -> IntMag {
+    let len = hi - lo;
+    if len <= PARSE_SMALL { return fold_digits(bs, lo, hi, radix, per); }
+    let j = 0usize;
+    while ((per as usize) << (j + 1)) < len { j += 1; }
+    let l = (per as usize) << j;
+    let top = parse_digits(bs, lo, hi - l, radix, per, pw);
+    top.times(pw[j]).plus(parse_digits(bs, hi - l, hi, radix, per, pw))
+}

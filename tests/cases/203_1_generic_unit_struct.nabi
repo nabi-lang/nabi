@@ -1,0 +1,33 @@
+// expect-exit: 0
+// expect-stdout:
+// m m m M 3
+// true 2
+
+// A generic unit struct is a value like a plain one: `M::<T>` names the
+// instance, or the slot's type gives it.
+#[derive(Debug, Clone, PartialEq)]
+struct M<T>;
+
+impl<T> M<T> {
+    fn new() -> M<T> { M }
+    fn name(self) -> str { "m" }
+}
+
+struct N<const K: usize>;
+
+impl<const K: usize> N<K> {
+    fn k(self) -> usize { K }
+}
+
+fn takes(m: M<str>) -> str { m.name() }
+
+fn make<T>() -> M<T> { M::<T> }
+
+fn main() {
+    let a = M::<i64>.name();
+    let b = takes(M);
+    let c: M<f64> = M::new();
+    println(f"{a} {b} {c.name()} {c:?} {N::<3>.k()}");
+    let ms: List<M<u8>> = [M, make()];
+    println(f"{M::<i64> == M} {ms.len()}");
+}

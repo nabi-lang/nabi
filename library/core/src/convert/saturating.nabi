@@ -1,0 +1,576 @@
+// core::convert::saturating: the `SaturatingFrom` impls of the
+// primitives.
+
+use core::convert::SaturatingFrom;
+
+impl SaturatingFrom<i8> for i16 {
+    const fn saturating_from(value: i8) -> i16 { value as i16 }
+}
+
+impl SaturatingFrom<i8> for i32 {
+    const fn saturating_from(value: i8) -> i32 { value as i32 }
+}
+
+impl SaturatingFrom<i8> for i64 {
+    const fn saturating_from(value: i8) -> i64 { value as i64 }
+}
+
+impl SaturatingFrom<i8> for isize {
+    const fn saturating_from(value: i8) -> isize { value as isize }
+}
+
+impl SaturatingFrom<i8> for u8 {
+    const fn saturating_from(value: i8) -> u8 {
+        if value < 0 { return 0; }
+        value as u8
+    }
+}
+
+impl SaturatingFrom<i8> for u16 {
+    const fn saturating_from(value: i8) -> u16 {
+        if value < 0 { return 0; }
+        value as u16
+    }
+}
+
+impl SaturatingFrom<i8> for u32 {
+    const fn saturating_from(value: i8) -> u32 {
+        if value < 0 { return 0; }
+        value as u32
+    }
+}
+
+impl SaturatingFrom<i8> for u64 {
+    const fn saturating_from(value: i8) -> u64 {
+        if value < 0 { return 0; }
+        value as u64
+    }
+}
+
+impl SaturatingFrom<i8> for usize {
+    const fn saturating_from(value: i8) -> usize {
+        if value < 0 { return 0; }
+        value as usize
+    }
+}
+
+impl SaturatingFrom<i16> for i8 {
+    const fn saturating_from(value: i16) -> i8 {
+        if value < i8::MIN as i16 { return i8::MIN; }
+        if value > i8::MAX as i16 { return i8::MAX; }
+        value as i8
+    }
+}
+
+impl SaturatingFrom<i16> for i32 {
+    const fn saturating_from(value: i16) -> i32 { value as i32 }
+}
+
+impl SaturatingFrom<i16> for i64 {
+    const fn saturating_from(value: i16) -> i64 { value as i64 }
+}
+
+impl SaturatingFrom<i16> for isize {
+    const fn saturating_from(value: i16) -> isize { value as isize }
+}
+
+impl SaturatingFrom<i16> for u8 {
+    const fn saturating_from(value: i16) -> u8 {
+        if value < 0 { return 0; }
+        if value > u8::MAX as i16 { return u8::MAX; }
+        value as u8
+    }
+}
+
+impl SaturatingFrom<i16> for u16 {
+    const fn saturating_from(value: i16) -> u16 {
+        if value < 0 { return 0; }
+        value as u16
+    }
+}
+
+impl SaturatingFrom<i16> for u32 {
+    const fn saturating_from(value: i16) -> u32 {
+        if value < 0 { return 0; }
+        value as u32
+    }
+}
+
+impl SaturatingFrom<i16> for u64 {
+    const fn saturating_from(value: i16) -> u64 {
+        if value < 0 { return 0; }
+        value as u64
+    }
+}
+
+impl SaturatingFrom<i16> for usize {
+    const fn saturating_from(value: i16) -> usize {
+        if value < 0 { return 0; }
+        value as usize
+    }
+}
+
+impl SaturatingFrom<i32> for i8 {
+    const fn saturating_from(value: i32) -> i8 {
+        if value < i8::MIN as i32 { return i8::MIN; }
+        if value > i8::MAX as i32 { return i8::MAX; }
+        value as i8
+    }
+}
+
+impl SaturatingFrom<i32> for i16 {
+    const fn saturating_from(value: i32) -> i16 {
+        if value < i16::MIN as i32 { return i16::MIN; }
+        if value > i16::MAX as i32 { return i16::MAX; }
+        value as i16
+    }
+}
+
+impl SaturatingFrom<i32> for i64 {
+    const fn saturating_from(value: i32) -> i64 { value as i64 }
+}
+
+impl SaturatingFrom<i32> for isize {
+    const fn saturating_from(value: i32) -> isize { value as isize }
+}
+
+impl SaturatingFrom<i32> for u8 {
+    const fn saturating_from(value: i32) -> u8 {
+        if value < 0 { return 0; }
+        if value > u8::MAX as i32 { return u8::MAX; }
+        value as u8
+    }
+}
+
+impl SaturatingFrom<i32> for u16 {
+    const fn saturating_from(value: i32) -> u16 {
+        if value < 0 { return 0; }
+        if value > u16::MAX as i32 { return u16::MAX; }
+        value as u16
+    }
+}
+
+impl SaturatingFrom<i32> for u32 {
+    const fn saturating_from(value: i32) -> u32 {
+        if value < 0 { return 0; }
+        value as u32
+    }
+}
+
+impl SaturatingFrom<i32> for u64 {
+    const fn saturating_from(value: i32) -> u64 {
+        if value < 0 { return 0; }
+        value as u64
+    }
+}
+
+impl SaturatingFrom<i32> for usize {
+    const fn saturating_from(value: i32) -> usize {
+        if value < 0 { return 0; }
+        value as usize
+    }
+}
+
+impl SaturatingFrom<i64> for i8 {
+    const fn saturating_from(value: i64) -> i8 {
+        if value < i8::MIN as i64 { return i8::MIN; }
+        if value > i8::MAX as i64 { return i8::MAX; }
+        value as i8
+    }
+}
+
+impl SaturatingFrom<i64> for i16 {
+    const fn saturating_from(value: i64) -> i16 {
+        if value < i16::MIN as i64 { return i16::MIN; }
+        if value > i16::MAX as i64 { return i16::MAX; }
+        value as i16
+    }
+}
+
+impl SaturatingFrom<i64> for i32 {
+    const fn saturating_from(value: i64) -> i32 {
+        if value < i32::MIN as i64 { return i32::MIN; }
+        if value > i32::MAX as i64 { return i32::MAX; }
+        value as i32
+    }
+}
+
+impl SaturatingFrom<i64> for isize {
+    const fn saturating_from(value: i64) -> isize { value as isize }
+}
+
+impl SaturatingFrom<i64> for u8 {
+    const fn saturating_from(value: i64) -> u8 {
+        if value < 0 { return 0; }
+        if value > u8::MAX as i64 { return u8::MAX; }
+        value as u8
+    }
+}
+
+impl SaturatingFrom<i64> for u16 {
+    const fn saturating_from(value: i64) -> u16 {
+        if value < 0 { return 0; }
+        if value > u16::MAX as i64 { return u16::MAX; }
+        value as u16
+    }
+}
+
+impl SaturatingFrom<i64> for u32 {
+    const fn saturating_from(value: i64) -> u32 {
+        if value < 0 { return 0; }
+        if value > u32::MAX as i64 { return u32::MAX; }
+        value as u32
+    }
+}
+
+impl SaturatingFrom<i64> for u64 {
+    const fn saturating_from(value: i64) -> u64 {
+        if value < 0 { return 0; }
+        value as u64
+    }
+}
+
+impl SaturatingFrom<i64> for usize {
+    const fn saturating_from(value: i64) -> usize {
+        if value < 0 { return 0; }
+        value as usize
+    }
+}
+
+impl SaturatingFrom<isize> for i8 {
+    const fn saturating_from(value: isize) -> i8 {
+        if value < i8::MIN as isize { return i8::MIN; }
+        if value > i8::MAX as isize { return i8::MAX; }
+        value as i8
+    }
+}
+
+impl SaturatingFrom<isize> for i16 {
+    const fn saturating_from(value: isize) -> i16 {
+        if value < i16::MIN as isize { return i16::MIN; }
+        if value > i16::MAX as isize { return i16::MAX; }
+        value as i16
+    }
+}
+
+impl SaturatingFrom<isize> for i32 {
+    const fn saturating_from(value: isize) -> i32 {
+        if value < i32::MIN as isize { return i32::MIN; }
+        if value > i32::MAX as isize { return i32::MAX; }
+        value as i32
+    }
+}
+
+impl SaturatingFrom<isize> for i64 {
+    const fn saturating_from(value: isize) -> i64 { value as i64 }
+}
+
+impl SaturatingFrom<isize> for u8 {
+    const fn saturating_from(value: isize) -> u8 {
+        if value < 0 { return 0; }
+        if value > u8::MAX as isize { return u8::MAX; }
+        value as u8
+    }
+}
+
+impl SaturatingFrom<isize> for u16 {
+    const fn saturating_from(value: isize) -> u16 {
+        if value < 0 { return 0; }
+        if value > u16::MAX as isize { return u16::MAX; }
+        value as u16
+    }
+}
+
+impl SaturatingFrom<isize> for u32 {
+    const fn saturating_from(value: isize) -> u32 {
+        if value < 0 { return 0; }
+        if value > u32::MAX as isize { return u32::MAX; }
+        value as u32
+    }
+}
+
+impl SaturatingFrom<isize> for u64 {
+    const fn saturating_from(value: isize) -> u64 {
+        if value < 0 { return 0; }
+        value as u64
+    }
+}
+
+impl SaturatingFrom<isize> for usize {
+    const fn saturating_from(value: isize) -> usize {
+        if value < 0 { return 0; }
+        value as usize
+    }
+}
+
+impl SaturatingFrom<u8> for i8 {
+    const fn saturating_from(value: u8) -> i8 {
+        if value > i8::MAX as u8 { return i8::MAX; }
+        value as i8
+    }
+}
+
+impl SaturatingFrom<u8> for i16 {
+    const fn saturating_from(value: u8) -> i16 { value as i16 }
+}
+
+impl SaturatingFrom<u8> for i32 {
+    const fn saturating_from(value: u8) -> i32 { value as i32 }
+}
+
+impl SaturatingFrom<u8> for i64 {
+    const fn saturating_from(value: u8) -> i64 { value as i64 }
+}
+
+impl SaturatingFrom<u8> for isize {
+    const fn saturating_from(value: u8) -> isize {
+        if value > isize::MAX as u8 { return isize::MAX; }
+        value as isize
+    }
+}
+
+impl SaturatingFrom<u8> for u16 {
+    const fn saturating_from(value: u8) -> u16 { value as u16 }
+}
+
+impl SaturatingFrom<u8> for u32 {
+    const fn saturating_from(value: u8) -> u32 { value as u32 }
+}
+
+impl SaturatingFrom<u8> for u64 {
+    const fn saturating_from(value: u8) -> u64 { value as u64 }
+}
+
+impl SaturatingFrom<u8> for usize {
+    const fn saturating_from(value: u8) -> usize { value as usize }
+}
+
+impl SaturatingFrom<u16> for i8 {
+    const fn saturating_from(value: u16) -> i8 {
+        if value > i8::MAX as u16 { return i8::MAX; }
+        value as i8
+    }
+}
+
+impl SaturatingFrom<u16> for i16 {
+    const fn saturating_from(value: u16) -> i16 {
+        if value > i16::MAX as u16 { return i16::MAX; }
+        value as i16
+    }
+}
+
+impl SaturatingFrom<u16> for i32 {
+    const fn saturating_from(value: u16) -> i32 { value as i32 }
+}
+
+impl SaturatingFrom<u16> for i64 {
+    const fn saturating_from(value: u16) -> i64 { value as i64 }
+}
+
+impl SaturatingFrom<u16> for isize {
+    const fn saturating_from(value: u16) -> isize {
+        if value > isize::MAX as u16 { return isize::MAX; }
+        value as isize
+    }
+}
+
+impl SaturatingFrom<u16> for u8 {
+    const fn saturating_from(value: u16) -> u8 {
+        if value > u8::MAX as u16 { return u8::MAX; }
+        value as u8
+    }
+}
+
+impl SaturatingFrom<u16> for u32 {
+    const fn saturating_from(value: u16) -> u32 { value as u32 }
+}
+
+impl SaturatingFrom<u16> for u64 {
+    const fn saturating_from(value: u16) -> u64 { value as u64 }
+}
+
+impl SaturatingFrom<u16> for usize {
+    const fn saturating_from(value: u16) -> usize { value as usize }
+}
+
+impl SaturatingFrom<u32> for i8 {
+    const fn saturating_from(value: u32) -> i8 {
+        if value > i8::MAX as u32 { return i8::MAX; }
+        value as i8
+    }
+}
+
+impl SaturatingFrom<u32> for i16 {
+    const fn saturating_from(value: u32) -> i16 {
+        if value > i16::MAX as u32 { return i16::MAX; }
+        value as i16
+    }
+}
+
+impl SaturatingFrom<u32> for i32 {
+    const fn saturating_from(value: u32) -> i32 {
+        if value > i32::MAX as u32 { return i32::MAX; }
+        value as i32
+    }
+}
+
+impl SaturatingFrom<u32> for i64 {
+    const fn saturating_from(value: u32) -> i64 { value as i64 }
+}
+
+impl SaturatingFrom<u32> for isize {
+    const fn saturating_from(value: u32) -> isize {
+        if value > isize::MAX as u32 { return isize::MAX; }
+        value as isize
+    }
+}
+
+impl SaturatingFrom<u32> for u8 {
+    const fn saturating_from(value: u32) -> u8 {
+        if value > u8::MAX as u32 { return u8::MAX; }
+        value as u8
+    }
+}
+
+impl SaturatingFrom<u32> for u16 {
+    const fn saturating_from(value: u32) -> u16 {
+        if value > u16::MAX as u32 { return u16::MAX; }
+        value as u16
+    }
+}
+
+impl SaturatingFrom<u32> for u64 {
+    const fn saturating_from(value: u32) -> u64 { value as u64 }
+}
+
+impl SaturatingFrom<u32> for usize {
+    const fn saturating_from(value: u32) -> usize { value as usize }
+}
+
+impl SaturatingFrom<u64> for i8 {
+    const fn saturating_from(value: u64) -> i8 {
+        if value > i8::MAX as u64 { return i8::MAX; }
+        value as i8
+    }
+}
+
+impl SaturatingFrom<u64> for i16 {
+    const fn saturating_from(value: u64) -> i16 {
+        if value > i16::MAX as u64 { return i16::MAX; }
+        value as i16
+    }
+}
+
+impl SaturatingFrom<u64> for i32 {
+    const fn saturating_from(value: u64) -> i32 {
+        if value > i32::MAX as u64 { return i32::MAX; }
+        value as i32
+    }
+}
+
+impl SaturatingFrom<u64> for i64 {
+    const fn saturating_from(value: u64) -> i64 {
+        if value > i64::MAX as u64 { return i64::MAX; }
+        value as i64
+    }
+}
+
+impl SaturatingFrom<u64> for isize {
+    const fn saturating_from(value: u64) -> isize {
+        if value > isize::MAX as u64 { return isize::MAX; }
+        value as isize
+    }
+}
+
+impl SaturatingFrom<u64> for u8 {
+    const fn saturating_from(value: u64) -> u8 {
+        if value > u8::MAX as u64 { return u8::MAX; }
+        value as u8
+    }
+}
+
+impl SaturatingFrom<u64> for u16 {
+    const fn saturating_from(value: u64) -> u16 {
+        if value > u16::MAX as u64 { return u16::MAX; }
+        value as u16
+    }
+}
+
+impl SaturatingFrom<u64> for u32 {
+    const fn saturating_from(value: u64) -> u32 {
+        if value > u32::MAX as u64 { return u32::MAX; }
+        value as u32
+    }
+}
+
+impl SaturatingFrom<u64> for usize {
+    const fn saturating_from(value: u64) -> usize { value as usize }
+}
+
+impl SaturatingFrom<usize> for i8 {
+    const fn saturating_from(value: usize) -> i8 {
+        if value > i8::MAX as usize { return i8::MAX; }
+        value as i8
+    }
+}
+
+impl SaturatingFrom<usize> for i16 {
+    const fn saturating_from(value: usize) -> i16 {
+        if value > i16::MAX as usize { return i16::MAX; }
+        value as i16
+    }
+}
+
+impl SaturatingFrom<usize> for i32 {
+    const fn saturating_from(value: usize) -> i32 {
+        if value > i32::MAX as usize { return i32::MAX; }
+        value as i32
+    }
+}
+
+impl SaturatingFrom<usize> for i64 {
+    const fn saturating_from(value: usize) -> i64 {
+        if value > i64::MAX as usize { return i64::MAX; }
+        value as i64
+    }
+}
+
+impl SaturatingFrom<usize> for isize {
+    const fn saturating_from(value: usize) -> isize {
+        if value > isize::MAX as usize { return isize::MAX; }
+        value as isize
+    }
+}
+
+impl SaturatingFrom<usize> for u8 {
+    const fn saturating_from(value: usize) -> u8 {
+        if value > u8::MAX as usize { return u8::MAX; }
+        value as u8
+    }
+}
+
+impl SaturatingFrom<usize> for u16 {
+    const fn saturating_from(value: usize) -> u16 {
+        if value > u16::MAX as usize { return u16::MAX; }
+        value as u16
+    }
+}
+
+impl SaturatingFrom<usize> for u32 {
+    const fn saturating_from(value: usize) -> u32 {
+        if value > u32::MAX as usize { return u32::MAX; }
+        value as u32
+    }
+}
+
+impl SaturatingFrom<usize> for u64 {
+    const fn saturating_from(value: usize) -> u64 { value as u64 }
+}
+
+impl SaturatingFrom<f64> for f32 {
+    const fn saturating_from(value: f64) -> f32 {
+        if value > f32::MAX as f64 { return f32::MAX; }
+        if value < f32::MIN as f64 { return f32::MIN; }
+        value as f32
+    }
+}

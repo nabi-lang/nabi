@@ -1,0 +1,195 @@
+// The Ryu d2d core (shortest digits of an f64) for values in
+// [2^-60, 2^53), with a 64-bit-halves multiply, then the digits as text:
+// `/ 10`, `% 10` and `/ 100` by constants, short loops, checked
+// arithmetic. Output matches bench/c/ryufmt.c.
+const POW5_BITCOUNT: i32 = 125;
+
+fn pow5bits(e: i32) -> i32 { ((e * 1217359) >> 19) + 1 }
+fn log10pow5(e: i32) -> i32 { (e * 732923) >> 20 }
+
+fn full_mul(a: u64, b: u64) -> (u64, u64) {
+    let a0 = a & 0xFFFFFFFFu64;
+    let a1 = a >> 32u64;
+    let b0 = b & 0xFFFFFFFFu64;
+    let b1 = b >> 32u64;
+    let p00 = a0 * b0;
+    let p01 = a0 * b1;
+    let p10 = a1 * b0;
+    let p11 = a1 * b1;
+    let mid = (p00 >> 32u64) + (p01 & 0xFFFFFFFFu64) + (p10 & 0xFFFFFFFFu64);
+    let lo = (mid << 32u64) | (p00 & 0xFFFFFFFFu64);
+    let hi = p11 + (p01 >> 32u64) + (p10 >> 32u64) + (mid >> 32u64);
+    (hi, lo)
+}
+
+fn mul_shift(m: u64, t: List<u64>, i: usize, j: u64) -> u64 {
+    let (h0, _) = full_mul(m, t[2 * i]);
+    let (h1, l1) = full_mul(m, t[2 * i + 1]);
+    let lo = h0.wrapping_add(l1);
+    let hi = h1 + if lo < h0 { 1u64 } else { 0u64 };
+    let s = j - 64u64;
+    (hi << (64u64 - s)) | (lo >> s)
+}
+
+fn make_table() -> List<u64> {
+    let t: List<u64> = List::filled(108, 0u64);
+    let hi: u64 = 0;
+    let lo: u64 = 1;
+    for i in 0..54usize {
+        let bits = if hi != 0u64 { 128u64 - hi.leading_zeros() as u64 } else { 64u64 - lo.leading_zeros() as u64 };
+        let sh = POW5_BITCOUNT as u64 - bits;
+        let h = if sh >= 64u64 { lo << (sh - 64u64) } else if sh == 0u64 { hi } else { (hi << sh) | (lo >> (64u64 - sh)) };
+        let l = if sh >= 64u64 { 0u64 } else { lo << sh };
+        t[2 * i] = l;
+        t[2 * i + 1] = h;
+        let l4 = lo << 2u64;
+        let h4 = (hi << 2u64) | (lo >> 62u64);
+        let nl = l4.wrapping_add(lo);
+        hi = h4 + hi + if nl < l4 { 1u64 } else { 0u64 };
+        lo = nl;
+    }
+    t
+}
+
+/// Shortest digits of positive `x` in [2^-60, 2^53): the digits and the
+/// exponent.
+fn d2d(x: f64, t: List<u64>) -> (u64, i32) {
+    let bits = x.to_bits();
+    let mant = bits & ((1u64 << 52u64) - 1u64);
+    let ie = ((bits >> 52u64) & 0x7FFu64) as i32;
+    let e2 = ie - 1023 - 52 - 2;
+    let m2 = (1u64 << 52u64) | mant;
+    let even = (m2 & 1u64) == 0u64;
+    let mv = 4u64 * m2;
+    let mmshift: u64 = if mant != 0u64 || ie <= 1 { 1u64 } else { 0u64 };
+    let vm_tz = false;
+    let vr_tz = false;
+    let q = log10pow5(-e2) - if -e2 > 1 { 1 } else { 0 };
+    let e10 = q + e2;
+    let i = -e2 - q;
+    let k = pow5bits(i) - POW5_BITCOUNT;
+    let j = (q - k) as u64;
+    let vr = mul_shift(4u64 * m2, t, i as usize, j);
+    let vp = mul_shift(4u64 * m2 + 2u64, t, i as usize, j);
+    let vm = mul_shift(4u64 * m2 - 1u64 - mmshift, t, i as usize, j);
+    if q <= 1 {
+        vr_tz = true;
+        if even { vm_tz = mmshift == 1u64; } else { vp -= 1u64; }
+    } else if q < 63 {
+        vr_tz = (mv & ((1u64 << q as u64) - 1u64)) == 0u64;
+    }
+    let removed: i32 = 0;
+    let out: u64 = 0;
+    if vm_tz || vr_tz {
+        let last: u64 = 0;
+        loop {
+            let vpd = vp / 10u64;
+            let vmd = vm / 10u64;
+            if vpd <= vmd { break; }
+            let vmm = vm - 10u64 * vmd;
+            let vrd = vr / 10u64;
+            let vrm = vr - 10u64 * vrd;
+            vm_tz = vm_tz && vmm == 0u64;
+            vr_tz = vr_tz && last == 0u64;
+            last = vrm;
+            vr = vrd;
+            vp = vpd;
+            vm = vmd;
+            removed += 1;
+        }
+        if vm_tz {
+            loop {
+                let vmd = vm / 10u64;
+                let vmm = vm - 10u64 * vmd;
+                if vmm != 0u64 { break; }
+                let vpd = vp / 10u64;
+                let vrd = vr / 10u64;
+                let vrm = vr - 10u64 * vrd;
+                vr_tz = vr_tz && last == 0u64;
+                last = vrm;
+                vr = vrd;
+                vp = vpd;
+                vm = vmd;
+                removed += 1;
+            }
+        }
+        if vr_tz && last == 5u64 && vr % 2u64 == 0u64 { last = 4u64; }
+        out = vr + if (vr == vm && (!even || !vm_tz)) || last >= 5u64 { 1u64 } else { 0u64 };
+    } else {
+        let up = false;
+        let vpd = vp / 100u64;
+        let vmd = vm / 100u64;
+        if vpd > vmd {
+            let vrd = vr / 100u64;
+            let vrm = vr - 100u64 * vrd;
+            up = vrm >= 50u64;
+            vr = vrd;
+            vp = vpd;
+            vm = vmd;
+            removed += 2;
+        }
+        loop {
+            let vpd = vp / 10u64;
+            let vmd = vm / 10u64;
+            if vpd <= vmd { break; }
+            let vrd = vr / 10u64;
+            let vrm = vr - 10u64 * vrd;
+            up = vrm >= 5u64;
+            vr = vrd;
+            vp = vpd;
+            vm = vmd;
+            removed += 1;
+        }
+        out = vr + if vr == vm || up { 1u64 } else { 0u64 };
+    }
+    (out, e10 + removed)
+}
+
+/// `<digits>e<exp>` of `x`.
+fn format(text: StrBuf, x: f64, t: List<u64>) {
+    let (d, e) = d2d(x, t);
+    let tmp: [u8; 20] = [0u8; 20];
+    let n: usize = 0;
+    while d >= 10u64 {
+        tmp[n] = (d % 10u64) as u8 + 48u8;
+        d = d / 10u64;
+        n += 1;
+    }
+    tmp[n] = d as u8 + 48u8;
+    n += 1;
+    unsafe {
+        for k in 0..n {
+            text.push_byte(tmp[n - 1 - k]);
+        }
+        text.push_byte(101u8);
+        if e < 0 {
+            text.push_byte(45u8);
+            e = -e;
+        }
+        if e >= 10 {
+            text.push_byte((e / 10) as u8 + 48u8);
+        }
+        text.push_byte((e % 10) as u8 + 48u8);
+        text.push_byte(32u8);
+    }
+}
+
+fn main() -> i32 {
+    let t = make_table();
+    let text = StrBuf::with_capacity(64);
+    let x: u64 = 3;
+    let sum: u64 = 0;
+    for r in 0..2000000usize {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        let b = ((1013u64 + (x >> 58u64) % 60u64) << 52u64) | (x >> 12u64);
+        format(text, f64::from_bits(b), t);
+        if text.len() > 4000 {
+            let s = text.to_str();
+            sum = sum.wrapping_mul(31u64).wrapping_add(s.len() as u64).wrapping_add(s.byte(r % 1000) as u64);
+            text.clear();
+        }
+    }
+    let s = text.to_str();
+    println(f"{sum} {s.len()} {s[0:20]}");
+    return 0;
+}

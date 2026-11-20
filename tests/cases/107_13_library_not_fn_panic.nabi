@@ -1,0 +1,13 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/107_13_library_not_fn_panic.nabi:11:27:
+// expect-stderr: `symbol::<i32>`: write the C function pointer type, `extern "C" fn(..) -> R`
+// expect-stdout:
+
+// `symbol::<T>` takes a C function pointer type; anything else panics
+// before the address is turned into a `T`.
+use bare::ffi::Library;
+
+fn main() {
+    let n = try! unsafe { Library::this().symbol::<i32>("strlen") };
+    println(f"{n}");
+}

@@ -1,0 +1,38 @@
+// expect-exit: 0
+// expect-stdout:
+// 7
+// 3
+// 1
+// 2
+// 4
+// 5
+
+// Contextual keywords are identifiers outside their fixed positions,
+// and every keyword but `self` names a field, member or argument label.
+struct Ev { type: i32; match: i32; }
+
+impl Ev {
+    fn type(self) -> i32 { return self.type + self.match; }
+}
+
+fn any(x: i32) -> i32 { return x; }
+
+fn label(in: i32, where: i32) -> i32 { return in - where; }
+
+type Num = i32;
+const LIMIT: Num = 5;
+
+fn main() -> i32 {
+    let p = Ev { type: 3, match: 4 };
+    println(f"{p.type()}");
+    println(f"{p.type}");
+    let in = 1;
+    println(f"{in}");
+    let type = 2;
+    println(f"{any(type)}");
+    println(f"{label(where: 2, in: 6)}");
+    let n: Num = LIMIT;
+    for i in 0..1 { println(f"{i + n}"); }
+    return 0;
+}
+

@@ -1,0 +1,6 @@
+// `List` without its element type is one error: the empty literal
+// under it asks nothing more.
+// expect-error: 6:9: `List` needs generic arguments
+// expect-error: help: `List` is declared `List<T>`; write it with them, e.g. `List<i32>`
+// forbid-error: cannot infer
+let ys: List = [];

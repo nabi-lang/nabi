@@ -1,0 +1,12 @@
+//! std::os::linux::process: Linux-only parts of `process`.
+//! The trait is in the prelude on Linux targets.
+
+use core::io::IoError;
+use std::os::unix::io::RawFd;
+
+/// Linux-only `Child` access.
+pub trait ChildExt {
+    /// The pidfd tracking the child (Linux 5.3+), valid until it is
+    /// reaped (`wait` / `try_wait` close it); still owned by the child.
+    fn pidfd(self) throws (IoError) -> RawFd;
+}

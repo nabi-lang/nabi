@@ -1,0 +1,36 @@
+// needs: fs
+// expect-exit: 0
+// expect-stdout:
+// log: one two
+
+
+// A struct holding a `File` must be closed too; its own `close` closes
+// the field (a struct whose close can fail implements `io::Close`).
+
+use std::fs;
+use std::fs::File;
+use core::io::{Close, IoError};
+use std::env;
+
+struct Log { f: File; lines: i32; }
+
+impl Log {
+    fn add(self, s: str) throws (IoError) -> Log {
+        try self.f.write_all(s);
+        Log { f: self.f, lines: self.lines + 1 }
+    }
+}
+
+impl Close for Log {
+    fn close(self) throws (IoError) { try self.f.close(); }
+}
+
+fn main() throws (IoError) {
+    let p = env::temp_dir() / "nabi_file_in_struct.txt";
+    let log = Log { f: try fs::create(p), lines: 0 };
+    log = try log.add("one ");
+    log = try log.add("two");
+    try log.close();
+    println(f"log: {try fs::read_to_str(p)}");
+    try fs::remove_file(p);
+}

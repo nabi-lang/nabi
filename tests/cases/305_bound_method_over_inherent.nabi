@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout:
+// 42 42 2 trait
+
+// In a generic body, `x.sqrt()` on `x: T` with `T: Root` is `Root::sqrt`,
+// whatever inherent `sqrt` the instance's type has.
+use core::num::Complex;
+
+trait Root { fn sqrt(self) -> Self; fn tag(self) -> str; }
+impl Root for Complex<f64> {
+    fn sqrt(self) -> Complex<f64> { Complex::new(42.0, 0.0) }
+    fn tag(self) -> str { "trait" }
+}
+fn g<T: Root>(x: T) -> T { x.sqrt() }
+fn t<T: Root>(x: T) -> str { x.tag() }
+
+fn main() {
+    let z = Complex::new(4.0, 0.0);
+    println(f"{g(z).re} {Root::sqrt(z).re} {z.sqrt().re} {t(z)}");
+}

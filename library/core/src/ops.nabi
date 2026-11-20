@@ -1,0 +1,696 @@
+//! Operator traits: the source of every operator token.
+//!
+//! `nabic` binds each token to the trait method carrying its `#[infix]` /
+//! `#[prefix]` / `#[postfix]`; precedence and associativity are fixed by
+//! the language. `#[lang(...)]` binds each trait to a
+//! compiler slot.
+
+/// `+`: addition.
+#[lang("add_trait")]
+pub trait Add<Rhs = Self> {
+    type Output;
+    /// `self + rhs`.
+    #[infix("+")]
+    fn add(self, rhs: Rhs) -> Output;
+}
+
+/// `%%`: floored modulo - the result takes the divisor's sign, so
+/// a positive divisor gives `[0, rhs)` (Python's `%`). No lang slot.
+pub trait Modulo<Rhs = Self> {
+    type Output;
+    /// `self %% rhs`.
+    #[infix("%%")]
+    fn modulo(self, rhs: Rhs) -> Output;
+}
+
+/// `-`: subtraction.
+#[lang("sub_trait")]
+pub trait Sub<Rhs = Self> {
+    type Output;
+    /// `self - rhs`.
+    #[infix("-")]
+    fn sub(self, rhs: Rhs) -> Output;
+}
+
+/// `*`: multiplication.
+#[lang("mul_trait")]
+pub trait Mul<Rhs = Self> {
+    type Output;
+    /// `self * rhs`.
+    #[infix("*")]
+    fn mul(self, rhs: Rhs) -> Output;
+}
+
+/// `/`: division.
+#[lang("div_trait")]
+pub trait Div<Rhs = Self> {
+    type Output;
+    /// `self / rhs`.
+    #[infix("/")]
+    fn div(self, rhs: Rhs) -> Output;
+}
+
+/// `%`: truncated remainder - the result takes the dividend's sign.
+#[lang("rem_trait")]
+pub trait Rem<Rhs = Self> {
+    type Output;
+    /// `self % rhs`.
+    #[infix("%")]
+    fn rem(self, rhs: Rhs) -> Output;
+}
+
+/// `**`: power. Binds tighter than prefix `-` and to the right:
+/// `-x**2` is `-(x**2)`, `2**3**2` is `2**(3**2)`. An integer base
+/// takes a `u32` exponent (overflow is the arithmetic's); a float base
+/// a float (`pow`) or an `i32` (`powi`).
+pub trait Pow<Rhs = Self> {
+    type Output;
+    /// `self ** rhs`.
+    #[infix("**")]
+    fn pow(self, rhs: Rhs) -> Output;
+}
+
+/// Prefix `-`: negation.
+#[lang("neg_trait")]
+pub trait Neg {
+    type Output;
+    /// `-self`.
+    #[prefix("-")]
+    fn neg(self) -> Output;
+}
+
+/// Prefix `!`: logical not.
+#[lang("not_trait")]
+pub trait Not {
+    type Output;
+    /// `!self`.
+    #[prefix("!")]
+    fn not(self) -> Output;
+}
+
+/// Prefix `~`: bitwise not.
+#[lang("bitnot_trait")]
+pub trait BitNot {
+    type Output;
+    /// `~self`.
+    #[prefix("~")]
+    fn bitnot(self) -> Output;
+}
+
+/// `&`: bitwise and.
+#[lang("bitand_trait")]
+pub trait BitAnd<Rhs = Self> {
+    type Output;
+    /// `self & rhs`.
+    #[infix("&")]
+    fn bitand(self, rhs: Rhs) -> Output;
+}
+
+/// `|`: bitwise or.
+#[lang("bitor_trait")]
+pub trait BitOr<Rhs = Self> {
+    type Output;
+    /// `self | rhs`.
+    #[infix("|")]
+    fn bitor(self, rhs: Rhs) -> Output;
+}
+
+/// `^`: bitwise xor.
+#[lang("bitxor_trait")]
+pub trait BitXor<Rhs = Self> {
+    type Output;
+    /// `self ^ rhs`.
+    #[infix("^")]
+    fn bitxor(self, rhs: Rhs) -> Output;
+}
+
+/// `<<`: shift left.
+#[lang("shl_trait")]
+pub trait Shl<Rhs = Self> {
+    type Output;
+    /// `self << rhs`.
+    #[infix("<<")]
+    fn shl(self, rhs: Rhs) -> Output;
+}
+
+/// `>>`: shift right.
+#[lang("shr_trait")]
+pub trait Shr<Rhs = Self> {
+    type Output;
+    /// `self >> rhs`.
+    #[infix(">>")]
+    fn shr(self, rhs: Rhs) -> Output;
+}
+
+/// `==` / `!=`: equality that may be partial (NaN is unequal to itself).
+#[lang("eq_trait")]
+pub trait PartialEq<Rhs = Self> {
+    /// Whether `self` equals `rhs`.
+    #[infix("==")]
+    fn eq(self, rhs: Rhs) -> bool;
+
+    /// `!=`: `!self.eq(rhs)`.
+    #[infix("!=")]
+    const fn ne(self, rhs: Rhs) -> bool { !self.eq(rhs) }
+}
+
+/// `<`, `>`, `<=`, `>=`: an order that may be partial (NaN).
+#[lang("cmp_trait")]
+pub trait PartialOrd<Rhs = Self>: PartialEq<Rhs> {
+    /// Whether `self` is less than `rhs`.
+    #[infix("<")]
+    fn lt(self, rhs: Rhs) -> bool;
+
+    /// Whether `self` is greater than `rhs`.
+    #[infix(">")]
+    fn gt(self, rhs: Rhs) -> bool;
+
+    /// Whether `self` is less than or equal to `rhs`.
+    #[infix("<=")]
+    fn le(self, rhs: Rhs) -> bool;
+
+    /// Whether `self` is greater than or equal to `rhs`.
+    #[infix(">=")]
+    fn ge(self, rhs: Rhs) -> bool;
+
+    /// The order, or `none` when the two are incomparable (NaN).
+    const fn partial_cmp(self, rhs: Rhs) -> core::cmp::Ordering | none {
+        if self.lt(rhs) { return core::cmp::Ordering::Less; }
+        if self.gt(rhs) { return core::cmp::Ordering::Greater; }
+        if self.le(rhs) { return core::cmp::Ordering::Equal; }
+        none
+    }
+}
+
+/// `&&` on a non-`bool` type; both sides are evaluated.
+#[lang("logical_and_trait")]
+pub trait LogicalAnd<Rhs = Self> {
+    /// `self && rhs`.
+    #[infix("&&")]
+    fn logical_and(self, rhs: Rhs) -> bool;
+}
+
+/// `||` on a non-`bool` type; both sides are evaluated.
+#[lang("logical_or_trait")]
+pub trait LogicalOr<Rhs = Self> {
+    /// `self || rhs`.
+    #[infix("||")]
+    fn logical_or(self, rhs: Rhs) -> bool;
+}
+
+/// A call `v(a)` on a value whose type is not a function: `call(a)`.
+/// `Args` is the one argument's type, a tuple for several (`v(a, b)` is
+/// `v.call((a, b))`) and `()` for none. `fn` values and closures are
+/// called directly and need no impl.
+#[lang("call_trait")]
+pub trait Call<Args> {
+    type Output;
+    /// `self(args)`.
+    fn call(self, args: Args) -> Output;
+}
+
+// Compound assignment: `a op= b` calls `op_assign(ref a, b)`
+// when the type implements the trait (an in-place update), else it is
+// `a = a op b`.
+
+/// `+=`
+pub trait AddAssign<Rhs = Self> {
+    /// Adds `rhs` to `self` in place.
+    #[infix("+=")]
+    fn add_assign(ref self, rhs: Rhs);
+}
+
+/// `-=`
+pub trait SubAssign<Rhs = Self> {
+    /// Subtracts `rhs` from `self` in place.
+    #[infix("-=")]
+    fn sub_assign(ref self, rhs: Rhs);
+}
+
+/// `*=`
+pub trait MulAssign<Rhs = Self> {
+    /// Multiplies `self` by `rhs` in place.
+    #[infix("*=")]
+    fn mul_assign(ref self, rhs: Rhs);
+}
+
+/// `**=`
+pub trait PowAssign<Rhs = Self> {
+    /// Raises `self` to `rhs` in place.
+    #[infix("**=")]
+    fn pow_assign(ref self, rhs: Rhs);
+}
+
+/// `/=`
+pub trait DivAssign<Rhs = Self> {
+    /// Divides `self` by `rhs` in place.
+    #[infix("/=")]
+    fn div_assign(ref self, rhs: Rhs);
+}
+
+/// `%=`
+pub trait RemAssign<Rhs = Self> {
+    /// Sets `self` to `self % rhs`.
+    #[infix("%=")]
+    fn rem_assign(ref self, rhs: Rhs);
+}
+
+/// `%%=`
+pub trait ModuloAssign<Rhs = Self> {
+    /// Sets `self` to `self %% rhs`.
+    #[infix("%%=")]
+    fn modulo_assign(ref self, rhs: Rhs);
+}
+
+/// `&=`
+pub trait BitAndAssign<Rhs = Self> {
+    /// Sets `self` to `self & rhs`.
+    #[infix("&=")]
+    fn bitand_assign(ref self, rhs: Rhs);
+}
+
+/// `|=`
+pub trait BitOrAssign<Rhs = Self> {
+    /// Sets `self` to `self | rhs`.
+    #[infix("|=")]
+    fn bitor_assign(ref self, rhs: Rhs);
+}
+
+/// `^=`
+pub trait BitXorAssign<Rhs = Self> {
+    /// Sets `self` to `self ^ rhs`.
+    #[infix("^=")]
+    fn bitxor_assign(ref self, rhs: Rhs);
+}
+
+/// `<<=`
+pub trait ShlAssign<Rhs = Self> {
+    /// Shifts `self` left by `rhs` in place.
+    #[infix("<<=")]
+    fn shl_assign(ref self, rhs: Rhs);
+}
+
+/// `>>=`
+pub trait ShrAssign<Rhs = Self> {
+    /// Shifts `self` right by `rhs` in place.
+    #[infix(">>=")]
+    fn shr_assign(ref self, rhs: Rhs);
+}
+
+// Element-wise ("broadcast") counterparts. Same precedence as their
+// scalar siblings; the only difference is the trait method they target.
+
+/// `.+`: element-wise addition.
+pub trait DotAdd<Rhs = Self> {
+    type Output;
+    /// `self .+ rhs`.
+    #[infix(".+")]
+    fn dot_add(self, rhs: Rhs) -> Output;
+}
+
+/// `.-`: element-wise subtraction.
+pub trait DotSub<Rhs = Self> {
+    type Output;
+    /// `self .- rhs`.
+    #[infix(".-")]
+    fn dot_sub(self, rhs: Rhs) -> Output;
+}
+
+/// `.*`: element-wise multiplication.
+pub trait DotMul<Rhs = Self> {
+    type Output;
+    /// `self .* rhs`.
+    #[infix(".*")]
+    fn dot_mul(self, rhs: Rhs) -> Output;
+}
+
+/// `.**`: element-wise power.
+pub trait DotPow<Rhs = Self> {
+    type Output;
+    /// `self .** rhs`.
+    #[infix(".**")]
+    fn dot_pow(self, rhs: Rhs) -> Output;
+}
+
+/// `./`: element-wise division.
+pub trait DotDiv<Rhs = Self> {
+    type Output;
+    /// `self ./ rhs`.
+    #[infix("./")]
+    fn dot_div(self, rhs: Rhs) -> Output;
+}
+
+/// `.%`: element-wise truncated remainder.
+pub trait DotRem<Rhs = Self> {
+    type Output;
+    /// `self .% rhs`.
+    #[infix(".%")]
+    fn dot_rem(self, rhs: Rhs) -> Output;
+}
+
+/// `.%%`: element-wise floored modulo.
+pub trait DotModulo<Rhs = Self> {
+    type Output;
+    /// `self .%% rhs`.
+    #[infix(".%%")]
+    fn dot_modulo(self, rhs: Rhs) -> Output;
+}
+
+/// `.==`: element-wise equality.
+pub trait DotEq<Rhs = Self> {
+    type Output;
+    /// `self .== rhs`.
+    #[infix(".==")]
+    fn dot_eq(self, rhs: Rhs) -> Output;
+}
+
+/// `.!=`: element-wise inequality.
+pub trait DotNe<Rhs = Self> {
+    type Output;
+    /// `self .!= rhs`.
+    #[infix(".!=")]
+    fn dot_ne(self, rhs: Rhs) -> Output;
+}
+
+/// `.<`: element-wise less-than.
+pub trait DotLt<Rhs = Self> {
+    type Output;
+    /// `self .< rhs`.
+    #[infix(".<")]
+    fn dot_lt(self, rhs: Rhs) -> Output;
+}
+
+/// `.>`: element-wise greater-than.
+pub trait DotGt<Rhs = Self> {
+    type Output;
+    /// `self .> rhs`.
+    #[infix(".>")]
+    fn dot_gt(self, rhs: Rhs) -> Output;
+}
+
+/// `.<=`: element-wise less-or-equal.
+pub trait DotLe<Rhs = Self> {
+    type Output;
+    /// `self .<= rhs`.
+    #[infix(".<=")]
+    fn dot_le(self, rhs: Rhs) -> Output;
+}
+
+/// `.>=`: element-wise greater-or-equal.
+pub trait DotGe<Rhs = Self> {
+    type Output;
+    /// `self .>= rhs`.
+    #[infix(".>=")]
+    fn dot_ge(self, rhs: Rhs) -> Output;
+}
+
+/// `.&&` / `.||`: element-wise, both sides always evaluated.
+pub trait DotLogicalAnd<Rhs = Self> {
+    type Output;
+    /// `self .&& rhs`.
+    #[infix(".&&")]
+    fn dot_logical_and(self, rhs: Rhs) -> Output;
+}
+
+/// `.||`: element-wise or, both sides always evaluated.
+pub trait DotLogicalOr<Rhs = Self> {
+    type Output;
+    /// `self .|| rhs`.
+    #[infix(".||")]
+    fn dot_logical_or(self, rhs: Rhs) -> Output;
+}
+
+/// `.&`: element-wise bitwise and.
+pub trait DotBitAnd<Rhs = Self> {
+    type Output;
+    /// `self .& rhs`.
+    #[infix(".&")]
+    fn dot_bitand(self, rhs: Rhs) -> Output;
+}
+
+/// `.|`: element-wise bitwise or.
+pub trait DotBitOr<Rhs = Self> {
+    type Output;
+    /// `self .| rhs`.
+    #[infix(".|")]
+    fn dot_bitor(self, rhs: Rhs) -> Output;
+}
+
+/// `.^`: element-wise bitwise xor.
+pub trait DotBitXor<Rhs = Self> {
+    type Output;
+    /// `self .^ rhs`.
+    #[infix(".^")]
+    fn dot_bitxor(self, rhs: Rhs) -> Output;
+}
+
+/// `.<<`: element-wise shift left.
+pub trait DotShl<Rhs = Self> {
+    type Output;
+    /// `self .<< rhs`.
+    #[infix(".<<")]
+    fn dot_shl(self, rhs: Rhs) -> Output;
+}
+
+/// `.>>`: element-wise shift right.
+pub trait DotShr<Rhs = Self> {
+    type Output;
+    /// `self .>> rhs`.
+    #[infix(".>>")]
+    fn dot_shr(self, rhs: Rhs) -> Output;
+}
+
+/// An operand of a fused dot expression: its elements seen as an
+/// `N`-axis array, with no copy. A dot expression whose containers are
+/// all `Broadcastable` (and whose other operands are primitives, an
+/// element type or `BroadcastScalar`) runs as one loop with no
+/// intermediate arrays, and `.=` / `.+=` .. write into one in place.
+/// `Array` implements it; a type of your own that keeps its elements in
+/// an `Array` returns that. Implementing it promises that the type's dot
+/// operators act on the viewed elements as on plain values.
+#[lang("broadcastable_trait")]
+pub trait Broadcastable<const N: usize> {
+    type Elem;
+    /// The elements as an array: a view sharing the storage.
+    fn broadcast_view(self) -> core::array::Array<Elem, N>;
+}
+
+/// A scalar operand of a fused dot expression that wraps a number (a
+/// quantity with a unit): the loop applies `broadcast_scalar` to every
+/// element, as the type's dot operators would.
+#[lang("broadcast_scalar_trait")]
+pub trait BroadcastScalar {
+    type Elem;
+    /// The plain value.
+    fn broadcast_scalar(self) -> Elem;
+}
+
+/// The container a fused dot expression returns: `out` holds the
+/// result's elements, `U`, in a fresh row-major array. A tree over
+/// arrays takes it from its leading operand (the first of the highest
+/// rank); a tree over types of your own from the type its dot operators
+/// give.
+#[lang("materialize_trait")]
+pub trait Materialize<U, const N: usize> {
+    type Output;
+    /// The result built around `out`.
+    fn materialize(out: core::array::Array<U, N>) -> Output;
+}
+
+// Unicode math operators. Each method has an ASCII
+// name, so it can be called by name too. `÷` is `Div`, and `≡ ≠ ≤ ≥`
+// are the comparison traits (the lexer reads them as `== != <= >=`).
+
+/// `×`: cross product.
+pub trait Cross<Rhs = Self> {
+    type Output;
+    /// `self × rhs`.
+    #[infix("×")]
+    fn cross(self, rhs: Rhs) -> Output;
+}
+
+/// `⋅`: dot product.
+pub trait Dot<Rhs = Self> {
+    type Output;
+    /// `self ⋅ rhs`.
+    #[infix("⋅")]
+    fn dot(self, rhs: Rhs) -> Output;
+}
+
+/// `∘`: function composition.
+pub trait Compose<Rhs> {
+    type Output;
+    /// `self ∘ rhs`.
+    #[infix("∘")]
+    fn compose(self, rhs: Rhs) -> Output;
+}
+
+/// Prefix `√`: square root.
+pub trait Sqrt {
+    type Output;
+    /// `√self`.
+    #[prefix("√")]
+    fn sqrt(self) -> Output;
+}
+
+/// `∈` / `∉`: `a ∈ s` is `s.contains(a)` (`swap`).
+pub trait Contains<Item> {
+    /// Whether `self` holds `item`.
+    #[infix("∈", swap)]
+    fn contains(self, item: Item) -> bool;
+    /// `∉`: `!self.contains(item)`.
+    #[infix("∉", swap)]
+    const fn not_contains(self, item: Item) -> bool { !self.contains(item) }
+}
+
+/// `⊂` / `⊆`: subset tests.
+pub trait Subset<Rhs = Self> {
+    /// Whether every item of `self` is in `rhs` and `rhs` has more.
+    #[infix("⊂")]
+    fn is_proper_subset(self, rhs: Rhs) -> bool;
+    /// Whether every item of `self` is in `rhs`.
+    #[infix("⊆")]
+    fn is_subset(self, rhs: Rhs) -> bool;
+}
+
+/// `∪`: union.
+pub trait Union<Rhs = Self> {
+    type Output;
+    /// `self ∪ rhs`.
+    #[infix("∪")]
+    #[must_use]
+    fn union(self, rhs: Rhs) -> Output;
+}
+
+/// `∩`: intersection.
+pub trait Intersect<Rhs = Self> {
+    type Output;
+    /// `self ∩ rhs`.
+    #[infix("∩")]
+    #[must_use]
+    fn intersection(self, rhs: Rhs) -> Output;
+}
+
+// The Unicode operators' standard implementations. Set's methods of the
+// same names are inherent (`Set::union`), so these spell out the
+// bodies over them.
+
+impl<T: PartialEq> Contains<T> for List<T> {
+    const fn contains(self, item: T) -> bool { List::contains(self, item) }
+}
+
+impl<T: Hash> Contains<T> for Set<T> {
+    fn contains(self, item: T) -> bool { Set::contains(self, item) }
+}
+
+/// The keys.
+impl<K: Hash, V> Contains<K> for Dict<K, V> {
+    const fn contains(self, item: K) -> bool { self.contains_key(item) }
+}
+
+/// A substring.
+impl Contains<str> for str {
+    const fn contains(self, item: str) -> bool { str::contains(self, item) }
+}
+
+/// A character.
+impl Contains<char> for str {
+    const fn contains(self, item: char) -> bool {
+        str::contains(self, unsafe { nabi_str_from_char(item as u32) })
+    }
+}
+
+/// `start <= item < end`.
+impl<T: PartialOrd> Contains<T> for Range<T> {
+    const fn contains(self, item: T) -> bool { self.start <= item && item < self.end }
+}
+
+/// `start <= item <= end`.
+impl<T: PartialOrd> Contains<T> for RangeInclusive<T> {
+    const fn contains(self, item: T) -> bool { self.start <= item && item <= self.end }
+}
+
+/// `start <= item`.
+impl<T: PartialOrd> Contains<T> for RangeFrom<T> {
+    const fn contains(self, item: T) -> bool { self.start <= item }
+}
+
+/// `item < end`.
+impl<T: PartialOrd> Contains<T> for RangeTo<T> {
+    const fn contains(self, item: T) -> bool { item < self.end }
+}
+
+/// `item <= end`.
+impl<T: PartialOrd> Contains<T> for RangeToInclusive<T> {
+    const fn contains(self, item: T) -> bool { item <= self.end }
+}
+
+/// Every item.
+impl<T> Contains<T> for RangeFull {
+    const fn contains(self, _item: T) -> bool { true }
+}
+
+impl<T: Hash> Subset for Set<T> {
+    const fn is_proper_subset(self, rhs: Set<T>) -> bool { self.len() < rhs.len() && Set::is_subset(self, rhs) }
+    const fn is_subset(self, rhs: Set<T>) -> bool { Set::is_subset(self, rhs) }
+}
+
+impl<T: Hash> Union for Set<T> {
+    type Output = Set<T>;
+    #[must_use]
+    const fn union(self, rhs: Set<T>) -> Set<T> { Set::union(self, rhs) }
+}
+
+impl<T: Hash> Intersect for Set<T> {
+    type Output = Set<T>;
+    #[must_use]
+    const fn intersection(self, rhs: Set<T>) -> Set<T> { Set::intersection(self, rhs) }
+}
+
+/// `a | b`: the union, as `∪`. Python: `a | b` on sets.
+impl<T: Hash, S: BuildHasher> BitOr for Set<T, S> {
+    type Output = Set<T, S>;
+    #[must_use]
+    const fn bitor(self, rhs: Set<T, S>) -> Set<T, S> { Set::union(self, rhs) }
+}
+
+/// `a & b`: the intersection, as `∩`.
+impl<T: Hash, S: BuildHasher> BitAnd for Set<T, S> {
+    type Output = Set<T, S>;
+    #[must_use]
+    const fn bitand(self, rhs: Set<T, S>) -> Set<T, S> { Set::intersection(self, rhs) }
+}
+
+/// `a - b`: the members of `a` not in `b`.
+impl<T: Hash, S: BuildHasher> Sub for Set<T, S> {
+    type Output = Set<T, S>;
+    #[must_use]
+    const fn sub(self, rhs: Set<T, S>) -> Set<T, S> { Set::difference(self, rhs) }
+}
+
+/// `a ^ b`: the members of exactly one of the two.
+impl<T: Hash, S: BuildHasher> BitXor for Set<T, S> {
+    type Output = Set<T, S>;
+    #[must_use]
+    const fn bitxor(self, rhs: Set<T, S>) -> Set<T, S> { Set::symmetric_difference(self, rhs) }
+}
+
+/// `xs + ys`: a new list, `xs`'s items then `ys`'s; neither operand
+/// changes (`xs += ys` appends in place). Element-wise addition is
+/// `.+`.
+impl<T> Add for List<T> {
+    type Output = List<T>;
+    #[must_use]
+    const fn add(self, rhs: List<T>) -> List<T> {
+        let out: List<T> = List::with_capacity(self.len() + rhs.len());
+        out.extend(self);
+        out.extend(rhs);
+        out
+    }
+}
+
+/// `(f ∘ g)(x) = f(g(x))`.
+impl<A, B, C> Compose<fn(A) -> B> for fn(B) -> C {
+    type Output = fn(A) -> C;
+    const fn compose(self, rhs: fn(A) -> B) -> fn(A) -> C { |x| self(rhs(x)) }
+}

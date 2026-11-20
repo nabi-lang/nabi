@@ -1,0 +1,269 @@
+//! Indexing + slicing traits.
+//!
+//! `arr[i]`, `arr[i,j]`, `arr[1:3]` all desugar through these
+//! traits. `xs[i]` / `xs[i] = v` on a struct or enum call `index` /
+//! `index_set`; fixed arrays and `GcBuf<T>` index directly (no call).
+//! `a[i:j:k]` calls `a.slice(i..j)` (then `.step(k)`), see
+//! `collections::slice`. Slices follow Python: bounds clamp to the
+//! length (never panic), a negative step reads them from the end.
+
+/// `a[i]` and `a[i, j]` as a read: `index(i)`.
+#[lang("index_trait")]
+pub trait Index<I> {
+    type Output;
+    /// `self[idx]`.
+    fn index(self, idx: I) -> Output;
+}
+
+/// `a[i] = v`: `index_set(i, v)`. `V` is a parameter, so one index
+/// may take several kinds of value (`a[:, 0] = 0.0` stores a scalar,
+/// `a[:, 0] = col` a column); the value's type picks the impl.
+#[lang("index_set_trait")]
+pub trait IndexSet<I, V> {
+    /// `self[idx] = value`.
+    fn index_set(self, idx: I, value: V);
+}
+
+/// `a[i:j]` (not `Slice`: that is the view type, and one glob-imported
+/// name cannot be both).
+#[lang("slice_trait")]
+pub trait Sliceable<R> {
+    type Output;
+    /// `self[range]`.
+    fn slice(self, range: R) -> Output;
+}
+
+/// A `List` / `Slice` spread `f(..xs)` into fixed
+/// parameters needs exactly as many elements as it fills.
+#[track_caller]
+#[lang("spread_len_fn")]
+pub(pkg) const fn spread_len(len: usize, want: usize) {
+    if len != want {
+        panic(f"spread of {len} elements into {want} parameters");
+    }
+}
+
+/// A `Dict` spread `f(..d)` is named arguments, so every
+/// key must name a parameter the spread may fill.
+#[track_caller]
+#[lang("spread_names_fn")]
+pub(pkg) const fn spread_names<V>(d: core::collections::dict::Dict<str, V>, names: List<str>) {
+    for k in d.keys() {
+        if !names.contains(k) {
+            panic(f"spread of key {k:?}, which names no parameter left to fill");
+        }
+    }
+}
+
+/// A defaulted parameter the dict's value type does not fit
+/// takes its default; a key naming it is an error.
+#[track_caller]
+#[lang("spread_misfit_fn")]
+pub(pkg) const fn spread_misfit<V>(d: core::collections::dict::Dict<str, V>, key: str, why: str) {
+    if d.contains_key(key) {
+        panic(f"spread of key {key:?}, {why}");
+    }
+}
+
+/// The position of a signed index `i` in a length `len` -
+/// `i` itself, or `len + i` when negative (`xs[-1]` is the last). The
+/// compiler routes every signed position (`xs[i]` / `a[i]` on a `List`,
+/// `Slice`, fixed array; slice bounds of those and of `str` / `StrBuf`)
+/// through here; an unsigned one never is. A non-negative `i` is
+/// checked by the indexed type as before; a negative one past the
+/// start panics here.
+#[track_caller]
+#[lang("index_from_end_fn")]
+pub(pkg) const fn index_from_end(i: isize, len: usize) -> usize {
+    if i >= 0 {
+        return i as usize;
+    }
+    // `-(i + 1)`: no overflow at `isize::MIN`.
+    let back = (-(i + 1)) as usize;
+    if back >= len {
+        index_neg_oob(i, len);
+    }
+    len - 1 - back
+}
+
+/// Out of line, as `index_oob`: `index_from_end` inlined into a loop
+/// keeps no frame for the message's formatting.
+#[track_caller]
+const fn index_neg_oob(i: isize, len: usize) -> ! {
+    panic(f"index {i} out of bounds for length {len}")
+}
+
+/// Panics: `{what} {i} out of bounds for length {len}`. Out of line (a
+/// panic path is never inlined), so the checked accessors calling it
+/// stay small enough to inline.
+#[track_caller]
+pub(pkg) const fn index_oob(what: str, i: usize, len: usize) -> ! {
+    panic(f"{what} {i} out of bounds for length {len}")
+}
+
+/// `r` clamped to a length `n` the way Python clamps slice bounds: the
+/// end to `n`, the start to the end (`a >= b` is empty). Every
+/// `Sliceable<Range<usize>>` impl goes through here, so `xs[5:100]` and
+/// `xs.slice(9..2)` never panic.
+pub(pkg) const fn clamp_range(r: Range<usize>, n: usize) -> Range<usize> {
+    let end = if r.end > n { n } else { r.end };
+    let start = if r.start > end { end } else { r.start };
+    start..end
+}
+
+/// A signed slice bound (`xs[-3:]`, no step): `len + i` when negative,
+/// clamped at 0 (`xs[-10:]` is the whole list). The top is clamped by
+/// `clamp_range`.
+#[lang("slice_bound_fn")]
+pub(pkg) const fn slice_bound(i: isize, len: usize) -> usize {
+    if i >= 0 {
+        return i as usize;
+    }
+    let back = (-(i + 1)) as usize;
+    if back >= len {
+        return 0;
+    }
+    len - 1 - back
+}
+
+/// Python's `slice(start, stop, step).indices(len)` as the forward range
+/// `r` for which `xs.slice(r).step(step)` is `xs[start:stop:step]` (the
+/// compiler lowers every stepped slice of a `List` / `Slice` / array
+/// this way). A missing bound is `none`: `0` / `len` when `step > 0`,
+/// the last element / before the first when `step < 0`. A step of 0
+/// panics.
+#[track_caller]
+#[lang("slice_range_fn")]
+pub(pkg) const fn slice_range(start: isize | none, stop: isize | none, step: isize, len: usize) -> Range<usize> {
+    if step == 0 {
+        panic("slice step must not be zero");
+    }
+    let n = len as isize;
+    if step > 0 {
+        let a = py_bound(start ?? 0, n, 0, n);
+        let b = py_bound(stop ?? n, n, 0, n);
+        let hi = if b < a { a } else { b };
+        return (a as usize)..(hi as usize);
+    }
+    // Walked from `a` down to just above `b`; both in `-1..n`.
+    let a = py_bound(start ?? isize::MAX, n, -1, n - 1);
+    let b = py_bound(stop ?? isize::MIN, n, -1, n - 1);
+    let lo = b + 1;
+    let hi = if a + 1 < lo { lo } else { a + 1 };
+    (lo as usize)..(hi as usize)
+}
+
+/// `xs[a:b]` (or `xs` alone, `r` = `none`) where a `SliceMut<T>` is
+/// expected: a writable view of the list.
+#[track_caller]
+#[lang("slice_mut_fn")]
+pub(pkg) const fn slice_mut<T>(xs: List<T>, r: Range<usize> | none) -> SliceMut<T> {
+    let r = r ?? (0..xs.len());
+    core::collections::slice::view_mut_of(xs, r)
+}
+
+/// Each step of a `for ref` loop over a view: panics when its list was
+/// resized since the view was made.
+#[track_caller]
+#[lang("view_live_fn")]
+pub(pkg) const fn view_live<T>(s: SliceMut<T>) {
+    s.live();
+}
+
+/// `i` (`n + i` when negative) clamped to `lo..=hi`.
+const fn py_bound(i: isize, n: isize, lo: isize, hi: isize) -> isize {
+    let x = if i < 0 { i + n } else { i };
+    if x < lo { lo } else if x > hi { hi } else { x }
+}
+
+/// `a:b:k` as an axis argument of a multi-axis index: `a[1:, ::2]` is
+/// `a[(SliceArg::new(1, none, none), SliceArg::new(none, none, 2))]`.
+/// A part left out is `none`. `indices` applies the rules of a 1-D
+/// slice: negative bounds count from the end, bounds clamp, a negative
+/// step walks backwards, a zero step panics.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[lang("slice_arg_type")]
+pub struct SliceArg {
+    pub start: isize | none;
+    pub stop: isize | none;
+    pub step: isize | none;
+}
+
+impl SliceArg {
+    /// `:`, the whole axis.
+    pub const FULL: SliceArg = SliceArg { start: none, stop: none, step: none };
+
+    /// `start:stop:step`; a part left out is `none`.
+    pub const fn new(start: isize | none, stop: isize | none, step: isize | none) -> SliceArg {
+        SliceArg { start, stop, step }
+    }
+
+    /// `(first, count, step)`: the positions `first`, `first + step`, ..
+    /// (`count` of them) this slice picks from an axis of length `len`.
+    #[track_caller]
+    pub const fn indices(self, len: usize) -> (usize, usize, isize) {
+        let k = self.step ?? 1;
+        let r = slice_range(self.start, self.stop, k, len);
+        let n = r.end - r.start;
+        if n == 0 {
+            return (r.start, 0, k);
+        }
+        // `|k|` without overflow at `isize::MIN`.
+        let by = if k > 0 { k as usize } else { (-(k + 1)) as usize + 1 };
+        let count = (n - 1) / by + 1;
+        if k > 0 {
+            return (r.start, count, k);
+        }
+        (r.end - 1, count, k)
+    }
+}
+
+/// `..` among other axis arguments (`a[.., 0]`): every axis the others
+/// leave, taken whole. At most one per index.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[lang("rest_axis_type")]
+pub struct Rest;
+
+/// `none` as an axis argument (`a[:, none]`): a new axis of length 1.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[lang("new_axis_type")]
+pub struct NewAxis;
+
+/// A type indexed by axes. In `x[..]` on such a type every integer part
+/// is an `isize` position (other integer types convert, a literal is
+/// one), `none` is `NewAxis` and `..` beside other parts is `Rest`, so
+/// one set of `Index` / `IndexSet` impls over `isize` serves every call.
+#[lang("axis_indexed_trait")]
+pub trait AxisIndexed {}
+
+/// An unsigned axis position as `isize`; past `isize::MAX` no axis is
+/// that long, so it is out of bounds.
+#[track_caller]
+#[lang("axis_from_u64_fn")]
+pub(pkg) const fn axis_from_u64(i: u64) -> isize {
+    if i > isize::MAX as u64 {
+        axis_oob_u64(i);
+    }
+    i as isize
+}
+
+/// A signed axis position as `isize` (narrower on 32-bit targets).
+#[track_caller]
+#[lang("axis_from_i64_fn")]
+pub(pkg) const fn axis_from_i64(i: i64) -> isize {
+    if i > isize::MAX as i64 || i < isize::MIN as i64 {
+        axis_oob_i64(i);
+    }
+    i as isize
+}
+
+/// Out of line, so the conversions above inline.
+#[track_caller]
+const fn axis_oob_u64(i: u64) -> ! {
+    panic(f"index {i} out of bounds")
+}
+
+#[track_caller]
+const fn axis_oob_i64(i: i64) -> ! {
+    panic(f"index {i} out of bounds")
+}

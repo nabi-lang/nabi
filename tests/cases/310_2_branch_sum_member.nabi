@@ -1,0 +1,57 @@
+// expect-exit: 0
+// expect-stdout:
+// 1 none none 1
+// 1 2 none
+// 3 x 4
+// true true true
+
+// A branch that already is a sum counts by its members: `none` beside
+// `Resp?`, `Resp` beside `Resp?` and `str` beside `i64 | str` give that
+// sum, in either order. No new sum is made.
+struct Resp { n: i32; }
+
+fn get(c: bool) -> Resp? {
+    if c { return Resp { n: 1 }; }
+    return none;
+}
+
+fn show(r: Resp?) -> str {
+    match r {
+        none => "none",
+        p: Resp => f"{p.n}",
+    }
+}
+
+fn wide(v: i64 | str) -> str {
+    match v {
+        n: i64 => f"{n}",
+        s: str => s,
+    }
+}
+
+fn main() {
+    let r = get(true);
+    let p = Resp { n: 2 };
+    let a = if true { r } else { none };
+    let b = if false { r } else { none };
+    let c = if true { none } else { r };
+    let d = if false { none } else { r };
+    println(f"{show(a)} {show(b)} {show(c)} {show(d)}");
+    let e = if true { r } else { p };
+    let g = if true { p } else { r };
+    let h = if false { r } else { none };
+    println(f"{show(e)} {show(g)} {show(h)}");
+    let w: i64 | str = 3;
+    let x = if true { w } else { "x" };
+    let y = if false { w } else { "x" };
+    let z = if true { 4 } else { w };
+    println(f"{wide(x)} {wide(y)} {wide(z)}");
+    let s: str | none = "s";
+    let wn: i64 | str | none = 5;
+    let k = if true { wn } else { s };
+    let k2 = if true { s } else { wn };
+    // An unsuffixed literal goes in as the sum's one integer member.
+    let q: i32 | none = none;
+    let l = if true { 1 } else { q };
+    println(f"{k is i64} {k2 is str} {l is i32}");
+}

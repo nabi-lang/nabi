@@ -1,0 +1,55 @@
+//! core::reflect::attr - runtime attributes: values of a
+//! `#[runtime_attribute(name)]` struct written as `#[name(..)]` on a
+//! type, field or variant, kept in read-only data.
+
+use core::reflect::info::{TypeInfo, TypeRef, attr_size, info, read, slice_at, slice_len, w};
+
+/// One runtime attribute on a type, field or variant.
+pub struct Attr {
+    at: usize;
+}
+
+impl Clone for Attr {
+    fn clone(self) -> Attr { self }
+}
+
+impl Debug for Attr {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"#[{self.type_ref().name()}]") }
+}
+
+impl Attr {
+    /// The attribute struct.
+    pub fn type_ref(self) -> TypeRef { TypeRef::at(self.at) }
+    /// Its value as an `A`, when it is one.
+    pub fn get<A>(self) -> A | none {
+        if read::<u64>(self.at + 2 * w()) != info::<A>().key_hash() {
+            return none;
+        }
+        return read::<A>(read::<usize>(self.at + 4 * w() + 8));
+    }
+}
+
+// The attribute `A` among the attributes at slice `at`.
+pub(pkg) fn find<A>(at: usize) -> A | none {
+    let want = info::<A>().key_hash();
+    let i: usize = 0;
+    while i < slice_len(at) {
+        let a = slice_at(at, i, attr_size());
+        if read::<u64>(a + 2 * w()) == want {
+            return read::<A>(read::<usize>(a + 4 * w() + 8));
+        }
+        i += 1;
+    }
+    return none;
+}
+
+// Every attribute at slice `at`.
+pub(pkg) fn all(at: usize) -> List<Attr> {
+    let out: List<Attr> = List::new();
+    let i: usize = 0;
+    while i < slice_len(at) {
+        out.push(Attr { at: slice_at(at, i, attr_size()) });
+        i += 1;
+    }
+    return out;
+}

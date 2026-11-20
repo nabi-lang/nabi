@@ -1,0 +1,20 @@
+// expect-exit: 42
+// expect-stdout:
+// 41 1
+
+// A method path value bound by an un-annotated `let` takes its `fn` type
+// from the later calls.
+
+struct Box<T> { v: T; }
+impl<T> Box<T> {
+    fn get(self) -> T { return self.v; }
+}
+
+fn main() -> i32 {
+    let f = Box::get;
+    let b = Box { v: 41 };
+    let n: i32 = f(b);
+    let g = Box::get;
+    println(f"{n} {g(Box { v: 1 })}");
+    return n + g(Box { v: 1 });
+}

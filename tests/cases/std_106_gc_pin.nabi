@@ -1,0 +1,41 @@
+// gc-stress: 50
+// expect-exit: 0
+// expect-stdout:
+// kept true 10 20 30
+// nested kept true
+// str 5 h
+// written 99
+
+// A `Pinned` guard keeps a buffer in place; pins nest.
+use bare::gc;
+use bare::ptr::Ptr;
+
+fn churn() {
+    for i in 0..2000 {
+        let _junk = f"junk{i}";
+    }
+    gc::collect();
+}
+
+fn main() {
+    let xs: List<i32> = [10, 20, 30];
+    using p = gc::pin(xs) {
+        let at = p.as_data_ptr().addr();
+        using q = gc::pin(xs) {
+            churn();
+        }
+        churn();
+        let d: Ptr<i32> = p.as_data_ptr();
+        println(f"kept {d.addr() == at} {unsafe { d.read() }} {unsafe { d.add(1).read() }} {unsafe { d.add(2).read() }}");
+        churn();
+        println(f"nested kept {p.as_data_many_ptr().addr() == at}");
+    }
+    let s = f"he{xs.len()}lo";
+    using ps = gc::pin(s) {
+        println(f"str {s.len()} {unsafe { ps.as_bytes_ptr().read() } as char}");
+    }
+    using pw = gc::pin(xs) {
+        unsafe { pw.as_data_ptr().add(1).write(99) };
+    }
+    println(f"written {xs[1]}");
+}

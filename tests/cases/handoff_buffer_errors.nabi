@@ -1,0 +1,96 @@
+// needs: threads
+// A collection's elements share what was stored into it and what is read
+// out of it: handing over either side leaves the other unusable.
+
+fn main() {
+    let (tx, rx) = channel::<List<i32>>();
+    let (tt, tr) = channel::<List<List<i32>>>();
+    read_before(tt);
+    sent_element(tx);
+    stored_then_sent(tx);
+    each_sent(tx);
+    popped_twice(tx);
+    dict_value();
+    cast_back(tx);
+    literal_twice(tx);
+    let _ = rx.recv();
+    let _ = tr.recv();
+}
+
+fn read_before(tx: Sender<List<List<i32>>>) {
+    let xs: List<i32> = [];
+    let outer: List<List<i32>> = [xs];
+    let inner = outer[0];
+    try! tx.send(outer);
+    inner.push(1);
+}
+
+fn sent_element(tx: Sender<List<i32>>) {
+    let outer: List<List<i32>> = [[1], [2]];
+    try! tx.send(outer[0]);
+    outer[1].push(1);
+}
+
+fn stored_then_sent(tx: Sender<List<i32>>) {
+    let xs: List<i32> = [];
+    let all: List<List<i32>> = [];
+    all.push(xs);
+    try! tx.send(xs);
+    all[0].push(1);
+}
+
+fn each_sent(tx: Sender<List<i32>>) {
+    let outer: List<List<i32>> = [[1], [2]];
+    for l in outer {
+        try! tx.send(l);
+    }
+    outer[0].push(3);
+}
+
+fn popped_twice(tx: Sender<List<i32>>) {
+    let xs: List<i32> = [];
+    let q: List<List<i32>> = [];
+    q.push(xs);
+    q.push(xs);
+    if let e: List<i32> = q.pop() {
+        try! tx.send(e);
+    }
+    q[0].push(1);
+}
+
+fn dict_value() {
+    let (tx, rx) = channel::<Dict<str, List<i32>>>();
+    let d: Dict<str, List<i32>> = Dict::new();
+    d.insert("a", [1]);
+    let v = d["a"];
+    try! tx.send(d);
+    v.push(2);
+    let _ = rx.recv();
+}
+
+fn cast_back(tx: Sender<List<i32>>) {
+    let xs: List<i32> = [];
+    let a: any = xs;
+    try! tx.send(xs);
+    if let ys: List<i32> = core::reflect::cast::<List<i32>>(a) {
+        ys.push(1);
+    }
+}
+
+fn literal_twice(tx: Sender<List<i32>>) {
+    let a: List<i32> = [1];
+    let q: List<List<i32>> = [a, a];
+    if let e: List<i32> = q.pop() {
+        try! tx.send(e);
+    }
+    q[0].push(9);
+}
+
+// expect-error: handoff_buffer_errors.nabi:25:5: `inner` shares `outer`, which was sent through a channel at line 24
+// expect-error: handoff_buffer_errors.nabi:31:5: `outer` still holds `outer[0]`, which was handed to another owner at line 30 (as an element, or a value one shares)
+// expect-error: handoff_buffer_errors.nabi:39:5: `all` still holds `xs`, which was handed to another owner at line 38 (as an element, or a value one shares)
+// expect-error: handoff_buffer_errors.nabi:47:5: `outer` still holds `l`, which was handed to another owner at line 45 (as an element, or a value one shares)
+// expect-error: handoff_buffer_errors.nabi:58:5: `q` may hold one object twice (stored at lines 53 and 54), and one of them was handed to another owner at line 56
+// expect-error: handoff_buffer_errors.nabi:67:5: `v` shares `d`, which was sent through a channel at line 66
+// expect-error: handoff_buffer_errors.nabi:76:9: `ys` shares `xs`, which was sent through a channel at line 74
+// expect-error: handoff_buffer_errors.nabi:86:5: `q` may hold one object twice, and one of them was handed to another owner at line 84

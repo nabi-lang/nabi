@@ -1,0 +1,16 @@
+// expect-exit: 0
+// expect-stdout:
+// expected `i32`, found `str` TypeError { expected: "i32", actual: "str" }
+// stack overflow out of memory internal compiler error InternalError
+// disk gone
+
+// `TypeError`, the fatal error types, and the
+// public `IoError::message`.
+fn show<E: Error>(e: E) -> str { f"{e}" }
+
+fn main() {
+    let t = TypeError::new("i32", "str");
+    println(f"{show(t)} {t:?}");
+    println(f"{show(StackOverflowError)} {show(OutOfMemoryError)} {show(InternalError)} {InternalError:?}");
+    println(core::io::IoError::new(core::io::IoErrorKind::Other, "disk gone").message());
+}

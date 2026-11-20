@@ -1,0 +1,13 @@
+// expect-error: no method `root` found for type `Q<3>`
+
+// `Q<3>` is no `Q<{ 2 * A }>`.
+pub struct Q<const L: i32> { v: f64; }
+pub trait Root { type Output; fn root(self) -> Output; }
+impl<const A: i32> Root for Q<{ 2 * A }> {
+    type Output = Q<A>;
+    fn root(self) -> Q<A> { Q { v: self.v.sqrt() } }
+}
+fn main() {
+    let v: Q<3> = Q { v: 9.0 };
+    let _ = v.root();
+}

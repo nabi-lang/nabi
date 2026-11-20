@@ -1,0 +1,29 @@
+// expect-exit: 0
+// expect-stdout:
+// [[1.0, 2.0], [3.0, 4.5]]
+// []
+// 3 [[1], [2, 3]]
+
+// `@rep` and `@for` nest: an inner `@for @x` walks the current row.
+#[impl_macro(mat)]
+pub @macro {
+    (@rep[sep = ";"] { @rep[sep = ","] { @x: expr } }) => {
+        [@for @x { [@for @x { @x, }], }]
+    }
+}
+
+#[impl_macro(rows)]
+pub @macro {
+    (@rep[sep = ";"] { @n: ident = @rep[sep = ","] { @x: expr } }) => {
+        { let total = 0; @for @n { total += 1; } total += 0; (total + 1, [@for @x { [@for @x { @x, }], }]) }
+    }
+}
+
+fn main() {
+    let a: List<List<f64>> = mat![1, 2; 3, 4.5];
+    println(f"{a:?}");
+    let e: List<List<f64>> = mat![];
+    println(f"{e:?}");
+    let (n, r) = rows![a = 1; b = 2, 3];
+    println(f"{n} {r:?}");
+}

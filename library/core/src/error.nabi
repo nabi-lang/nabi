@@ -1,0 +1,356 @@
+//! core::error - `Result<T, E>`, an error kept as a value.
+//! Errors travel through `throws` / `try`; `Result` is for
+//! holding one (collected results, callbacks, caches): "throw it:
+//! `throws`; keep it: `Result`". `?` does not apply to it (`T | none`
+//! only).
+//!
+//! `Ok` / `Err` are bare names where a `Result` is expected (the
+//! expected type picks the variant).
+
+/// A value or an error, kept as a value: `Ok(T)` or `Err(E)`.
+#[must_use("`Result` may hold an error that is never looked at: match on it, or write `_ = {};` to drop it")]
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+impl<T, E> Result<T, E> {
+    /// Run `f`, keeping its value or its error.
+    pub const fn catching(f: fn() throws (E) -> T) -> Result<T, E> {
+        try Result::Ok(f()) catch e { Result::Err(e) }
+    }
+
+    /// `true` for `Ok`.
+    pub const fn is_ok(self) -> bool {
+        match self {
+            Result::Ok(_) => true,
+            Result::Err(_) => false,
+        }
+    }
+
+    /// `true` for `Err`.
+    pub const fn is_err(self) -> bool {
+        match self {
+            Result::Ok(_) => false,
+            Result::Err(_) => true,
+        }
+    }
+
+    /// The value, or `none` when `self` is `Err`.
+    pub const fn ok(self) -> T | none {
+        match self {
+            Result::Ok(v) => v,
+            Result::Err(_) => none,
+        }
+    }
+
+    /// The error, or `none` when `self` is `Ok`.
+    pub fn err(self) -> E | none {
+        match self {
+            Result::Ok(_) => none,
+            Result::Err(e) => e,
+        }
+    }
+
+    /// Back into the error flow: the value, or `throw` the error.
+    pub const fn get(self) throws (E) -> T {
+        match self {
+            Result::Ok(v) => v,
+            Result::Err(e) => throw e,
+        }
+    }
+
+    /// The value; panics on `Err`, showing the error.
+    #[track_caller]
+    pub const fn unwrap(self) -> T {
+        match self {
+            Result::Ok(v) => v,
+            Result::Err(e) => panic(f"Result::unwrap: called on `Err({core::fmt::shown::<E>(e)})`; use `try r.get()` to throw it instead"),
+        }
+    }
+
+    /// The value, or `default` on `Err`.
+    pub const fn unwrap_or(self, default: T) -> T {
+        match self {
+            Result::Ok(v) => v,
+            Result::Err(_) => default,
+        }
+    }
+
+    /// The value, or `f` of the error on `Err`.
+    pub const fn unwrap_or_else(self, f: fn(E) -> T) -> T {
+        match self {
+            Result::Ok(v) => v,
+            Result::Err(e) => f(e),
+        }
+    }
+
+    /// `f` applied to the value; an `Err` passes through.
+    pub const fn map<U>(self, f: fn(T) -> U) -> Result<U, E> {
+        match self {
+            Result::Ok(v) => Result::Ok(f(v)),
+            Result::Err(e) => Result::Err(e),
+        }
+    }
+
+    /// `f` applied to the error; an `Ok` passes through.
+    pub const fn map_err<F>(self, f: fn(E) -> F) -> Result<T, F> {
+        match self {
+            Result::Ok(v) => Result::Ok(v),
+            Result::Err(e) => Result::Err(f(e)),
+        }
+    }
+
+    /// `f` of the value on `Ok`; an `Err` passes through.
+    pub const fn and_then<U>(self, f: fn(T) -> Result<U, E>) -> Result<U, E> {
+        match self {
+            Result::Ok(v) => f(v),
+            Result::Err(e) => Result::Err(e),
+        }
+    }
+
+    /// `f` of the error on `Err`; an `Ok` passes through.
+    pub const fn or_else<F>(self, f: fn(E) -> Result<T, F>) -> Result<T, F> {
+        match self {
+            Result::Ok(v) => Result::Ok(v),
+            Result::Err(e) => f(e),
+        }
+    }
+}
+
+/// A `str` that is not a valid value of the requested type
+/// (thrown by `str::parse` / `FromStr`).
+#[derive(Clone, PartialEq, Eq)]
+pub struct ParseError {
+    input: str;
+    position: usize;
+    message: str;
+}
+
+impl ParseError {
+    /// `input` failed at byte `position` because of `message`.
+    pub const fn new(input: str, position: usize, message: str) -> ParseError {
+        ParseError { input, position, message }
+    }
+
+    /// The text that did not parse.
+    pub const fn input(self) -> str { self.input }
+    /// The byte offset in `input` where parsing failed.
+    pub const fn position(self) -> usize { self.position }
+    /// Why it failed, without the input `Display` adds.
+    pub const fn message(self) -> str { self.message }
+}
+
+impl Display for ParseError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"cannot parse \"{self.input}\": {self.message}") }
+}
+
+impl Debug for ParseError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"ParseError({self})") }
+}
+
+impl Error for ParseError {}
+
+/// An invalid argument value (`FormatSpec::parse`,
+/// `hkdf::expand`, ...).
+#[derive(Clone, PartialEq, Eq)]
+pub struct ValueError {
+    message: str;
+}
+
+impl ValueError {
+    /// An error saying `message`.
+    pub const fn new(message: str) -> ValueError { ValueError { message } }
+
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { self.message }
+}
+
+impl Display for ValueError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message) }
+}
+
+impl Debug for ValueError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"ValueError({self.message:?})") }
+}
+
+impl Error for ValueError {}
+
+/// A value out of a fixed-width type's range in a checked conversion
+/// (thrown by `try_from` / `try_into`).
+#[derive(Clone, PartialEq, Eq)]
+pub struct OverflowError {
+    operation: str;
+    type_name: str;
+}
+
+impl OverflowError {
+    /// `operation` (`"try_from"`, ...) overflowed target type `type_name`
+    /// (`"i32"`, ...).
+    pub const fn new(operation: str, type_name: str) -> OverflowError {
+        OverflowError { operation, type_name }
+    }
+
+    /// The operation that overflowed: `"try_from"`, ...
+    pub const fn operation(self) -> str { self.operation }
+    /// The target type: `"i32"`, ...
+    pub const fn type_name(self) -> str { self.type_name }
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { f"{self.operation}: value out of range for `{self.type_name}`" }
+}
+
+impl Display for OverflowError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for OverflowError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"OverflowError({self})") }
+}
+
+impl Error for OverflowError {}
+
+/// A failed `TryFrom` conversion: the trait's default `Error`
+/// for impls that name no more specific one.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ConversionError {
+    message: str;
+}
+
+impl ConversionError {
+    /// An error saying `message`.
+    pub const fn new(message: str) -> ConversionError { ConversionError { message } }
+
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { self.message }
+}
+
+impl Display for ConversionError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message) }
+}
+
+impl Debug for ConversionError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"ConversionError({self.message:?})") }
+}
+
+impl Error for ConversionError {}
+
+/// A value of the wrong type.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TypeError {
+    expected: str;
+    actual: str;
+}
+
+impl TypeError {
+    /// A mismatch: `expected` was wanted, `actual` was found.
+    pub const fn new(expected: str, actual: str) -> TypeError { TypeError { expected, actual } }
+
+    /// The type that was wanted.
+    pub const fn expected(self) -> str { self.expected }
+    /// The type that was found.
+    pub const fn actual(self) -> str { self.actual }
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { f"expected `{self.expected}`, found `{self.actual}`" }
+}
+
+impl Display for TypeError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for TypeError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"TypeError {{ expected: {self.expected:?}, actual: {self.actual:?} }}")
+    }
+}
+
+impl Error for TypeError {}
+
+// Fatal errors: never thrown; the runtime reports
+// these conditions and exits with 101.
+
+/// Fatal: the stack ran out. Never thrown; the runtime reports it and
+/// exits with 101.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StackOverflowError;
+
+impl StackOverflowError {
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { "stack overflow" }
+}
+
+impl Display for StackOverflowError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for StackOverflowError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("StackOverflowError") }
+}
+
+impl Error for StackOverflowError {}
+
+/// Fatal: an allocation failed. Never thrown; the runtime reports it and
+/// exits with 101.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OutOfMemoryError;
+
+impl OutOfMemoryError {
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { "out of memory" }
+}
+
+impl Display for OutOfMemoryError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for OutOfMemoryError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("OutOfMemoryError") }
+}
+
+impl Error for OutOfMemoryError {}
+
+/// Fatal: a compiler bug reached at run time. Never thrown; the runtime
+/// reports it and exits with 101.
+#[derive(Clone, PartialEq, Eq)]
+pub struct InternalError;
+
+impl InternalError {
+    /// What went wrong, for display.
+    pub const fn message(self) -> str { "internal compiler error" }
+}
+
+impl Display for InternalError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message()) }
+}
+
+impl Debug for InternalError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("InternalError") }
+}
+
+impl Error for InternalError {}
+
+/// Every error type's surface. Untyped `throws`
+/// means `throws (any Error)`.
+pub trait Error: Display + Debug {
+    /// The error that caused this one, if any.
+    const fn source(self) -> any Error | none {
+        none
+    }
+}
+
+/// `Ok(<v:?>)` / `Err(<e:?>)`.
+impl<T: Debug, E: Debug> Debug for Result<T, E> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        match self {
+            Result::Ok(v) => {
+                try f.write_str("Ok(");
+                try Debug::fmt(v, ref f);
+            }
+            Result::Err(e) => {
+                try f.write_str("Err(");
+                try Debug::fmt(e, ref f);
+            }
+        }
+        try f.write_str(")")
+    }
+}

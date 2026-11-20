@@ -1,0 +1,52 @@
+// expect-exit: 0
+// expect-stdout:
+// 10
+// parse
+// io
+// 7
+// unit ok
+
+// Typed `throws` + `try` propagation: errors travel up as values
+// through functions whose `throws` covers them; a sum `throws (A | B)`
+// takes either.
+enum ParseError { Empty, Bad }
+enum IoError { Closed }
+
+fn parse(x: i32) throws (ParseError) -> i32 {
+    if x < 0 { throw ParseError::Bad; }
+    if x == 0 { throw ParseError::Empty; }
+    x * 2
+}
+
+fn read(x: i32) throws (IoError) -> i32 {
+    if x > 100 { throw IoError::Closed; }
+    return x;
+}
+
+// Both callees' errors propagate through the sum.
+fn load(x: i32) throws (ParseError | IoError) -> i32 {
+    let p = try parse(x);
+    try read(p)
+}
+
+// One level more: the sum passes through unchanged.
+fn outer(x: i32) throws (ParseError | IoError) -> i32 {
+    let v = try load(x);
+    return v;
+}
+
+fn check(ok: bool) throws (IoError) {
+    if !ok { throw IoError::Closed; }
+}
+
+fn main() -> i32 {
+    println(f"{try outer(5) catch _ { -1 }}");
+    try outer(-1) catch e: ParseError { println("parse"); } catch e: IoError { println("io"); };
+    try outer(60) catch e: ParseError { println("parse"); } catch e: IoError { println("io"); };
+    // `try` covers everything to its right.
+    println(f"{try parse(1) + read(5) catch _ { 0 }}");
+    try check(true) catch _ { println("unit err"); };
+    println("unit ok");
+    return 0;
+}
+

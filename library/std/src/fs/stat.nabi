@@ -1,0 +1,167 @@
+// std::fs::stat: what `stat` tells: `Metadata`, `FileType` and
+// `Permissions`.
+
+use bare::mem::{GcBuf, buf_new};
+use core::io::{IoError, IoErrorKind};
+use std::fs::File;
+use std::fs::dir::Dir;
+use std::sys::check;
+use std::time::SystemTime;
+
+/// A file's permissions: Unix permission bits (Windows: the read-only
+/// attribute; `PermissionsExt` in `std::os::unix::fs` reads and sets
+/// the bits).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Permissions {
+    pub(pkg) mode: u32;
+}
+
+impl Permissions {
+    /// No write bit for anyone.
+    pub const fn readonly(self) -> bool { (self.mode & 0o222u32) == 0u32 }
+    /// `true` clears every write bit; `false` adds the owner's write bit
+    /// only (group and others stay as they are).
+    pub const fn set_readonly(ref self, readonly: bool) {
+        if readonly {
+            self.mode = self.mode & 0o7555u32;
+        } else {
+            self.mode = self.mode | 0o200u32;
+        }
+    }
+}
+
+impl Debug for Permissions {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"Permissions {{ mode: {self.mode:#o}, readonly: {self.readonly()} }}")
+    }
+}
+
+/// `0o666` before the umask (Windows: not read-only): what a created
+/// file gets.
+impl Default for Permissions {
+    const fn default() -> Permissions { Permissions { mode: 0o666u32 } }
+}
+
+/// What a directory entry is.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileType {
+    File,
+    Dir,
+    Symlink,
+    /// A device, pipe, socket, ...
+    Other,
+}
+
+impl FileType {
+    /// `true` for a regular file.
+    pub const fn is_file(self) -> bool { self == FileType::File }
+    /// `true` for a directory.
+    pub const fn is_dir(self) -> bool { self == FileType::Dir }
+    /// `true` for a symbolic link.
+    pub const fn is_symlink(self) -> bool { self == FileType::Symlink }
+
+    const fn index(self) -> i32 {
+        match self {
+            FileType::File => 1,
+            FileType::Dir => 2,
+            FileType::Symlink => 3,
+            FileType::Other => 0,
+        }
+    }
+}
+
+impl Debug for FileType {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(match self {
+            FileType::File => "File",
+            FileType::Dir => "Dir",
+            FileType::Symlink => "Symlink",
+            FileType::Other => "Other",
+        })
+    }
+}
+
+/// `stat` of a file.
+pub struct Metadata {
+    kind: i64;
+    len: u64;
+    pub(pkg) mode: u32;
+    mtime: i64;
+    mtime_ns: i64;
+    atime: i64;
+    ctime: i64;
+    atime_ns: i64;
+    ctime_ns: i64;
+    /// Creation time, when the OS and file system keep one.
+    btime: i64;
+    btime_ns: i64;
+    has_btime: bool;
+}
+
+impl Debug for Metadata {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"Metadata {{ file_type: {self.file_type():?}, len: {self.len}, permissions: {self.permissions():?} }}") }
+}
+
+impl Metadata {
+    /// Size in bytes.
+    pub const fn len(self) -> u64 { self.len }
+    /// What the path is: file, directory, symlink or other.
+    pub const fn file_type(self) -> FileType {
+        if self.kind == 1 { return FileType::File; }
+        if self.kind == 2 { return FileType::Dir; }
+        if self.kind == 3 { return FileType::Symlink; }
+        FileType::Other
+    }
+    /// `true` for a regular file.
+    pub const fn is_file(self) -> bool { self.kind == 1 }
+    /// `true` for a directory.
+    pub const fn is_dir(self) -> bool { self.kind == 2 }
+    /// `true` for a symbolic link (only from `symlink_metadata`).
+    pub const fn is_symlink(self) -> bool { self.kind == 3 }
+    /// The permission bits.
+    pub const fn permissions(self) -> Permissions { Permissions { mode: self.mode } }
+    /// Last modification as a `SystemTime`; never throws on Unix.
+    pub const fn modified(self) throws (IoError) -> SystemTime { SystemTime::from_unix(self.mtime, self.mtime_ns as u32) }
+    /// Last access as a `SystemTime`.
+    pub const fn accessed(self) throws (IoError) -> SystemTime { SystemTime::from_unix(self.atime, self.atime_ns as u32) }
+    /// Last change of the contents or the metadata (permissions, links,
+    /// a rename) as a `SystemTime`.
+    pub const fn status_changed(self) throws (IoError) -> SystemTime { SystemTime::from_unix(self.ctime, self.ctime_ns as u32) }
+    /// Creation as a `SystemTime`; `Unsupported` where the OS or file
+    /// system keeps none (Linux before 4.11, some file systems).
+    pub const fn created(self) throws (IoError) -> SystemTime {
+        if !self.has_btime {
+            throw IoError::new(IoErrorKind::Unsupported, "creation time is not available on this platform or file system");
+        }
+        SystemTime::from_unix(self.btime, self.btime_ns as u32)
+    }
+}
+
+/// `fd`'s size as a read size hint (0: unknown, as a pipe's).
+pub(pkg) fn size_hint(fd: i32, path: str) -> usize {
+    (try stat_at(-1, path, true, fd) catch _ { return 0; }).len as usize
+}
+
+/// `stat` through the runtime: `fd >= 0` -> `fstat(fd)`.
+pub(pkg) fn stat_at(dir: i32, path: str, follow: bool, fd: i32) throws (IoError) -> Metadata {
+    unsafe {
+        let out: GcBuf<i64> = buf_new(12);
+        let f = if follow { 1 } else { 0 };
+        try check(nabi_os_stat(dir, path, f, fd, out) as i64, path);
+        Metadata {
+            kind: out[0],
+            len: out[1] as u64,
+            mode: out[2] as u32,
+            mtime: out[3],
+            mtime_ns: out[4],
+            atime: out[5],
+            ctime: out[6],
+            atime_ns: out[7],
+            ctime_ns: out[8],
+            has_btime: out[9] != 0,
+            btime: out[10],
+            btime_ns: out[11],
+        }
+    }
+}

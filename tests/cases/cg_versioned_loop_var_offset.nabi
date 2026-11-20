@@ -1,0 +1,29 @@
+// Versioned loops: an index plus a value the loop does not change
+// (`x[k + m]`) runs unchecked when `n + m` fits, else the checked loop
+// panics at the element out of bounds.
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/cg_versioned_loop_var_offset.nabi:13:16:
+// expect-stderr: index 5 out of bounds for length 5
+// expect-stdout:
+// [6, 8, 10]
+// [5, 7, 9]
+
+fn shift(x: List<i64>, y: List<i64>, n: usize, m: usize) {
+    for k in 0..n {
+        y[k] = x[k + m] * 2;
+    }
+}
+
+fn main() -> i32 {
+    let x: List<i64> = [1, 2, 3, 4, 5];
+    let y: List<i64> = [0, 0, 0];
+    shift(x, y, 3, 2);
+    println(f"{y:?}");
+    for k in 0..3usize {
+        y[k] = x[2 + k] + x[1 + k];
+    }
+    println(f"{y:?}");
+    shift(x, y, 3, 3);
+    println(f"{y:?}");
+    return 0;
+}

@@ -1,0 +1,9 @@
+// expect-error: 7:15: `⊛` (U+229B CIRCLED ASTERISK OPERATOR) is not an operator here: no trait in scope registers it
+// expect-error: help: add the package that registers it (`nabi add <name>`), or register it on a trait method: `#[infix("⊛", like = "*")]`
+// expect-error: 8:16: U+0378 is not a character
+
+// A symbol no trait registers, and a code point Unicode leaves empty.
+fn main() {
+    let a = 1 ⊛ 2;
+    let b = 2; ͸
+}

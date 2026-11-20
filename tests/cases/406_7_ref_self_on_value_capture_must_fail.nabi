@@ -1,0 +1,20 @@
+// expect-error: 14:17: `bump` takes `ref self` and changes `c`, but `c` is value-captured: the change would be lost with the closure's copy
+// expect-error: help: add `[ref c]` to the closure's capture list; to change only a copy inside the closure, copy it first (`let v = c;`)
+// expect-error: 16:23: `bump` takes `ref self` and changes `w`, but `w` is value-captured
+// expect-error: help: add `[ref w]` to the closure's capture list
+
+// A `ref self` call on a value capture changes the closure's copy, which
+// each call starts afresh: an error, like a field write.
+struct Counter { n: i32; }
+impl Counter { fn bump(ref self) -> i32 { self.n += 1; self.n } }
+struct Wrap { c: Counter; }
+
+fn main() {
+    let c = Counter { n: 0 };
+    let f = |_| c.bump();
+    let w = Wrap { c: c };
+    let g = |_| { 1 + w.c.bump() };
+    let xs = List::from_fn(3, f);
+    let ys = List::from_fn(3, g);
+    println(f"{xs:?} {ys:?}");
+}

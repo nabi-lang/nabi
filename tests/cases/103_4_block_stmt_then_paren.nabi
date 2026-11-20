@@ -1,0 +1,39 @@
+// expect-exit: 0
+// expect-stdout:
+// 9 3 1
+// 10
+
+// A block-like statement ends at its `}`: a `(` or `[` on the next line
+// starts a new expression, after `unsafe { }` too. A leading `unsafe { }`
+// is still an operand of a binary operator.
+fn sum(n: i32) -> i32 {
+    let s = 0;
+    unsafe {
+        while s < n { s += 1; }
+    }
+    (s + 1) + (s + 2)
+}
+
+fn plain(n: i32) -> i32 {
+    let s = n;
+    if s > 10 { s = 0; }
+    (s)
+}
+
+fn first(xs: List<i32>) -> i32 {
+    { }
+    [xs[0]][0]
+}
+
+fn positive(n: i32) -> bool {
+    unsafe { n } > 0
+}
+
+fn main() {
+    println(f"{sum(3)} {plain(3)} {first([1, 2])}");
+    let t = 0;
+    unsafe { t += 4; }
+    _ = (t + 1);
+    if positive(t) { t += 6; }
+    println(t);
+}

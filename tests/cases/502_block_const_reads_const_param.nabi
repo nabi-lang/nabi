@@ -1,0 +1,36 @@
+// expect-exit: 0
+// expect-stdout:
+// 2 0 4
+// 16 4
+// 12
+
+// A block `const` that reads a const parameter or an associated const
+// has a value per instance.
+trait Lanes { const N: usize; }
+impl Lanes for f32 { const N: usize = 4; }
+impl Lanes for f64 { const N: usize = 2; }
+
+fn mid<const N: usize>(xs: [i32; N]) -> i32 {
+    const HALF: usize = N / 2;
+    if N == 0 { return 0; }
+    xs[HALF]
+}
+
+fn width<T: Lanes>() -> usize {
+    const W: usize = T::N * T::N;
+    W
+}
+
+struct Ring<const CAP: usize> { len: usize }
+impl<const CAP: usize> Ring<CAP> {
+    fn bytes(self) -> usize {
+        const BYTES: usize = CAP * 4;
+        BYTES
+    }
+}
+
+fn main() {
+    println(f"{mid([1, 2, 3])} {mid::<0>([])} {mid([1, 2, 3, 4, 5, 6])}");
+    println(f"{width::<f32>()} {width::<f64>()}");
+    println(f"{Ring::<3> { len: 0 }.bytes()}");
+}

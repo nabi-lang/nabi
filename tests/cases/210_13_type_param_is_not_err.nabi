@@ -1,0 +1,8 @@
+// expect-error: mismatched types: `let _y` expects `f32`, found `T`
+// expect-error: help: a negated test gives no type to `T`; put the `f32` code in `if T is f32 { .. }`
+
+fn f<T>(x: T) {
+    if !(T is f32) { let _y: f32 = x; }
+}
+
+fn main() { f(1.0f32); }

@@ -1,0 +1,47 @@
+// needs: threads
+// expect-error: 25:34: `g.get()` is a view of what the `Mutex` behind `g` protects, and `keep` keeps it past the call
+// expect-error: help: `g`'s `using` block releases the lock while `keep` still holds it; pass a deep copy, `g.get_clone()`
+// expect-error: 33:15: `v` is a view of what the `Mutex` behind `g` protects, and `Bag::put` keeps it past the call
+// expect-error: 38:32: `g.get()` is a view of what the `Mutex` behind `g` protects, and `stash` keeps it past the call
+
+// `MutexGuard::get()` is a scoped view: a callee that keeps it (in a
+// `Cell`, a field, a capture) would let it outlive the lock, and two
+// threads would then change one list unlocked. `get_clone()` is free to
+// keep.
+use std::thread;
+
+static M: Mutex<List<i32>> = Mutex::new([]);
+
+fn keep(c: Cell<List<i32>>, xs: List<i32>) { c.set(xs); }
+
+struct Bag { c: Cell<List<i32>> }
+
+impl Bag {
+    fn put(self, xs: List<i32>) { self.c.set(xs); }
+}
+
+fn main() {
+    let c: Cell<List<i32>> = Cell::new([]);
+    using g = M.lock() { keep(c, g.get()); }
+    let t = thread::spawn(|| { for i in 0..1000 { using g = M.lock() { g.get().push(i); } } 0 });
+    for i in 0..1000 { c.take().push(i); }
+    let _ = try! t.join();
+
+    let b = Bag { c: Cell::new([]) };
+    using g = M.lock() {
+        let v = g.get();
+        b.put(v);
+    }
+
+    let saved: List<List<i32>> = [];
+    let stash: fn(List<i32>) = |xs| { saved.push(xs); };
+    using g = M.lock() { stash(g.get()); }
+
+    // Fine: a deep copy, and callees that only use the view.
+    using g = M.lock() {
+        keep(c, g.get_clone());
+        g.get().push(1);
+        g.get().extend([2, 3]);
+        println(f"{g.get().len()}");
+    }
+}

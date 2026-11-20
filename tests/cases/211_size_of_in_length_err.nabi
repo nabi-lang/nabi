@@ -1,0 +1,17 @@
+// expect-error: 9:26: array length must be a compile-time integer: asks for a type layout
+// expect-error: help: the size of `T` is known only per instance; use a const parameter (`const N: usize`) or `List<u8>`
+// expect-error: 15:5: array length must be a compile-time integer: asks for a type layout
+// expect-error: help: the size of `P` is known only once it is laid out; write the length (`[u8; 8]`), or use a const parameter (`const N: usize`) or `List<u8>`
+
+// An array length knows the size of a plain type only: a type
+// parameter's size is known per instance, a struct's once laid out.
+struct P { x: f32; y: f32; }
+fn bytes<T>() -> usize { let a: [u8; T::size()] = [0u8; 4]; a.len() }
+struct Inline<T> {
+    buf: [u8; 4 * T::size()];
+}
+fn main() {
+    let a: Inline<i32> = Inline { buf: [0u8; 16] };
+    let b: Inline<P> = Inline { buf: [0u8; 32] };
+    println(f"{a.buf.len()} {b.buf.len()} {bytes::<i32>()}");
+}

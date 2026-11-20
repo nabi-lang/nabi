@@ -1,0 +1,78 @@
+//! HMAC (RFC 2104) over any `HashAlgorithm`, SHA-2 or SHA-3.
+
+use core::crypto::HashAlgorithm;
+use core::crypto::constant_time_eq;
+use core::crypto::sha2::Digest;
+
+/// A running HMAC. A value: copying it forks the running MAC.
+pub struct Hmac {
+    inner: Digest;
+    outer: Digest;
+}
+
+impl Debug for Hmac {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Hmac { .. }") }
+}
+
+impl Hmac {
+    /// An incremental HMAC with `key` (any length; a key longer than the
+    /// block is hashed first).
+    pub fn new<B: AsBytes>(alg: HashAlgorithm, key: B) -> Hmac {
+        let k = key.byte_slice();
+        let bl = alg.block_len();
+        // The key, zero-padded to a block, in arrays: no list holds it.
+        let kb: [u8; 168] = [0u8; 168];
+        if k.len() > bl {
+            let d = Digest::new(alg);
+            d.update(k);
+            let h = d.finish_raw();
+            for i in 0..alg.output_len() { kb[i] = h[i]; }
+        } else {
+            for i in 0..k.len() { kb[i] = k[i]; }
+        }
+        let pad: [u8; 168] = [0u8; 168];
+        for i in 0..bl { pad[i] = kb[i] ^ 0x36u8; }
+        let inner = Digest::new(alg);
+        inner.update_raw(pad, bl);
+        for i in 0..bl { pad[i] = kb[i] ^ 0x5cu8; }
+        let outer = Digest::new(alg);
+        outer.update_raw(pad, bl);
+        Hmac { inner, outer }
+    }
+
+    /// The tag of `data` under `key`.
+    pub fn mac<K: AsBytes, D: AsBytes>(alg: HashAlgorithm, key: K, data: D) -> List<u8> {
+        let h = Hmac::new(alg, key);
+        h.update(data);
+        h.finish()
+    }
+
+    /// Whether `tag` is the tag of `data`, compared in constant time.
+    pub fn verify<K: AsBytes, D: AsBytes, T: AsBytes>(alg: HashAlgorithm, key: K, data: D, tag: T) -> bool {
+        constant_time_eq(Hmac::mac(alg, key, data), tag)
+    }
+
+    /// Feed `data` into the MAC; call `finish` for the tag.
+    pub fn update<B: AsBytes>(ref self, data: B) { self.inner.update(data); }
+
+    /// The tag of everything fed so far, the hash's output length.
+    pub const fn finish(self) -> List<u8> {
+        self.outer_raw().finish()
+    }
+
+    /// `update` with `b[0:len]`: secret input that is in no list.
+    pub(pkg) const fn update_raw(ref self, b: [u8; 168], len: usize) {
+        self.inner.update_raw(b, len);
+    }
+
+    /// The outer hash with the inner one absorbed (through an array).
+    pub(pkg) const fn outer_raw(self) -> Digest {
+        let alg = self.outer.algorithm();
+        let h = self.inner.finish_raw();
+        let b: [u8; 168] = [0u8; 168];
+        for i in 0..alg.output_len() { b[i] = h[i]; }
+        let o = self.outer;
+        o.update_raw(b, alg.output_len());
+        o
+    }
+}

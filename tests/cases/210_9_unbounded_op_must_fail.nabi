@@ -1,0 +1,8 @@
+// expect-error: operator `+` on `T` needs the bound `T: Add`
+
+// A generic body uses only what `T`'s bounds give, whatever a call
+// passes for `T`.
+fn double<T>(x: T) -> T {
+    x + x
+}
+println(f"{double(2)}");

@@ -1,0 +1,26 @@
+// expect-error: 14:5: `≤` is the fixed operator `<=`: the lexer reads it as `<=`, so `a ≤ b` already calls what `a <= b` calls
+// expect-error: help: implement `ops::PartialOrd` for your type: `a <= b` and `a ≤ b` both call it
+// expect-error: 16:5: `÷` is the fixed operator `/`
+// expect-error: help: implement `ops::Div` for your type: `a / b` and `a ÷ b` both call it
+// expect-error: 18:5: `≠` is the fixed operator `!=`
+// expect-error: 20:5: `.≤` is not an operator token: the lexer reads `.` and `≤` apart
+// expect-error: help: the broadcast form of `<=` is `.<=`
+// expect-error: 22:5: `.×` is not an operator token: the lexer reads `.` and `×` apart
+
+// `÷ ≡ ≠ ≤ ≥` lex as `/ == != <= >=`, so a token bound under one of those
+// spellings would never fire; a dot before a Unicode operator is no token.
+struct V { x: i32; }
+trait A {
+    #[infix("≤")]
+    fn before(self, r: V) -> bool;
+    #[infix("÷")]
+    fn split(self, r: V) -> V;
+    #[infix("≠")]
+    fn differs(self, r: V) -> bool;
+    #[infix(".≤")]
+    fn dot_before(self, r: V) -> bool;
+    #[infix(".×")]
+    fn dot_cross(self, r: V) -> V;
+}
+
+fn main() {}

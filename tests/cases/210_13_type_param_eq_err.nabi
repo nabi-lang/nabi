@@ -1,0 +1,9 @@
+// expect-error: types are compared with `is`, not `==`
+// expect-error: help: write `if T is f32`
+
+fn f<T>(_x: T) -> bool {
+    if T == f32 { return true; }
+    false
+}
+
+fn main() { println(f"{f(1.0f32)}"); }

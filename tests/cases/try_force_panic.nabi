@@ -1,0 +1,18 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/try_force_panic.nabi:15:13:
+// expect-stderr: try! failed: 3
+// expect-stderr:   raised at tests/cases/try_force_panic.nabi:10:21
+// expect-stderr:   through tests/cases/try_force_panic.nabi:15:18
+// expect-stdout:
+
+// `try!` on an error panics (exit 101); panics can't be caught.
+fn half(x: i32) throws (i32) -> i32 {
+    if x % 2 == 1 { throw x; }
+    x / 2
+}
+
+fn main() -> i32 {
+    let v = try! half(3);
+    return v;
+}
+

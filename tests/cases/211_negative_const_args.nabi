@@ -1,0 +1,18 @@
+// expect-exit: 0
+// expect-stdout: 2 2 3 -1
+
+// A negative const argument in a plain alias and in a `const` item's
+// type.
+pub struct Q<const L: i32, const T: i32> { v: f64; }
+pub type Velocity = Q<1, -1>;
+pub struct G<const L: i32> { pub v: f64; }
+pub const NEG: G<-1> = G { v: 2.0 };
+pub const POS: G<{ 0 + 3 }> = G { v: 3.0 };
+
+fn get(x: Velocity) -> f64 { x.v }
+fn level<const L: i32>(g: G<L>) -> i32 { L }
+
+fn main() {
+    let q: Q<1, -1> = Q { v: 2.0 };
+    println(f"{get(q)} {NEG.v} {POS.v} {level(NEG)}");
+}

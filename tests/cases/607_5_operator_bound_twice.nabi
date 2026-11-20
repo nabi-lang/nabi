@@ -1,0 +1,12 @@
+// expect-error: operator `+` is bound twice (`core::ops::Add::add` and `MyAdd::add2`)
+
+// One (token, position) pair binds to one trait method; a
+// user trait cannot take core's binary `+`.
+struct V { x: i32; }
+
+trait MyAdd {
+    #[infix("+")]
+    fn add2(self, rhs: Self) -> V;
+}
+
+println("unreached");

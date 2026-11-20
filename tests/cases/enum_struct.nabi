@@ -1,0 +1,32 @@
+// expect-exit: 7
+// expect-stdout:
+// 3 4
+// nothing
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+enum Maybe {
+    Some(Point),
+    Nothing,
+}
+
+fn make(present: bool) -> Maybe {
+    if present {
+        return Maybe::Some(Point { x: 3, y: 4 });
+    }
+    return Maybe::Nothing;
+}
+
+fn main() -> i32 {
+    let m = make(true);
+    if let Maybe::Some(p) = make(true) { println(f"{p.x} {p.y}"); }
+    if let Maybe::Nothing = make(false) { println("nothing"); }
+    return match m {
+        Maybe::Some(p) => p.x + p.y,
+        Maybe::Nothing => 0,
+    };
+}
+

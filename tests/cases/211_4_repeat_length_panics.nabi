@@ -1,0 +1,10 @@
+// expect-error: 9:13: evaluating the length of `[v; N]` panicked: bang
+// expect-error: help: the length runs at compile time
+// forbid-error: must be a non-negative compile-time integer
+
+// A repeat length whose evaluation panics says so, with the message.
+const fn n(s: str) -> usize { panic(s) }
+
+fn main() {
+    let a = [0; n("bang")];
+}

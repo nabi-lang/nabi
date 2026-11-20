@@ -1,0 +1,28 @@
+// expect-error: 26:15: integer literal `300` out of range for `u8`
+
+// A variable that took its type from an unsuffixed literal gets it from
+// its uses (`c`, `t`, `s`, `w` here); a value the type the uses give it
+// can't hold is reported at the literal.
+
+fn take(x: f32) {}
+
+fn count() -> i64 {
+    let c = 0;
+    c += 1;
+    c
+}
+
+fn add(x: i64) -> i64 {
+    let t = 3;
+    t + x
+}
+
+fn main() {
+    let s = -1.5;
+    take(s);
+    let w = 2;
+    let b: u8 = 7u8;
+    if w < b { }
+    let big = 300;
+    let k: u8 = big;
+}

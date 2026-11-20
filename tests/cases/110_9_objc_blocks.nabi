@@ -1,0 +1,61 @@
+// needs: objc
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// 0:pear 1:apple 2:fig
+// stopped after 2
+// sorted apple,fig,pear
+// by length fig,pear,apple
+// comparator called true
+
+// A closure parameter is a block: the method makes the block and its
+// trampoline, the closure runs each time Objective-C calls it, and it
+// stays alive while Objective-C holds a copy.
+use bare::ffi::objc::{Id, NSObject, NSString, ns};
+use bare::ptr::CPtr;
+
+#[link(name = "Foundation", kind = "framework")]
+#[objc::class(NSMutableArray)]
+extern "objc" {
+    fn array() -> Id<Self>;
+    fn addObject(self, o: Id<NSObject>);
+    fn enumerateObjectsUsingBlock(self, f: fn(Id<NSObject>, usize, CPtr<bool>));
+    fn sortedArrayUsingComparator(self, cmp: fn(Id<NSObject>, Id<NSObject>) -> isize) -> Id<NSMutableArray>;
+    fn componentsJoinedByString(self, sep: Id<NSString>) -> Id<NSString>;
+}
+
+#[objc::category(NSString)]
+extern "objc" {
+    fn compare(self, other: Id<NSString>) -> isize;
+    fn length(self) -> usize;
+}
+
+fn text(o: Id<NSObject>) -> Id<NSString> { o.downcast::<NSString>() ?? panic("not a string") }
+
+fn main() {
+    let a = NSMutableArray::array();
+    for w in ["pear", "apple", "fig"] {
+        a.addObject(ns(w));
+    }
+    let seen: List<str> = [];
+    a.enumerateObjectsUsingBlock(|o, i, stop| { seen.push(f"{i}:{o}"); });
+    println(seen.join(" "));
+    let n = 0;
+    a.enumerateObjectsUsingBlock([ref n] |o, i, stop| {
+        n += 1;
+        if i == 1 {
+            unsafe { (stop.as_ptr() ?? panic("no stop")).write(true) };
+        }
+    });
+    println(f"stopped after {n}");
+    let sorted = a.sortedArrayUsingComparator(|x, y| text(x).compare(text(y)));
+    println(f"sorted {sorted.componentsJoinedByString(ns(","))}");
+    let calls = 0;
+    let by_len = a.sortedArrayUsingComparator([ref calls] |x, y| {
+        calls += 1;
+        let (p, q) = (text(x).length(), text(y).length());
+        if p < q { -1 } else if p > q { 1 } else { 0 }
+    });
+    println(f"by length {by_len.componentsJoinedByString(ns(","))}");
+    println(f"comparator called {calls >= 2}");
+}

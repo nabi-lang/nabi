@@ -1,0 +1,107 @@
+// core::io::stdio: the standard streams: `stdin`, `stdout` and
+// `stderr`.
+
+use core::io::{BufRead, IoError, Read, Write, check, grow};
+
+/// The process's standard input, read through the runtime's shared
+/// buffer. `fill_buf` holds at most the rest of one line in the handle,
+/// so lines a handle has not consumed stay with that handle.
+pub struct Stdin {
+    line: List<u8>;
+    at: List<usize>;
+}
+
+impl Debug for Stdin {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Stdin") }
+}
+
+/// Standard output, through the runtime's buffer shared with `print`:
+/// flushed at a newline on a terminal, when full, and at exit.
+pub struct Stdout {}
+
+impl Debug for Stdout {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Stdout") }
+}
+
+/// Standard error, unbuffered, shared with `eprint`.
+pub struct Stderr {}
+
+impl Debug for Stderr {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Stderr") }
+}
+
+/// A handle to standard input.
+pub const fn stdin() -> Stdin { Stdin { line: List::new(), at: [0usize] } }
+
+/// A handle to standard output.
+pub const fn stdout() -> Stdout { Stdout {} }
+
+/// A handle to standard error.
+pub const fn stderr() -> Stderr { Stderr {} }
+
+/// One stdin read into `buf`, stopping after `delim` (`-1`: none).
+fn stdin_read(buf: SliceMut<u8>, delim: i32) throws (IoError) -> usize {
+    let (b, at, n) = unsafe { buf.raw_parts() };
+    (try check(unsafe { nabi_stdin_read(b, at, n, delim) } as i64, "stdin")) as usize
+}
+
+impl Stdin {
+    const fn held(self) -> usize { self.line.len() - self.at[0] }
+}
+
+impl Read for Stdin {
+    fn read(ref self, buf: SliceMut<u8>) throws (IoError) -> usize {
+        let h = self.held();
+        if h == 0 { return try stdin_read(buf, -1); }
+        let n = if h < buf.len() { h } else { buf.len() };
+        let s = self.at[0];
+        buf[0:n].copy_from_slice(self.line[s:s + n]);
+        self.at[0] = s + n;
+        n
+    }
+}
+
+impl BufRead for Stdin {
+    fn fill_buf(ref self) throws (IoError) -> Slice<u8> {
+        if self.held() == 0 {
+            self.line.clear();
+            self.at[0] = 0;
+            let want = 256usize;
+            let m = grow(self.line, want);
+            let k = try stdin_read(self.line[m:m + want], 10) catch e {
+                unsafe { self.line.set_len(m) };
+                throw e;
+            };
+            unsafe { self.line.set_len(m + k) };
+        }
+        self.line[self.at[0]:self.line.len()]
+    }
+
+    #[track_caller]
+    fn consume(ref self, n: usize) {
+        if n > self.held() { panic(f"Stdin::consume: {n} bytes past the {self.held()} buffered; consume at most what fill_buf returned"); }
+        self.at[0] += n;
+    }
+}
+
+impl Write for Stdout {
+    fn write<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize {
+        let (src, from, n) = unsafe { buf.byte_slice().raw_parts() };
+        try check(unsafe { nabi_stdio_write_buf(1, src, from, n) } as i64, "stdout");
+        n
+    }
+
+    fn flush(ref self) throws (IoError) {
+        try check(unsafe { nabi_stdio_flush() } as i64, "stdout");
+    }
+}
+
+impl Write for Stderr {
+    fn write<B: AsBytes>(ref self, buf: B) throws (IoError) -> usize {
+        let (src, from, n) = unsafe { buf.byte_slice().raw_parts() };
+        try check(unsafe { nabi_stdio_write_buf(2, src, from, n) } as i64, "stderr");
+        n
+    }
+
+    const fn flush(ref self) throws (IoError) {}
+}

@@ -1,0 +1,916 @@
+//! std::nabion - NABION (Nabi Object Notation, `.nabion`): one value
+//! written in Nabi literal syntax.
+//!
+//! `parse` reads a document into a `Value`, `to_str` writes the
+//! canonical form, and `ToNabion` / `FromNabion` (with `#[derive(Nabion)]`)
+//! map Nabi types to and from `Value`. The reader is a small lexer plus a
+//! recursive descent over the literal subset (the compiler's parser is not
+//! reachable at run time).
+//!
+//! Decode errors carry a `path` (`.limits["cpu"]`, `.tags[1]`); `from_str`
+//! turns it into `line:col` by re-reading the document and stopping at
+//! that path, so the happy path keeps no positions.
+
+// The reader and writer are not API: the functions below wrap them.
+mod read;
+mod reflect;
+mod write;
+
+pub use std::nabion::reflect::{from_value_any, to_value_any};
+
+/// A NABION value. `{ k: v }` with identifier keys is a `Struct` without
+/// a name; `{ "k": v }` (any value keys) and `{}` are a `Dict`. A path
+/// with `::` is a `Variant` (`E::V`, `E::V(a, k: b)`, `E::V { f: v }`);
+/// `Name(a, b)` (a tuple struct) is a `Variant` with a one-segment path.
+#[non_exhaustive]
+pub enum Value {
+    None,
+    Bool(bool),
+    Int(int),
+    Float(float),
+    Char(char),
+    Str(str),
+    List(List<Value>),
+    Dict(Dict<Value, Value>),
+    Tuple(List<Value>),
+    Struct { name: str | none; fields: Dict<str, Value>; },
+    Variant { path: str; args: List<Value>; named: Dict<str, Value>; },
+}
+
+impl Value {
+    /// The canonical text: 4-space indent, one line when it
+    /// fits in 100 columns, otherwise one element per line with a
+    /// trailing comma. A float with no NABION form (NaN, infinity, past
+    /// the `f64` range) is thrown, with its path.
+    pub fn to_str(self) throws (NabionError) -> str {
+        try writable(self);
+        write::pretty(self, 0, 0, 0)
+    }
+
+    /// What kind of value this is, for messages (`integer`, `struct`, ..).
+    pub const fn kind_name(self) -> str {
+        match self {
+            Value::None => "none",
+            Value::Bool(_) => "bool",
+            Value::Int(_) => "integer",
+            Value::Float(_) => "float",
+            Value::Char(_) => "char",
+            Value::Str(_) => "string",
+            Value::List(_) => "list",
+            Value::Dict(_) => "dict",
+            Value::Tuple(_) => "tuple",
+            Value::Struct { name, fields } => "struct",
+            Value::Variant { path, args, named } => f"variant `{path}`",
+        }
+    }
+}
+
+/// The canonical text, unchecked: a NaN / infinite float shows as `nan` /
+/// `inf` (`to_str` throws there).
+impl Display for Value {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(write::pretty(self, 0, 0, 0)) }
+}
+
+impl Debug for Value {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(write::flat(self)) }
+}
+
+/// Structural. Dict entries and fields compare as `Dict` does
+/// (order ignored); `{}` as a struct equals `{}` as a dict. Floats
+/// compare by identity (NaN equals NaN, -0.0 differs from 0.0) so `==`
+/// stays reflexive for keys.
+impl PartialEq for Value {
+    const fn eq(self, rhs: Value) -> bool {
+        match (norm(self), norm(rhs)) {
+            (Value::None, Value::None) => true,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => {
+                if a.is_nan() || b.is_nan() { return a.is_nan() && b.is_nan(); }
+                a == b && a.is_sign_negative() == b.is_sign_negative()
+            },
+            (Value::Char(a), Value::Char(b)) => a == b,
+            (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::List(a), Value::List(b)) => a == b,
+            (Value::Tuple(a), Value::Tuple(b)) => a == b,
+            (Value::Dict(a), Value::Dict(b)) => a == b,
+            (Value::Struct { name: n, fields: f }, Value::Struct { name: m, fields: g }) => {
+                let same = match n {
+                    a: str => match m {
+                        b: str => a == b,
+                        none => false,
+                    },
+                    none => m is none,
+                };
+                same && f == g
+            },
+            (Value::Variant { path: p, args: a, named: n }, Value::Variant { path: q, args: b, named: m }) => {
+                p == q && a == b && n == m
+            },
+            _ => false,
+        }
+    }
+    const fn ne(self, rhs: Value) -> bool { !self.eq(rhs) }
+}
+
+impl Eq for Value {}
+
+impl Hash for Value {
+    const fn hash<H: Hasher>(self, ref h: H) {
+        match norm(self) {
+            Value::None => h.write_u8(0u8),
+            Value::Bool(b) => { h.write_u8(1u8); b.hash(ref h); },
+            Value::Int(n) => { h.write_u8(2u8); n.hash(ref h); },
+            // Equal floats share an `f64`; every NaN hashes alike.
+            Value::Float(x) => { h.write_u8(3u8); h.write_u64(if x.is_nan() { 0u64 } else { x.to_f64().to_bits() }); },
+            Value::Char(c) => { h.write_u8(4u8); c.hash(ref h); },
+            Value::Str(s) => { h.write_u8(5u8); s.hash(ref h); },
+            Value::List(xs) => { h.write_u8(6u8); xs.hash(ref h); },
+            Value::Tuple(xs) => { h.write_u8(7u8); xs.hash(ref h); },
+            Value::Dict(d) => { h.write_u8(8u8); d.hash(ref h); },
+            Value::Struct { name, fields } => {
+                h.write_u8(9u8);
+                (name ?? "").hash(ref h);
+                fields.hash(ref h);
+            },
+            Value::Variant { path, args, named } => {
+                h.write_u8(10u8);
+                path.hash(ref h);
+                args.hash(ref h);
+                named.hash(ref h);
+            },
+        }
+    }
+}
+
+/// `{}` reads back as an empty `Dict`, so an empty unnamed `Struct` is one.
+const fn norm(v: Value) -> Value {
+    if let Value::Struct { name, fields } = v {
+        if name is none && fields.is_empty() { return Value::Dict(Dict::new()); }
+    }
+    v
+}
+
+/// A read or decode error. `line` / `col` (1-based, code points) are 0
+/// when the value did not come from text (`T::from_nabion(v)` directly);
+/// `path` names the failing part (`.servers[2].port`, empty at the root).
+#[derive(Clone, PartialEq, Eq)]
+pub struct NabionError {
+    pub(pkg) msg: str;
+    pub(pkg) line: u32;
+    pub(pkg) col: u32;
+    pub(pkg) path: str;
+    /// The error is about a field name / dict key, not its value
+    /// (`from_str` points at the key).
+    pub(pkg) on_key: bool;
+}
+
+impl NabionError {
+    /// An error with message `msg`, at no position yet.
+    pub const fn new(msg: str) -> NabionError {
+        NabionError { msg: msg, line: 0u32, col: 0u32, path: "", on_key: false }
+    }
+
+    /// `self` one level down: `seg` (`.name`, `[3]`) goes in front of the path.
+    pub const fn within(self, seg: str) -> NabionError {
+        NabionError { msg: self.msg, line: self.line, col: self.col, path: seg + self.path, on_key: self.on_key }
+    }
+
+    const fn at_key(self) -> NabionError {
+        NabionError { msg: self.msg, line: self.line, col: self.col, path: self.path, on_key: true }
+    }
+
+    /// What went wrong, without the position `Display` adds.
+    pub const fn message(self) -> str { self.msg }
+    /// 1-based line in the document; 0 when the value did not come from
+    /// text.
+    pub const fn line(self) -> u32 { self.line }
+    /// 1-based column (code points); 0 as for `line`.
+    pub const fn column(self) -> u32 { self.col }
+    /// The failing part (`.servers[2].port`); empty at the root.
+    pub const fn path(self) -> str { self.path }
+}
+
+impl Display for NabionError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let s = if self.line > 0u32 {
+            f"{self.line}:{self.col}: {self.msg}"
+        } else if self.path != "" {
+            f"at {self.path}: {self.msg}"
+        } else {
+            self.msg
+        };
+        try f.write_str(s)
+    }
+}
+
+impl Debug for NabionError {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"NabionError({self})") }
+}
+
+impl Error for NabionError {}
+
+/// A Nabi value as NABION.
+pub trait ToNabion {
+    /// `self` as a NABION value.
+    fn to_nabion(self) -> Value;
+}
+
+/// A Nabi value from NABION; the target type decides how `v` reads.
+pub trait FromNabion {
+    /// Read `v` as this type; throws `NabionError` when its shape does not
+    /// match.
+    fn from_nabion(v: Value) throws (NabionError) -> Self;
+
+    /// A struct field of this type that the document leaves out: an error,
+    /// except `T | none` (`none`).
+    const fn from_missing() throws (NabionError) -> Self {
+        throw NabionError::new("missing");
+    }
+}
+
+/// Read one NABION document.
+#[must_use]
+pub fn parse(s: str) throws (NabionError) -> Value {
+    try read::parse(s)
+}
+
+/// `v` in canonical NABION. A float with no NABION form (NaN,
+/// infinity, past the `f64` range) is thrown, with its path.
+pub fn to_str<T: ToNabion>(v: T) throws (NabionError) -> str {
+    try v.to_nabion().to_str()
+}
+
+/// `to_str` on one line, whatever its width.
+pub fn to_str_flat<T: ToNabion>(v: T) throws (NabionError) -> str {
+    let x = v.to_nabion();
+    try writable(x);
+    write::flat(x)
+}
+
+/// Throw at the first float in `v` that has no NABION form.
+fn writable(v: Value) throws (NabionError) {
+    match v {
+        Value::Float(x) => {
+            if !x.is_finite() { throw NabionError::new("NaN/infinity has no NABION form"); }
+            if !x.to_f64().is_finite() {
+                throw NabionError::new(f"float {x:e} is out of range (NABION floats are f64, up to about 1.8e308)");
+            }
+        },
+        Value::List(xs) => try writable_all(xs),
+        Value::Tuple(xs) => try writable_all(xs),
+        Value::Dict(d) => {
+            for (k, x) in d.iter() {
+                try writable(k) catch e { throw e.at_key(); };
+                try writable(x) catch e { throw e.within("[" + write::flat(k) + "]"); };
+            }
+        },
+        Value::Struct { name, fields } => try writable_fields(fields),
+        Value::Variant { path, args, named } => {
+            try writable_all(args);
+            try writable_fields(named);
+        },
+        _ => {},
+    }
+}
+
+fn writable_all(xs: List<Value>) throws (NabionError) {
+    let i = 0usize;
+    for x in xs {
+        try writable(x) catch e { throw e.within(f"[{i}]"); };
+        i += 1;
+    }
+}
+
+fn writable_fields(fs: Dict<str, Value>) throws (NabionError) {
+    for (k, x) in fs.iter() {
+        try writable(x) catch e { throw e.within("." + k); };
+    }
+}
+
+/// Read a document as a `T`; errors carry the `line:col` of the part that
+/// did not fit.
+pub fn from_str<T: FromNabion>(s: str) throws (NabionError) -> T {
+    let v = try read::parse(s);
+    try T::from_nabion(v) catch e { throw read::locate(s, e); }
+}
+
+/// `x` as a `Value` (`to_value::<T>(x)` keeps a `T | none` field whole).
+pub const fn to_value<T: ToNabion>(x: T) -> Value { x.to_nabion() }
+
+/// `v` as a `T`.
+pub const fn from_value<T: FromNabion>(v: Value) throws (NabionError) -> T {
+    try T::from_nabion(v)
+}
+
+/// `from_value`, errors placed under `seg` (`.name`, `[3]`).
+pub(pkg) const fn from_value_at<T: FromNabion>(v: Value, seg: str) throws (NabionError) -> T {
+    try T::from_nabion(v) catch e { throw e.within(seg); }
+}
+
+const fn mismatch<T>(v: Value) -> NabionError {
+    NabionError::new(f"expected {T::type_name()}, found {v.kind_name()}")
+}
+
+/// The last `::` segment of a path (`a::b::Point` -> `Point`).
+const fn last_seg(path: str) -> str {
+    match path.rfind("::") {
+        at: usize => path[at + 2:],
+        none => path,
+    }
+}
+
+// derive support (used by `#[derive(Nabion)]`): the template's names
+// are checked here, so these are `pub(pkg)`.
+
+/// The named fields read into a struct or a named variant.
+pub(pkg) struct Fields {
+    vals: Dict<str, Value>;
+    /// Each field's path segment (`.f`, or `[i]` when given by position).
+    segs: Dict<str, str>;
+    ctx: str;
+}
+
+impl Fields {
+    /// `v` as the fields of struct `name` (`Name { .. }`, `{ .. }`,
+    /// `m::Name { .. }`, or `{}`); a field not in `names` is skipped, or
+    /// an error when `deny` (`#[nabion(deny_unknown_fields)]`).
+    pub(pkg) const fn of_struct(v: Value, name: str, names: List<str>, deny: bool) throws (NabionError) -> Fields {
+        let given: Dict<str, Value> = match v {
+            Value::Struct { name: n, fields } => {
+                if let w: str = n {
+                    if last_seg(w) != name { throw NabionError::new(f"expected {name}, found `{w} {{ .. }}`"); }
+                }
+                fields
+            },
+            Value::Variant { path, args, named } => {
+                if last_seg(path) != name || !args.is_empty() {
+                    throw NabionError::new(f"expected {name}, found {v.kind_name()}");
+                }
+                named
+            },
+            Value::Dict(d) => {
+                if !d.is_empty() { throw NabionError::new(f"expected {name}, found dict"); }
+                Dict::new()
+            },
+            _ => throw NabionError::new(f"expected {name}, found {v.kind_name()}"),
+        };
+        try Fields::make(List::new(), given, name, names, deny)
+    }
+
+    /// A named variant's values: positional ones fill the fields in
+    /// order, then the named ones (`E::V(1, b: 2)`, `E::V { a: 1, b: 2 }`).
+    pub(pkg) const fn of_variant(args: List<Value>, named: Dict<str, Value>, ctx: str, names: List<str>, deny: bool) throws (NabionError) -> Fields {
+        try Fields::make(args, named, ctx, names, deny)
+    }
+
+    const fn make(args: List<Value>, named: Dict<str, Value>, ctx: str, names: List<str>, deny: bool) throws (NabionError) -> Fields {
+        let f = Fields { vals: Dict::new(), segs: Dict::new(), ctx: ctx };
+        let i = 0usize;
+        for a in args {
+            if i >= names.len() {
+                throw NabionError::new(f"{ctx} takes {names.len()} values, found {args.len()}").within(f"[{i}]");
+            }
+            f.vals.insert(names[i], a);
+            f.segs.insert(names[i], f"[{i}]");
+            i += 1;
+        }
+        for (k, v) in named.iter() {
+            if !names.iter().any(|n| n == k) {
+                if !deny { continue; }
+                throw NabionError::new(f"unknown field `{k}` in {ctx}").within("." + k).at_key();
+            }
+            if f.vals.contains_key(k) {
+                throw NabionError::new(f"field `{k}` of {ctx} is given twice").within("." + k).at_key();
+            }
+            f.vals.insert(k, v);
+            f.segs.insert(k, "." + k);
+        }
+        f
+    }
+
+    /// `true` when field `name` is present.
+    pub(pkg) const fn has(self, name: str) -> bool { self.vals.contains_key(name) }
+
+    /// Field `name` as a `T`: its value, or `T::from_missing()` when absent.
+    pub(pkg) const fn get<T: FromNabion>(self, name: str) throws (NabionError) -> T {
+        if let v: Value = self.vals.get(name) {
+            let seg = self.segs.get(name) ?? "";
+            return try from_value_at::<T>(v, seg);
+        }
+        try T::from_missing() catch _ { throw NabionError::new(f"missing field `{name}` in {self.ctx}"); }
+    }
+}
+
+/// `v` as the values of tuple struct `name` (`Name(a, b)`), `n` of them.
+pub(pkg) const fn struct_args(v: Value, name: str, n: usize) throws (NabionError) -> List<Value> {
+    match v {
+        Value::Variant { path, args, named } => {
+            if last_seg(path) == name && named.is_empty() {
+                return try count_args(args, name, n);
+            }
+        },
+        _ => {},
+    }
+    throw NabionError::new(f"expected {name}(..), found {v.kind_name()}");
+}
+
+/// `v` as a variant of enum `name`: (variant name, positional values,
+/// named values).
+pub(pkg) const fn variant_of(v: Value, name: str) throws (NabionError) -> (str, List<Value>, Dict<str, Value>) {
+    match v {
+        Value::Variant { path, args, named } => {
+            let head = match path.rfind("::") {
+                at: usize => path[:at],
+                none => throw NabionError::new(f"expected a {name} variant (`{name}::..`), found `{path}`"),
+            };
+            if last_seg(head) != name {
+                throw NabionError::new(f"expected a {name} variant, found `{path}`");
+            }
+            (last_seg(path), args, named)
+        },
+        _ => throw NabionError::new(f"expected a {name} variant, found {v.kind_name()}"),
+    }
+}
+
+/// A tuple variant's (or unit variant's, `n` = 0) values.
+pub(pkg) const fn variant_args(args: List<Value>, named: Dict<str, Value>, ctx: str, n: usize) throws (NabionError) -> List<Value> {
+    for (k, _) in named.iter() {
+        throw NabionError::new(f"{ctx} has no named fields (found `{k}`)").within("." + k).at_key();
+    }
+    try count_args(args, ctx, n)
+}
+
+const fn count_args(args: List<Value>, ctx: str, n: usize) throws (NabionError) -> List<Value> {
+    if args.len() != n {
+        let s = if n == 1 { "" } else { "s" };
+        throw NabionError::new(f"{ctx} takes {n} value{s}, found {args.len()}");
+    }
+    args
+}
+
+pub(pkg) const fn unknown_variant(v: str, ctx: str) -> NabionError {
+    NabionError::new(f"`{ctx}::{v}` is not a variant of {ctx}")
+}
+
+/// `#[derive(Nabion)]`: `ToNabion` + `FromNabion` for a struct (named ->
+/// `Name { f: v }`, tuple -> `Name(a, b)`, unit -> `Name {}`) or an enum
+/// (`E::V`, `E::V(a)`, `E::V { f: v }`). A missing field takes its
+/// default (`f: T = expr`), else `none` for `T | none`, else is an error.
+/// A field the type does not have is skipped, so a format can grow;
+/// `#[nabion(deny_unknown_fields)]` on the type makes it an error.
+#[impl_derive_attribute(Nabion, nabion(deny_unknown_fields))]
+pub @derive {
+    @where_all(std::nabion::ToNabion)
+    impl std::nabion::ToNabion for @Self {
+        fn to_nabion(self) -> std::nabion::Value {
+            @if_struct {
+                @apply_if(@Self.is_tuple) {
+                    return std::nabion::Value::Variant {
+                        path: @Self.as_str(),
+                        args: [@for_fields { std::nabion::to_value::<@field.type>(self.@field), }],
+                        named: Dict::new(),
+                    };
+                }
+                @apply_if(!@Self.is_tuple) {
+                    let fs: Dict<str, std::nabion::Value> = Dict::new();
+                    @for_fields {
+                        _ = fs.insert(@field.name.as_str(), std::nabion::to_value::<@field.type>(self.@field));
+                    }
+                    return std::nabion::Value::Struct { name: @Self.as_str(), fields: fs };
+                }
+            }
+            @if_enum {
+                return match self {
+                    @for_variants {
+                        @variant.pattern => {
+                            let args: List<std::nabion::Value> = List::new();
+                            let named: Dict<str, std::nabion::Value> = Dict::new();
+                            @apply_if(@variant.is_tuple) {
+                                @for_variant_fields {
+                                    args.push(std::nabion::to_value::<@field.type>(@field));
+                                }
+                            }
+                            @apply_if(@variant.is_named) {
+                                @for_variant_fields {
+                                    _ = named.insert(@field.name.as_str(), std::nabion::to_value::<@field.type>(@field));
+                                }
+                            }
+                            std::nabion::Value::Variant {
+                                path: @Self.as_str() + "::" + @variant.name.as_str(),
+                                args: args,
+                                named: named,
+                            }
+                        },
+                    }
+                };
+            }
+        }
+    }
+
+    @where_all(std::nabion::FromNabion)
+    impl std::nabion::FromNabion for @Self {
+        fn from_nabion(v: std::nabion::Value) throws (std::nabion::NabionError) -> Self {
+            @if_struct {
+                @apply_if(@Self.is_tuple) {
+                    let args = try std::nabion::struct_args(v, @Self.as_str(), [@for_fields { 0, }].len());
+                    return @Self(@for_fields {
+                        try std::nabion::from_value_at::<@field.type>(args[@field.name], "[" + @field.name.as_str() + "]"),
+                    });
+                }
+                @apply_if(!@Self.is_tuple) {
+                    let fs = try std::nabion::Fields::of_struct(
+                        v, @Self.as_str(), [@for_fields { @field.name.as_str(), }],
+                        @Self.has_derive_key(deny_unknown_fields));
+                    @apply_if(@Self.is_unit) {
+                        return @Self;
+                    }
+                    @apply_if(@Self.is_named) {
+                        return @Self {
+                            @for_fields {
+                                @apply_if(@field.has_default) {
+                                    @field: if fs.has(@field.name.as_str()) {
+                                        try fs.get::<@field.type>(@field.name.as_str())
+                                    } else {
+                                        @field.default
+                                    },
+                                }
+                                @apply_if(!@field.has_default) {
+                                    @field: try fs.get::<@field.type>(@field.name.as_str()),
+                                }
+                            }
+                        };
+                    }
+                }
+            }
+            @if_enum {
+                let (name, args, named) = try std::nabion::variant_of(v, @Self.as_str());
+                @for_variants {
+                    if name == @variant.name.as_str() {
+                        @apply_if(@variant.is_unit) {
+                            _ = try std::nabion::variant_args(args, named, @Self.as_str() + "::" + name, 0);
+                            return @Self.name::@variant.name;
+                        }
+                        @apply_if(@variant.is_tuple) {
+                            let xs = try std::nabion::variant_args(
+                                args, named, @Self.as_str() + "::" + name, [@for_variant_fields { 0, }].len());
+                            return @Self.name::@variant.name(@for_variant_fields {
+                                try std::nabion::from_value_at::<@field.type>(xs[@field.name], "[" + @field.name.as_str() + "]"),
+                            });
+                        }
+                        @apply_if(@variant.is_named) {
+                            let fs = try std::nabion::Fields::of_variant(
+                                args, named, @Self.as_str() + "::" + name,
+                                [@for_variant_fields { @field.name.as_str(), }],
+                                @Self.has_derive_key(deny_unknown_fields));
+                            return @Self.name::@variant.name {
+                                @for_variant_fields {
+                                    @field.name: try fs.get::<@field.type>(@field.name.as_str()),
+                                }
+                            };
+                        }
+                    }
+                }
+                throw std::nabion::unknown_variant(name, @Self.as_str());
+            }
+        }
+    }
+}
+
+impl ToNabion for Value {
+    const fn to_nabion(self) -> Value { self }
+}
+
+impl FromNabion for Value {
+    const fn from_nabion(v: Value) throws (NabionError) -> Value { v }
+}
+
+impl ToNabion for bool {
+    const fn to_nabion(self) -> Value { Value::Bool(self) }
+}
+
+impl FromNabion for bool {
+    const fn from_nabion(v: Value) throws (NabionError) -> bool {
+        match v {
+            Value::Bool(b) => b,
+            _ => throw mismatch::<bool>(v),
+        }
+    }
+}
+
+impl ToNabion for char {
+    const fn to_nabion(self) -> Value { Value::Char(self) }
+}
+
+impl FromNabion for char {
+    const fn from_nabion(v: Value) throws (NabionError) -> char {
+        match v {
+            Value::Char(c) => c,
+            _ => throw mismatch::<char>(v),
+        }
+    }
+}
+
+impl ToNabion for str {
+    const fn to_nabion(self) -> Value { Value::Str(self) }
+}
+
+impl FromNabion for str {
+    const fn from_nabion(v: Value) throws (NabionError) -> str {
+        match v {
+            Value::Str(s) => s,
+            _ => throw mismatch::<str>(v),
+        }
+    }
+}
+
+impl ToNabion for Int {
+    const fn to_nabion(self) -> Value { Value::Int(self) }
+}
+
+impl FromNabion for Int {
+    const fn from_nabion(v: Value) throws (NabionError) -> int { try int_of::<int>(v) }
+}
+
+const fn int_of<T>(v: Value) throws (NabionError) -> int {
+    match v {
+        Value::Int(n) => n,
+        _ => throw mismatch::<T>(v),
+    }
+}
+
+fn out_of_range<T>(n: int) -> NabionError {
+    NabionError::new(f"integer {n} is out of range for {T::type_name()}")
+}
+
+// ToNabion / FromNabion for every integer type.
+#[impl_macro(nabion_int)] @macro {
+    (@rep[sep = ","] { @t: ty }) => {
+        @for @t {
+            impl ToNabion for @t { const fn to_nabion(self) -> Value { Value::Int(Int::from(self)) } }
+            impl FromNabion for @t {
+                fn from_nabion(v: Value) throws (NabionError) -> @t {
+                    let n = try int_of::<@t>(v);
+                    try @t::try_from(n) catch _ { throw out_of_range::<@t>(n); }
+                }
+            }
+        }
+    }
+}
+nabion_int!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
+
+impl ToNabion for Float {
+    const fn to_nabion(self) -> Value { Value::Float(self) }
+}
+
+impl FromNabion for Float {
+    fn from_nabion(v: Value) throws (NabionError) -> float { try float_of::<float>(v) }
+}
+
+/// A float target takes an integer too.
+fn float_of<T>(v: Value) throws (NabionError) -> float {
+    match v {
+        Value::Float(x) => x,
+        Value::Int(n) => Float::from_int(n),
+        _ => throw mismatch::<T>(v),
+    }
+}
+
+impl ToNabion for f64 {
+    const fn to_nabion(self) -> Value { Value::Float(Float::from_f64(self)) }
+}
+
+impl FromNabion for f64 {
+    fn from_nabion(v: Value) throws (NabionError) -> f64 { (try float_of::<f64>(v)).to_f64() }
+}
+
+impl ToNabion for f32 {
+    // The shortest `f32` digits (`0.1`, not `0.10000000149011612`).
+    fn to_nabion(self) -> Value {
+        if !self.is_finite() { return Value::Float(Float::from_f32(self)); }
+        Value::Float(Float::from_literal(f"{self:e}"))
+    }
+}
+
+impl FromNabion for f32 {
+    fn from_nabion(v: Value) throws (NabionError) -> f32 { (try float_of::<f32>(v)).to_f64() as f32 }
+}
+
+impl<T: ToNabion> ToNabion for T | none {
+    const fn to_nabion(self) -> Value {
+        match self {
+            none => Value::None,
+            x: T => x.to_nabion(),
+        }
+    }
+}
+
+impl<T: FromNabion> FromNabion for T | none {
+    const fn from_nabion(v: Value) throws (NabionError) -> T | none {
+        match v {
+            Value::None => none,
+            _ => try T::from_nabion(v),
+        }
+    }
+
+    const fn from_missing() throws (NabionError) -> T | none { none }
+}
+
+/// The items of a list (or a tuple) value.
+const fn items_of<T>(v: Value) throws (NabionError) -> List<Value> {
+    match v {
+        Value::List(xs) => xs,
+        Value::Tuple(xs) => xs,
+        _ => throw mismatch::<T>(v),
+    }
+}
+
+impl<T: ToNabion> ToNabion for List<T> {
+    const fn to_nabion(self) -> Value {
+        let out: List<Value> = List::with_capacity(self.len());
+        for x in self { out.push(x.to_nabion()); }
+        Value::List(out)
+    }
+}
+
+impl<T: FromNabion> FromNabion for List<T> {
+    const fn from_nabion(v: Value) throws (NabionError) -> List<T> {
+        let xs = try items_of::<List<T>>(v);
+        let out: List<T> = List::with_capacity(xs.len());
+        let i = 0usize;
+        for x in xs {
+            out.push(try from_value_at::<T>(x, f"[{i}]"));
+            i += 1;
+        }
+        out
+    }
+}
+
+impl<T: ToNabion + Hash> ToNabion for Set<T> {
+    const fn to_nabion(self) -> Value {
+        let out: List<Value> = List::with_capacity(self.len());
+        for x in self { out.push(x.to_nabion()); }
+        Value::List(out)
+    }
+}
+
+impl<T: FromNabion + Hash> FromNabion for Set<T> {
+    const fn from_nabion(v: Value) throws (NabionError) -> Set<T> {
+        let out: Set<T> = Set::new();
+        for x in try List::<T>::from_nabion(v) { out.insert(x); }
+        out
+    }
+}
+
+impl<T: ToNabion, const N: usize> ToNabion for [T; N] {
+    const fn to_nabion(self) -> Value {
+        let out: List<Value> = List::with_capacity(N);
+        for i in 0..N { out.push(self[i].to_nabion()); }
+        Value::List(out)
+    }
+}
+
+impl<T: FromNabion, const N: usize> FromNabion for [T; N] {
+    const fn from_nabion(v: Value) throws (NabionError) -> [T; N] {
+        let xs = try List::<T>::from_nabion(v);
+        if xs.len() != N {
+            throw NabionError::new(f"expected {N} items, found {xs.len()}");
+        }
+        if N == 0 { throw NabionError::new("cannot read a zero-length array"); }
+        // Zero bytes fill the slots until each item is written.
+        let out = unsafe {
+            let zero: bare::mem::GcBuf<[T; N]> = bare::mem::buf_new(1);
+            zero[0]
+        };
+        for i in 0..N { out[i] = xs[i]; }
+        out
+    }
+
+    const fn from_missing() throws (NabionError) -> [T; N] {
+        throw NabionError::new("missing");
+    }
+}
+
+/// The entries of a dict value.
+const fn entries_of<T>(v: Value) throws (NabionError) -> Dict<Value, Value> {
+    match v {
+        Value::Dict(d) => d,
+        _ => throw mismatch::<T>(v),
+    }
+}
+
+/// A dict entry's key and value as `K` / `V`.
+fn entry_of<K: FromNabion, V: FromNabion>(k: Value, v: Value) throws (NabionError) -> (K, V) {
+    let seg = "[" + write::flat(k) + "]";
+    let key = try K::from_nabion(k) catch e { throw e.within(seg).at_key(); };
+    (key, try from_value_at::<V>(v, seg))
+}
+
+impl<K: ToNabion + Hash, V: ToNabion> ToNabion for Dict<K, V> {
+    const fn to_nabion(self) -> Value {
+        let out: Dict<Value, Value> = Dict::new();
+        for (k, v) in self.iter() { out.insert(k.to_nabion(), v.to_nabion()); }
+        Value::Dict(out)
+    }
+}
+
+impl<K: FromNabion + Hash, V: FromNabion> FromNabion for Dict<K, V> {
+    fn from_nabion(v: Value) throws (NabionError) -> Dict<K, V> {
+        let out: Dict<K, V> = Dict::new();
+        for (k, x) in (try entries_of::<Dict<K, V>>(v)).iter() {
+            let (key, val) = try entry_of::<K, V>(k, x);
+            out.insert(key, val);
+        }
+        out
+    }
+}
+
+/// A tuple value with `n` items (a list is taken too).
+const fn tuple_of<T>(v: Value, n: usize) throws (NabionError) -> List<Value> {
+    let xs = try items_of::<T>(v);
+    if xs.len() != n { throw NabionError::new(f"expected a {n}-tuple, found {xs.len()} items"); }
+    xs
+}
+
+// Tuples up to 6 elements.
+impl<A: ToNabion> ToNabion for (A,) {
+    fn to_nabion(self) -> Value { Value::Tuple([self.0.to_nabion()]) }
+}
+impl<A: FromNabion> FromNabion for (A,) {
+    fn from_nabion(v: Value) throws (NabionError) -> (A,) {
+        let xs = try tuple_of::<(A,)>(v, 1);
+        (try from_value_at::<A>(xs[0], "[0]"),)
+    }
+}
+impl<A: ToNabion, B: ToNabion> ToNabion for (A, B) {
+    fn to_nabion(self) -> Value { Value::Tuple([self.0.to_nabion(), self.1.to_nabion()]) }
+}
+impl<A: FromNabion, B: FromNabion> FromNabion for (A, B) {
+    const fn from_nabion(v: Value) throws (NabionError) -> (A, B) {
+        let xs = try tuple_of::<(A, B)>(v, 2);
+        (try from_value_at::<A>(xs[0], "[0]"), try from_value_at::<B>(xs[1], "[1]"))
+    }
+}
+impl<A: ToNabion, B: ToNabion, C: ToNabion> ToNabion for (A, B, C) {
+    const fn to_nabion(self) -> Value { Value::Tuple([self.0.to_nabion(), self.1.to_nabion(), self.2.to_nabion()]) }
+}
+impl<A: FromNabion, B: FromNabion, C: FromNabion> FromNabion for (A, B, C) {
+    const fn from_nabion(v: Value) throws (NabionError) -> (A, B, C) {
+        let xs = try tuple_of::<(A, B, C)>(v, 3);
+        (try from_value_at::<A>(xs[0], "[0]"), try from_value_at::<B>(xs[1], "[1]"), try from_value_at::<C>(xs[2], "[2]"))
+    }
+}
+impl<A: ToNabion, B: ToNabion, C: ToNabion, D: ToNabion> ToNabion for (A, B, C, D) {
+    fn to_nabion(self) -> Value {
+        Value::Tuple([self.0.to_nabion(), self.1.to_nabion(), self.2.to_nabion(), self.3.to_nabion()])
+    }
+}
+impl<A: FromNabion, B: FromNabion, C: FromNabion, D: FromNabion> FromNabion for (A, B, C, D) {
+    fn from_nabion(v: Value) throws (NabionError) -> (A, B, C, D) {
+        let xs = try tuple_of::<(A, B, C, D)>(v, 4);
+        (
+            try from_value_at::<A>(xs[0], "[0]"),
+            try from_value_at::<B>(xs[1], "[1]"),
+            try from_value_at::<C>(xs[2], "[2]"),
+            try from_value_at::<D>(xs[3], "[3]"),
+        )
+    }
+}
+impl<A: ToNabion, B: ToNabion, C: ToNabion, D: ToNabion, E: ToNabion> ToNabion for (A, B, C, D, E) {
+    fn to_nabion(self) -> Value {
+        Value::Tuple([self.0.to_nabion(), self.1.to_nabion(), self.2.to_nabion(), self.3.to_nabion(), self.4.to_nabion()])
+    }
+}
+impl<A: FromNabion, B: FromNabion, C: FromNabion, D: FromNabion, E: FromNabion> FromNabion for (A, B, C, D, E) {
+    fn from_nabion(v: Value) throws (NabionError) -> (A, B, C, D, E) {
+        let xs = try tuple_of::<(A, B, C, D, E)>(v, 5);
+        (
+            try from_value_at::<A>(xs[0], "[0]"),
+            try from_value_at::<B>(xs[1], "[1]"),
+            try from_value_at::<C>(xs[2], "[2]"),
+            try from_value_at::<D>(xs[3], "[3]"),
+            try from_value_at::<E>(xs[4], "[4]"),
+        )
+    }
+}
+impl<A: ToNabion, B: ToNabion, C: ToNabion, D: ToNabion, E: ToNabion, F: ToNabion> ToNabion for (A, B, C, D, E, F) {
+    fn to_nabion(self) -> Value {
+        Value::Tuple([
+            self.0.to_nabion(), self.1.to_nabion(), self.2.to_nabion(),
+            self.3.to_nabion(), self.4.to_nabion(), self.5.to_nabion(),
+        ])
+    }
+}
+impl<A: FromNabion, B: FromNabion, C: FromNabion, D: FromNabion, E: FromNabion, F: FromNabion> FromNabion for (A, B, C, D, E, F) {
+    fn from_nabion(v: Value) throws (NabionError) -> (A, B, C, D, E, F) {
+        let xs = try tuple_of::<(A, B, C, D, E, F)>(v, 6);
+        (
+            try from_value_at::<A>(xs[0], "[0]"),
+            try from_value_at::<B>(xs[1], "[1]"),
+            try from_value_at::<C>(xs[2], "[2]"),
+            try from_value_at::<D>(xs[3], "[3]"),
+            try from_value_at::<E>(xs[4], "[4]"),
+            try from_value_at::<F>(xs[5], "[5]"),
+        )
+    }
+}

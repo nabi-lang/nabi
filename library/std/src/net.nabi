@@ -1,0 +1,254 @@
+//! std::net: TCP / UDP sockets, addresses, DNS. Unix
+//! sockets are `os::unix::net`, the Linux kernel copies
+//! `os::linux::net::TcpStreamExt`.
+//!
+//! Three layers: `Socket` (domain, type, protocol and options, each call
+//! one system call), the typed `TcpStream::connect` / `TcpListener::bind` /
+//! `UdpSocket::bind` over `ToSocketAddrs`, and the free `tcp_connect` /
+//! `tcp_listen` / `udp_bind` beside them.
+//!
+//! Sockets are non-blocking underneath. Blocking calls wait in `poll`, so
+//! `set_*_timeout` bounds that wait (async uses `task::timeout`), and
+//! `set_nonblocking(true)` makes them throw `WouldBlock`. `*_async` calls
+//! suspend until the I/O driver sees the fd ready.
+//!
+//! A plain call never suspends: inside a task it blocks the
+//! worker, because a sync fn cannot suspend a stackless coroutine.
+//!
+//! `read(buf)` fills `buf[0..n]` of a `SliceMut<u8>`; writes take
+//! any `AsBytes`. No IPv6 multicast. TLS 1.3 is `tls`.
+
+pub mod tls;
+
+mod addr;
+mod socket;
+mod tcp;
+mod udp;
+
+pub(pkg) use std::net::addr::ADDR_WORDS;
+pub use std::net::addr::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs, resolve};
+pub use std::net::socket::{Domain, Protocol, Shutdown, Socket, SocketType};
+pub(pkg) use std::net::socket::{Sock, sock_of};
+pub(pkg) use std::net::tcp::{Duplex, rejoin};
+pub use std::net::tcp::{ReadHalf, TcpListener, TcpStream, WriteHalf};
+pub use std::net::udp::UdpSocket;
+
+use core::io::IoError;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::fs::File;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::os::linux::net::TcpStreamExt;
+#[cfg(target_family = "unix")]
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+#[cfg(target_os = "windows")]
+use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket, raw_socket, socket_fd};
+use std::sys::{check, would_block, region};
+
+/// `TcpListener::incoming`: a view of the listener.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `try for`, or call `try {}.collect()`")]
+pub struct Incoming {
+    pub(pkg) l: TcpListener;
+}
+
+impl !Send for Incoming {}
+impl !Sync for Incoming {}
+
+impl Debug for Incoming {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Incoming") }
+}
+
+impl TryIterator for Incoming {
+    type Item = TcpStream;
+    type Error = IoError;
+    fn next(ref self) throws (IoError) -> TcpStream | none {
+        let (s, _) = try self.l.accept();
+        s
+    }
+}
+
+#[cfg(target_family = "unix")]
+impl AsRawFd for TcpStream {
+    const fn as_raw_fd(self) -> RawFd { self.sock.fd() }
+}
+
+#[cfg(target_family = "unix")]
+impl AsRawFd for TcpListener {
+    const fn as_raw_fd(self) -> RawFd { self.sock.fd() }
+}
+
+#[cfg(target_family = "unix")]
+impl AsRawFd for UdpSocket {
+    const fn as_raw_fd(self) -> RawFd { self.sock.fd() }
+}
+
+#[cfg(target_family = "unix")]
+impl FromRawFd for TcpStream {
+    unsafe fn from_raw_fd(fd: RawFd) -> TcpStream { TcpStream { sock: sock_of(fd) } }
+}
+
+#[cfg(target_family = "unix")]
+impl FromRawFd for TcpListener {
+    unsafe fn from_raw_fd(fd: RawFd) -> TcpListener { TcpListener { sock: sock_of(fd) } }
+}
+
+#[cfg(target_family = "unix")]
+impl FromRawFd for UdpSocket {
+    unsafe fn from_raw_fd(fd: RawFd) -> UdpSocket { UdpSocket { sock: sock_of(fd) } }
+}
+
+#[cfg(target_os = "windows")]
+impl AsRawSocket for TcpStream {
+    fn as_raw_socket(self) -> RawSocket { raw_socket(self.sock.fd()) }
+}
+
+#[cfg(target_os = "windows")]
+impl AsRawSocket for TcpListener {
+    fn as_raw_socket(self) -> RawSocket { raw_socket(self.sock.fd()) }
+}
+
+#[cfg(target_os = "windows")]
+impl AsRawSocket for UdpSocket {
+    fn as_raw_socket(self) -> RawSocket { raw_socket(self.sock.fd()) }
+}
+
+#[cfg(target_os = "windows")]
+impl FromRawSocket for TcpStream {
+    unsafe fn from_raw_socket(s: RawSocket) -> TcpStream { TcpStream { sock: sock_of(socket_fd(s)) } }
+}
+
+#[cfg(target_os = "windows")]
+impl FromRawSocket for TcpListener {
+    unsafe fn from_raw_socket(s: RawSocket) -> TcpListener { TcpListener { sock: sock_of(socket_fd(s)) } }
+}
+
+#[cfg(target_os = "windows")]
+impl FromRawSocket for UdpSocket {
+    unsafe fn from_raw_socket(s: RawSocket) -> UdpSocket { UdpSocket { sock: sock_of(socket_fd(s)) } }
+}
+
+#[cfg(target_family = "unix")]
+impl AsRawFd for Socket {
+    const fn as_raw_fd(self) -> RawFd { self.sock.fd() }
+}
+
+#[cfg(target_family = "unix")]
+impl FromRawFd for Socket {
+    unsafe fn from_raw_fd(fd: RawFd) -> Socket { Socket { sock: sock_of(fd) } }
+}
+
+#[cfg(target_os = "windows")]
+impl AsRawSocket for Socket {
+    fn as_raw_socket(self) -> RawSocket { raw_socket(self.sock.fd()) }
+}
+
+#[cfg(target_os = "windows")]
+impl FromRawSocket for Socket {
+    unsafe fn from_raw_socket(s: RawSocket) -> Socket { Socket { sock: sock_of(socket_fd(s)) } }
+}
+
+#[cfg(target_family = "unix")]
+impl IntoRawFd for TcpStream {
+    fn into_raw_fd(self) -> RawFd { self.sock.give_up() }
+}
+
+#[cfg(target_os = "windows")]
+impl IntoRawSocket for TcpStream {
+    fn into_raw_socket(self) -> RawSocket { raw_socket(self.sock.give_up()) }
+}
+
+#[cfg(target_family = "unix")]
+impl IntoRawFd for TcpListener {
+    fn into_raw_fd(self) -> RawFd { self.sock.give_up() }
+}
+
+#[cfg(target_os = "windows")]
+impl IntoRawSocket for TcpListener {
+    fn into_raw_socket(self) -> RawSocket { raw_socket(self.sock.give_up()) }
+}
+
+#[cfg(target_family = "unix")]
+impl IntoRawFd for UdpSocket {
+    fn into_raw_fd(self) -> RawFd { self.sock.give_up() }
+}
+
+#[cfg(target_os = "windows")]
+impl IntoRawSocket for UdpSocket {
+    fn into_raw_socket(self) -> RawSocket { raw_socket(self.sock.give_up()) }
+}
+
+#[cfg(target_family = "unix")]
+impl IntoRawFd for Socket {
+    fn into_raw_fd(self) -> RawFd { self.sock.give_up() }
+}
+
+#[cfg(target_os = "windows")]
+impl IntoRawSocket for Socket {
+    fn into_raw_socket(self) -> RawSocket { raw_socket(self.sock.give_up()) }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl TcpStreamExt for TcpStream {
+    fn sendfile(self, ref file: File, offset: u64, count: u64) throws (IoError) -> u64 {
+        let done = 0u64;
+        while done < count {
+            let fd = try self.sock.enter();
+            let r = unsafe { nabi_net_sendfile(fd, file.fd(), (offset + done) as i64, (count - done) as usize) } as i64;
+            self.sock.done();
+            if would_block(r) {
+                try self.sock.block(1, "sendfile");
+                continue;
+            }
+            let k = try check(r, "sendfile");
+            if k == 0 { break; }
+            done += k as u64;
+        }
+        done
+    }
+
+    fn splice(self, ref src: File, count: u64) throws (IoError) -> u64 {
+        let done = 0u64;
+        while done < count {
+            let fd = try self.sock.enter();
+            let r = unsafe { nabi_net_splice(fd, src.fd(), (count - done) as usize) } as i64;
+            self.sock.done();
+            let k = try check(r, "splice");
+            if k == 0 { break; }
+            done += k as u64;
+        }
+        done
+    }
+
+    fn write_zerocopy(self, buf: List<u8>) throws (IoError) -> usize {
+        let (b, at, n) = region(buf);
+        loop {
+            let fd = try self.sock.enter();
+            let r = unsafe { nabi_net_send_zerocopy(fd, b, at, n) } as i64;
+            self.sock.done();
+            if would_block(r) {
+                try self.sock.block(1, "write_zerocopy");
+                continue;
+            }
+            return (try check(r, "write_zerocopy")) as usize;
+        }
+    }
+}
+
+/// `TcpStream::connect(addr)`.
+pub fn tcp_connect<A: ToSocketAddrs>(addr: A) throws (IoError) -> TcpStream {
+    try TcpStream::connect(addr)
+}
+
+/// `TcpStream::connect_async(addr)`.
+pub async fn tcp_connect_async<A: ToSocketAddrs>(addr: A) throws (IoError) -> TcpStream {
+    try await TcpStream::connect_async(addr)
+}
+
+/// `TcpListener::bind(addr)`.
+pub fn tcp_listen<A: ToSocketAddrs>(addr: A) throws (IoError) -> TcpListener {
+    try TcpListener::bind(addr)
+}
+
+/// `UdpSocket::bind(addr)`.
+pub fn udp_bind<A: ToSocketAddrs>(addr: A) throws (IoError) -> UdpSocket {
+    try UdpSocket::bind(addr)
+}

@@ -1,0 +1,20 @@
+// only-target: i686-pc-windows-msvc
+// expect-exit: 0
+// expect-stdout:
+// true 21 6 6
+
+// 32-bit Windows `"system"` is stdcall: the callee pops, the symbol is `_name@N`.
+extern "system" {
+    fn GetTickCount() -> u32;
+    fn MulDiv(a: i32, b: i32, c: i32) -> i32;
+    fn nabi_sum3(a: i32, b: i32, c: i32) -> i32;
+}
+
+#[export_name("nabi_sum3")]
+extern "system" fn sum3(a: i32, b: i32, c: i32) -> i32 { a + b + c }
+
+fn main() {
+    let t = unsafe { GetTickCount() };
+    let via_c = unsafe { nabi_sum3(1, 2, 3) };
+    println(f"{t > 0u32} {unsafe { MulDiv(6, 7, 2) }} {sum3(1, 2, 3)} {via_c}");
+}

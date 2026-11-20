@@ -1,0 +1,10 @@
+// expect-error: cannot find function `Path::empty` in this scope
+// expect-error: help: add `use ::std::path::Path;`
+// expect-exit: 1
+
+// Past a root module `std`, the help names the library with `::std`.
+mod std { pub fn f() -> i32 { 1 } }
+
+fn main() {
+    println(f"{std::f()} {Path::empty().is_relative()}");
+}

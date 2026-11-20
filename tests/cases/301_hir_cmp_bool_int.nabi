@@ -1,0 +1,8 @@
+// Comparing bool with an integer is a type error.
+// expect-error: operator `==` cannot be applied to `bool` and `i64`
+
+fn main() -> i32 {
+    let b = true;
+    if b == 1 { return 1; }
+    return 2;
+}

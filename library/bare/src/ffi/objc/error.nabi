@@ -1,0 +1,105 @@
+//! bare::ffi::objc::error - `NSError`, what a method that reports
+//! through a last `NSError **` parameter throws.
+
+use bare::ffi::objc::{Class, Id, NSString, Object, Sel};
+use bare::mem::transmute_unchecked;
+use bare::ptr::CPtr;
+
+extern "C" {
+    fn sel_registerName(name: str) -> Sel;
+    fn objc_getClass(name: str) -> CPtr<u8>;
+    #[link_name = "objc_msgSend"]
+    fn send_ptr(r: CPtr<u8>, s: Sel) -> CPtr<u8>;
+    #[link_name = "objc_msgSend"]
+    fn send_isize(r: CPtr<u8>, s: Sel) -> isize;
+}
+
+/// `NSError`, Foundation's error class.
+pub struct NSError {}
+
+impl Object for NSError {
+    fn name() -> str { "NSError" }
+    // Looked up, not a static reference: only a program that uses it
+    // links Foundation.
+    fn class() -> Class {
+        let c = unsafe { objc_getClass("NSError") };
+        if c.is_null() {
+            panic("`NSError` is Foundation's: link it with `#[link(name = \"Foundation\", kind = \"framework\")]`");
+        }
+        unsafe { transmute_unchecked(c) }
+    }
+}
+
+/// An `NSError` a method reported, thrown by `throws (objc::Error)`.
+pub struct Error {
+    ns: Id<NSError> | none;
+}
+
+impl Clone for Error {
+    const fn clone(self) -> Error { self }
+}
+
+impl Error {
+    /// The error the method stored through its `NSError **` (`p`, owned
+    /// by the autorelease pool); nil when it reported none.
+    #[doc(hidden)]
+    pub unsafe fn from_out(p: CPtr<u8>) -> Error { Error { ns: unsafe { Id::<NSError>::retain(p) } } }
+
+    /// The `NSError`; `none` when the method failed without one.
+    pub fn ns_error(self) -> Id<NSError> | none { self.ns }
+
+    /// `-[NSError domain]` (`"NSCocoaErrorDomain"`, ..).
+    pub fn domain(self) -> str {
+        match self.ns {
+            e: Id<NSError> => text(e, unsafe { sel_registerName("domain") }),
+            none => "",
+        }
+    }
+
+    /// `-[NSError code]`, within the domain.
+    pub fn code(self) -> isize {
+        match self.ns {
+            e: Id<NSError> => unsafe { send_isize(e.as_raw(), sel_registerName("code")) },
+            none => 0,
+        }
+    }
+
+    /// `-[NSError localizedDescription]`.
+    pub fn localizedDescription(self) -> str {
+        match self.ns {
+            e: Id<NSError> => text(e, unsafe { sel_registerName("localizedDescription") }),
+            none => "the method failed without an NSError",
+        }
+    }
+}
+
+/// The `NSString` property `get` of `e` as text.
+fn text(e: Id<NSError>, get: Sel) -> str {
+    let p = unsafe { send_ptr(e.as_raw(), get) };
+    match unsafe { Id::<NSString>::retain(p) } {
+        s: Id<NSString> => {
+            let t = s.to_str();
+            s.release_now();
+            t
+        }
+        none => "",
+    }
+}
+
+impl Display for Error {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.localizedDescription()) }
+}
+
+impl Debug for Error {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"objc::Error {{ domain: {self.domain():?}, code: {self.code()}, description: {self.localizedDescription():?} }}")
+    }
+}
+
+// Outside this module `Error` is the struct above, inside it the
+// prelude's trait.
+mod error_trait {
+    use bare::ffi::objc::error::Error as ObjcError;
+
+    impl Error for ObjcError {}
+}

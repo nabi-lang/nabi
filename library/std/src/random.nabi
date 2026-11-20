@@ -1,0 +1,522 @@
+//! std::random - cryptographically secure random bytes from the OS
+//! (`getrandom` on Linux, `getentropy` on macOS, `BCryptGenRandom` on
+//! Windows, `random_get` on WASI), seedable generators (`Rng`) with
+//! ranges of any integer type and the common distributions, and one-call
+//! forms over a shared generator. A failing OS source is not
+//! recoverable: it panics. The algorithms that use the bytes are
+//! `core::crypto`.
+
+mod dist;
+mod range;
+mod tables;
+
+use bare::mem::GcBuf;
+use core::array::Array;
+use core::crypto::Secret;
+
+/// Overwrite every byte of `buf` with random bytes. A `List<u8>`
+/// passes as a view of all of it.
+pub fn fill(buf: SliceMut<u8>) {
+    fill_view("random::fill", buf);
+}
+
+fn fill_view(what: str, buf: SliceMut<u8>) {
+    let (b, off, len) = unsafe { buf.raw_parts() };
+    fill_raw(what, b, off, len);
+}
+
+/// `n` random bytes.
+pub fn bytes(n: usize) -> List<u8> {
+    let out: List<u8> = List::with_capacity(n);
+    for _ in 0..n { out.push(0u8); }
+    fill_view("random::bytes", out);
+    out
+}
+
+/// `n` random bytes in secret storage (keys, seeds): no other copy.
+pub fn secret(n: usize) -> Secret {
+    let s = Secret::zeroed(n);
+    let (b, off, len) = unsafe { s.as_bytes().raw_parts() };
+    fill_raw("random::secret", b, off, len);
+    s
+}
+
+fn fill_raw(what: str, b: GcBuf<u8>, off: usize, len: usize) {
+    if len == 0 { return; }
+    let r = unsafe { nabi_os_random(b, off, len) };
+    if r != 0 { panic(f"{what}: the OS random source failed (error {-r})"); }
+}
+
+// Generators. `Rng` is the interface: one required `next_u64`, the rest
+// derived from it in fixed ways, so a seeded generator gives the
+// same values on every target and release. A new algorithm gets a new
+// type; a type's stream never changes.
+
+/// A source of random `u64`s and the values derived from them.
+pub trait Rng {
+    /// The next 64 random bits.
+    fn next_u64(ref self) -> u64;
+
+    /// A value in `[0, 1)`: the top 53 bits of `next_u64` times 2^-53.
+    /// Python: `random.random()`.
+    const fn f64(ref self) -> f64 {
+        (self.next_u64() >> 11) as f64 * 1.1102230246251565e-16
+    }
+
+    /// A value in `[0, n)`, every one equally likely (bits below the
+    /// last whole multiple of `n` are drawn again). Panics when `n` is 0.
+    #[track_caller]
+    const fn below(ref self, n: u64) -> u64 {
+        if n == 0 {
+            panic("Rng::below: n is 0; pass a positive bound");
+        }
+        let floor = 0u64.wrapping_sub(n) % n;
+        loop {
+            let x = self.next_u64();
+            if x >= floor {
+                return x % n;
+            }
+        }
+    }
+
+    /// A value in `[0, 1)`: the top 24 bits of `next_u64` times 2^-24.
+    const fn f32(ref self) -> f32 {
+        (self.next_u64() >> 40) as f32 * 5.9604645e-8
+    }
+
+    /// A value of `r`, every one equally likely: a range of any integer
+    /// type (`0..6`, `1..=6`, `0u8..=255`, `0usize..n`). Panics when `r`
+    /// is empty. Python: `random.randrange(a, b)` / `random.randint(a,
+    /// b)`; for floats, `uniform`.
+    ///
+    /// ```nabi
+    /// use std::random::{Rng, Xoshiro256PlusPlus};
+    ///
+    /// let g = Xoshiro256PlusPlus::seed(1);
+    /// let die = g.range(1..=6);
+    /// let i = g.range(0usize..10);
+    /// let x = g.uniform(-1.0, 1.0);
+    /// assert(die >= 1 && die <= 6 && i < 10 && x >= -1.0 && x < 1.0);
+    /// ```
+    #[track_caller]
+    const fn range<R: SampleRange>(ref self, r: R) -> R::Item {
+        let n = r.outcomes();
+        r.outcome(if n == 0 { self.next_u64() } else { self.below(n) })
+    }
+
+    /// A value in `[lo, hi)`: `lo + (hi - lo) * self.f64()`. Python:
+    /// `random.uniform(lo, hi)`.
+    const fn uniform(ref self, lo: f64, hi: f64) -> f64 {
+        lo + (hi - lo) * self.f64()
+    }
+
+    /// `true` with probability `p` (`self.f64() < p`).
+    const fn bool(ref self, p: f64 = 0.5) -> bool {
+        self.f64() < p
+    }
+
+    /// A normal deviate with mean `mean` and standard deviation `std`
+    /// (the ziggurat of Marsaglia and Tsang: one 64-bit draw nearly
+    /// always). Python: `random.gauss(mean, std)`.
+    const fn normal(ref self, mean: f64 = 0.0, std: f64 = 1.0) -> f64 {
+        mean + std * dist::normal(ref self)
+    }
+
+    /// An exponential deviate with rate `rate` (mean `1 / rate`):
+    /// `-ln(U) / rate`. Python: `random.expovariate(rate)`.
+    #[track_caller]
+    const fn exponential(ref self, rate: f64 = 1.0) -> f64 {
+        if !(rate > 0.0) {
+            panic(f"Rng::exponential: rate {rate} is not positive; pass a rate above 0");
+        }
+        -dist::open01(ref self).ln() / rate
+    }
+
+    /// A gamma deviate of shape `shape` and scale `scale` (mean
+    /// `shape * scale`). Python: `random.gammavariate(shape, scale)`.
+    #[track_caller]
+    const fn gamma(ref self, shape: f64, scale: f64 = 1.0) -> f64 {
+        if !(shape > 0.0) || !(scale > 0.0) {
+            panic(f"Rng::gamma: shape {shape} and scale {scale} must both be above 0");
+        }
+        dist::gamma(ref self, shape) * scale
+    }
+
+    /// A beta deviate in `[0, 1]` with shapes `a` and `b`. Python:
+    /// `random.betavariate(a, b)`.
+    #[track_caller]
+    const fn beta(ref self, a: f64, b: f64) -> f64 {
+        if !(a > 0.0) || !(b > 0.0) {
+            panic(f"Rng::beta: shapes {a} and {b} must both be above 0");
+        }
+        dist::beta(ref self, a, b)
+    }
+
+    /// A Poisson count with mean `lam` (`lam >= 0`). NumPy:
+    /// `rng.poisson(lam)`.
+    #[track_caller]
+    const fn poisson(ref self, lam: f64) -> i64 {
+        if !(lam >= 0.0) || !lam.is_finite() {
+            panic(f"Rng::poisson: mean {lam} is not a finite number >= 0");
+        }
+        dist::poisson(ref self, lam)
+    }
+
+    /// The number of successes in `n` trials of probability `p`. NumPy:
+    /// `rng.binomial(n, p)`.
+    ///
+    /// ```nabi
+    /// use std::random::{Rng, Xoshiro256PlusPlus};
+    ///
+    /// let g = Xoshiro256PlusPlus::seed(7);
+    /// let k = g.binomial(10, 0.5);
+    /// assert(k >= 0 && k <= 10 && g.poisson(3.0) >= 0);
+    /// assert(g.gamma(2.0) > 0.0 && g.exponential() > 0.0);
+    /// let b = g.beta(2.0, 5.0);
+    /// assert(b >= 0.0 && b <= 1.0);
+    /// ```
+    #[track_caller]
+    const fn binomial(ref self, n: i64, p: f64) -> i64 {
+        if n < 0 || !(p >= 0.0 && p <= 1.0) {
+            panic(f"Rng::binomial: n = {n} and p = {p}; n must be >= 0 and p in [0, 1]");
+        }
+        dist::binomial(ref self, n, p)
+    }
+
+    /// An index of `weights`, `i` with probability `weights[i] / sum`.
+    /// Panics for a negative or non-finite weight, or when all are 0.
+    /// Python: `random.choices(range(n), weights)[0]`.
+    ///
+    /// ```nabi
+    /// use std::random::{Rng, Xoshiro256PlusPlus};
+    ///
+    /// let g = Xoshiro256PlusPlus::seed(3);
+    /// let i = g.weighted([0.0, 1.0, 0.0]);
+    /// assert(i == 1);
+    /// ```
+    #[track_caller]
+    const fn weighted(ref self, weights: List<f64>) -> usize {
+        let total = 0.0;
+        for i in 0..weights.len() {
+            let w = weights[i];
+            if !(w >= 0.0) || !w.is_finite() {
+                panic(f"Rng::weighted: weight {i} is {w}; weights must be finite and >= 0");
+            }
+            total += w;
+        }
+        if !(total > 0.0) {
+            panic("Rng::weighted: the weights sum to 0; give some item a positive weight");
+        }
+        let t = self.f64() * total;
+        let last: usize = 0;
+        for i in 0..weights.len() {
+            if weights[i] > 0.0 {
+                last = i;
+                t -= weights[i];
+                if t < 0.0 {
+                    return i;
+                }
+            }
+        }
+        last
+    }
+
+    /// Fill `out` with values in `[0, 1)` (`f64` each).
+    const fn fill_f64(ref self, out: SliceMut<f64>) {
+        for i in 0..out.len() {
+            out[i] = self.f64();
+        }
+    }
+
+    /// Fill `out` with normal deviates (`normal` each).
+    const fn fill_normal(ref self, out: SliceMut<f64>, mean: f64 = 0.0, std: f64 = 1.0) {
+        for i in 0..out.len() {
+            out[i] = mean + std * dist::normal(ref self);
+        }
+    }
+
+    /// An array of `shape` with values in `[0, 1)`. NumPy:
+    /// `rng.random(shape)`.
+    ///
+    /// ```nabi
+    /// use std::random::{Rng, Xoshiro256PlusPlus};
+    ///
+    /// let g = Xoshiro256PlusPlus::seed(5);
+    /// let a = g.random_array([2, 3]);
+    /// let z = g.normal_array([1000], mean: 10.0);
+    /// assert(a.shape() == [2, 3] && (z.mean() - 10.0).abs() < 0.2);
+    /// ```
+    #[track_caller]
+    const fn random_array<const N: usize>(ref self, shape: [usize; N]) -> Array<f64, N> {
+        let (xs, n) = elems(shape);
+        for _ in 0..n { xs.push(self.f64()); }
+        Array::view_list(xs, shape)
+    }
+
+    /// An array of `shape` of normal deviates. NumPy:
+    /// `rng.normal(mean, std, shape)`.
+    #[track_caller]
+    const fn normal_array<const N: usize>(ref self, shape: [usize; N], mean: f64 = 0.0, std: f64 = 1.0) -> Array<f64, N> {
+        let (xs, n) = elems(shape);
+        for _ in 0..n { xs.push(mean + std * dist::normal(ref self)); }
+        Array::view_list(xs, shape)
+    }
+
+    /// An array of `shape` with values in `[lo, hi)`. NumPy:
+    /// `rng.uniform(lo, hi, shape)`.
+    #[track_caller]
+    const fn uniform_array<const N: usize>(ref self, shape: [usize; N], lo: f64, hi: f64) -> Array<f64, N> {
+        let (xs, n) = elems(shape);
+        for _ in 0..n { xs.push(lo + (hi - lo) * self.f64()); }
+        Array::view_list(xs, shape)
+    }
+
+    /// The items of `xs` in a random order, in place (Fisher-Yates from
+    /// the back: position `i` swaps with `below(i + 1)`).
+    const fn shuffle<T>(ref self, xs: List<T>) {
+        let i = xs.len();
+        while i > 1 {
+            let j = self.below(i as u64) as usize;
+            i -= 1;
+            xs.swap(i, j);
+        }
+    }
+
+    /// One item of `xs` (`xs[below(len)]`), or `none` when it is empty.
+    /// Python: `random.choice(xs)`.
+    const fn choice<T>(ref self, xs: List<T>) -> T | none {
+        if xs.is_empty() {
+            return none;
+        }
+        xs[self.below(xs.len() as u64) as usize]
+    }
+
+    /// `k` items of `xs` at distinct positions, in the order drawn (a
+    /// partial Fisher-Yates over the positions). Panics when `k` is more
+    /// than `xs.len()`. Python: `random.sample(xs, k)`.
+    #[track_caller]
+    const fn sample<T>(ref self, xs: List<T>, k: usize) -> List<T> {
+        let n = xs.len();
+        if k > n {
+            panic(f"Rng::sample: {k} items asked from {n}");
+        }
+        let pos: List<usize> = List::from_fn(n, |i| i);
+        let out: List<T> = List::with_capacity(k);
+        for i in 0..k {
+            let j = i + self.below((n - i) as u64) as usize;
+            pos.swap(i, j);
+            out.push(xs[pos[i]]);
+        }
+        out
+    }
+}
+
+/// An empty list with room for the elements of `shape`, and their count.
+#[track_caller]
+const fn elems<const N: usize>(shape: [usize; N]) -> (List<f64>, usize) {
+    let n: usize = 1;
+    for k in 0..N {
+        n = n.checked_mul(shape[k]) ?? panic("Rng: the array shape overflows usize");
+    }
+    (List::with_capacity(n), n)
+}
+
+/// A range `Rng::range` draws from: `a..b` and `a..=b` of every
+/// integer type. For floats, `Rng::uniform(lo, hi)`.
+pub trait SampleRange {
+    type Item;
+    /// How many values the range holds (0: all 2^64); panics when
+    /// it is empty.
+    fn outcomes(self) -> u64;
+    /// The value `k` steps past the start.
+    fn outcome(self, k: u64) -> Item;
+}
+
+/// Xoshiro256++ (Blackman and Vigna; Julia's default): 256 bits of
+/// state, period 2^256 - 1. Fast and statistically strong, not for
+/// secrets (use the OS source: `random::bytes`, `OsRng`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Xoshiro256PlusPlus {
+    s0: u64;
+    s1: u64;
+    s2: u64;
+    s3: u64;
+}
+
+impl Xoshiro256PlusPlus {
+    /// The generator for `seed`: its state is four outputs of SplitMix64
+    /// started at `seed`. The same seed gives the same stream on every
+    /// target and release.
+    pub const fn seed(seed: u64) -> Xoshiro256PlusPlus {
+        let x = seed;
+        x = x.wrapping_add(0x9e3779b97f4a7c15);
+        let a = splitmix(x);
+        x = x.wrapping_add(0x9e3779b97f4a7c15);
+        let b = splitmix(x);
+        x = x.wrapping_add(0x9e3779b97f4a7c15);
+        let c = splitmix(x);
+        x = x.wrapping_add(0x9e3779b97f4a7c15);
+        let d = splitmix(x);
+        Xoshiro256PlusPlus { s0: a, s1: b, s2: c, s3: d }
+    }
+
+    /// A generator seeded from the OS source: a different stream each
+    /// time.
+    pub fn from_os() -> Xoshiro256PlusPlus {
+        let o = OsRng {};
+        Xoshiro256PlusPlus::seed(o.next_u64())
+    }
+
+    /// A generator for another stream, for a parallel task: a copy of
+    /// this one, which then jumps 2^128 steps ahead (Vigna's `jump`), so
+    /// the two never overlap in practice. The streams depend only on the
+    /// seed and the order of the calls, not on threads or timing.
+    pub fn split(ref self) -> Xoshiro256PlusPlus {
+        let child = self;
+        self.jump();
+        child
+    }
+
+    /// Advance 2^128 steps.
+    fn jump(ref self) {
+        let jumps: List<u64> = [0x180ec6d33cfd0aba, 0xd5a61266f0c9392c, 0xa9582618e03fc9aa, 0x39abdc4529b1661c];
+        let (a, b, c, d) = (0u64, 0u64, 0u64, 0u64);
+        for j in jumps {
+            for bit in 0u64..64u64 {
+                if j & (1u64 << bit) != 0 {
+                    a ^= self.s0;
+                    b ^= self.s1;
+                    c ^= self.s2;
+                    d ^= self.s3;
+                }
+                _ = self.next_u64();
+            }
+        }
+        self.s0 = a;
+        self.s1 = b;
+        self.s2 = c;
+        self.s3 = d;
+    }
+}
+
+impl Rng for Xoshiro256PlusPlus {
+    const fn next_u64(ref self) -> u64 {
+        let out = self.s0.wrapping_add(self.s3).rotate_left(23).wrapping_add(self.s0);
+        let t = self.s1 << 17;
+        self.s2 ^= self.s0;
+        self.s3 ^= self.s1;
+        self.s1 ^= self.s2;
+        self.s0 ^= self.s3;
+        self.s2 ^= t;
+        self.s3 = self.s3.rotate_left(45);
+        out
+    }
+}
+
+const fn splitmix(x: u64) -> u64 {
+    let z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+    z ^ (z >> 31)
+}
+
+/// The OS source as an `Rng`: every value read from it (a system call
+/// each), never reproducible.
+#[derive(Clone, Copy, Debug)]
+pub struct OsRng {}
+
+impl Rng for OsRng {
+    fn next_u64(ref self) -> u64 {
+        let b = bytes(8);
+        let x = 0u64;
+        for i in 0..8 {
+            x = (x << 8) | b[i] as u64;
+        }
+        x
+    }
+}
+
+/// A generator seeded from the OS source (`Xoshiro256PlusPlus::from_os`).
+/// For a stream that repeats, use `Xoshiro256PlusPlus::seed(n)`.
+pub fn rng() -> Xoshiro256PlusPlus {
+    Xoshiro256PlusPlus::from_os()
+}
+
+// The one-call forms draw from one generator for the process, seeded
+// from the OS source on the first call and kept behind a lock: fast (no
+// system call per value) but not for secrets; use `bytes`, `secret` or
+// `OsRng` for those.
+
+static SHARED: Mutex<[u64; 4]> = Mutex::new([0u64, 0u64, 0u64, 0u64]);
+
+/// The generator for `s`, seeded from the OS when `s` is all zero (the
+/// one state Xoshiro never reaches).
+fn state(s: [u64; 4]) -> Xoshiro256PlusPlus {
+    if s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 {
+        return Xoshiro256PlusPlus::from_os();
+    }
+    Xoshiro256PlusPlus { s0: s[0], s1: s[1], s2: s[2], s3: s[3] }
+}
+
+fn words(g: Xoshiro256PlusPlus) -> [u64; 4] { [g.s0, g.s1, g.s2, g.s3] }
+
+/// A value in `[0, 1)` from the shared generator. Python:
+/// `random.random()`.
+///
+/// ```nabi
+/// use std::random;
+///
+/// let x = random::f64();
+/// let n = random::range(1..=6);
+/// assert(x >= 0.0 && x < 1.0 && n >= 1 && n <= 6);
+/// ```
+pub fn f64() -> f64 {
+    using l = SHARED.lock() {
+        let g = state(l.get());
+        let x = g.f64();
+        l.set(words(g));
+        x
+    }
+}
+
+/// A value of `r` from the shared generator (see `Rng::range`).
+#[track_caller]
+pub fn range<R: SampleRange>(r: R) -> R::Item {
+    using l = SHARED.lock() {
+        let g = state(l.get());
+        let x = g.range(r);
+        l.set(words(g));
+        x
+    }
+}
+
+/// A normal deviate from the shared generator. Python:
+/// `random.gauss(mean, std)`.
+pub fn normal(mean: f64 = 0.0, std: f64 = 1.0) -> f64 {
+    using l = SHARED.lock() {
+        let g = state(l.get());
+        let x = g.normal(mean, std);
+        l.set(words(g));
+        x
+    }
+}
+
+/// `xs` in a random order, in place, from the shared generator.
+pub fn shuffle<T>(xs: List<T>) {
+    let n = xs.len();
+    let i = n;
+    while i > 1 {
+        let j = range(0..i);
+        i -= 1;
+        xs.swap(i, j);
+    }
+}
+
+/// One item of `xs` from the shared generator, or `none` when it is
+/// empty.
+pub fn choice<T>(xs: List<T>) -> T | none {
+    if xs.is_empty() {
+        return none;
+    }
+    xs[range(0..xs.len())]
+}

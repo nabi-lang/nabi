@@ -1,0 +1,20 @@
+// expect-error: `#[on_panic]` on `count`: only a number, a `bool` or `0` (a null pointer) can be returned; write `#[on_panic(return = -1)]` with a value of the result type
+// expect-error: `#[on_panic]` on `nothing`: it returns nothing, so write `#[on_panic]` alone
+// expect-error: `#[on_panic]` on `half`: a function with a result needs the value it returns
+// expect-error: `#[on_panic]` is for functions C calls: write `#[on_panic(return = -1)] extern "C" fn plain(..)`
+
+// The value must be a constant of the result type, and only a function C
+// calls has a C caller to return it to.
+#[on_panic(return = "x")]
+extern "C" fn count() -> c_int { 1 }
+
+#[on_panic(return = 0)]
+extern "C" fn nothing() {}
+
+#[on_panic]
+extern "C" fn half(x: f64) -> f64 { x / 2.0 }
+
+#[on_panic(return = 0)]
+fn plain() -> i32 { 1 }
+
+fn main() {}

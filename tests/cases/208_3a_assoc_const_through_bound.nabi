@@ -1,0 +1,30 @@
+// expect-exit: 0
+// expect-stdout:
+// true true
+// inf true
+// true 3 2
+
+// `R::EPSILON` through a bound is the impl's const, which may be defined
+// by the inherent const of its name (`const EPSILON: f64 = f64::EPSILON;`).
+use core::num::FloatingPoint;
+
+fn eps<R: FloatingPoint>() -> R { R::EPSILON }
+
+fn consts<R: FloatingPoint>() -> (R, R) { (R::INFINITY, R::NAN) }
+
+trait Size { const N: usize; }
+
+struct Pair { }
+
+impl Pair { const N: usize = 2; }
+
+impl Size for Pair { const N: usize = Pair::N + 1; }
+
+fn n<T: Size>() -> usize { T::N }
+
+fn main() {
+    println(f"{eps::<f64>() == f64::EPSILON} {eps::<f32>() == f32::EPSILON}");
+    let (i, x) = consts::<f64>();
+    println(f"{i} {x.is_nan()}");
+    println(f"{<f64 as FloatingPoint>::EPSILON == f64::EPSILON} {n::<Pair>()} {Pair::N}");
+}

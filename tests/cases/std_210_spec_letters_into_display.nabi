@@ -1,0 +1,33 @@
+// expect-exit: 0
+// expect-stdout:
+// 1.50e3 m|     1.5e3 m|+1500 m|1,234,567 m|1.2e0+2.5e0i
+// 1.500e3 m|2.500e-1 s|B { v: 0.25 }|
+
+// A value's own `Display` takes the type letter, sign and grouping with
+// the precision, statically and in a dynamic spec; the width pads the
+// whole text.
+use core::num::Complex;
+
+struct P { v: f64; }
+impl Display for P {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try Display::fmt(self.v, ref f);
+        try f.write_str(" m");
+    }
+}
+#[derive(Debug)]
+struct B { v: f64; }
+impl Display for B {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try Display::fmt(self.v, ref f);
+        try f.write_str(" s");
+    }
+}
+
+fn main() {
+    let p = P { v: 1500.0 };
+    let z = Complex { re: 1.23456, im: 2.5 };
+    println(f"{p:.2e}|{p:>12.1e}|{p:+}|{P { v: 1234567.0 }:,}|{z:.1e}");
+    let sp = ".3e";
+    println(f"{p:${sp}}|{B { v: 0.25 }:${sp}}|{B { v: 0.25 }:?}|");
+}

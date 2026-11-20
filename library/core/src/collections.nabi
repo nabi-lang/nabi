@@ -1,0 +1,28 @@
+//! core::collections - List / Dict / Set / Slice,
+//! Deque, BinaryHeap, SortedDict / SortedSet, and the frozen
+//! (read-only, `Sync`) List / Dict / Set.
+//!
+//! Each collection is a small handle struct over GC buffers (`raw`):
+//! copying the handle shares the collection, so the mutating methods
+//! take `self` (not `ref self`: the handle is what they change). The types
+//! are re-exported here: `use core::collections::List`.
+
+pub mod broadcast;
+pub mod deque;
+pub mod dict;
+pub mod frozen;
+pub mod heap;
+pub mod list;
+pub(pkg) mod raw;
+pub mod set;
+pub mod slice;
+pub mod sorted;
+
+pub use deque::{Deque, DequeIter};
+pub use dict::{Dict, Entry, Keys, Values, DictIter};
+pub use frozen::{FrozenDict, FrozenList, FrozenSet};
+pub use heap::{BinaryHeap, HeapIter};
+pub use list::{List, ListIter, ListIntoIter};
+pub use set::{Set, SetIter};
+pub use slice::{ChunksMut, Slice, SliceIter, SliceMut, SliceMutIter};
+pub use sorted::{KeyRange, SortedDict, SortedIter, SortedKeys, SortedSet, SortedValues};

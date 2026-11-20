@@ -1,0 +1,18 @@
+// expect-exit: 0
+// expect-stdout:
+// done
+
+// Labels control nested loops; `break 'outer` exits the outer loop.
+fn main() -> i32 {
+    'outer: for i in 0..5 {
+        for j in 0..5 {
+            if i == 2 {
+                if j == 1 {
+                    break 'outer;
+                }
+            }
+        }
+    }
+    println("done");
+    return 0;
+}

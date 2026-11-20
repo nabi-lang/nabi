@@ -1,0 +1,32 @@
+// gc-stress: 200
+// expect-exit: 0
+// expect-stdout:
+// 16 tasks: t0-0..t0-299 t15-0..t15-299
+// collections ran: true
+
+// Collections start on any worker while tasks move between workers.
+extern "C" {
+    fn nabi_gc_collect();
+    fn nabi_gc_stats_collections() -> u64;
+}
+
+async fn fill(t: i32) -> str {
+    let xs: List<str> = [];
+    for i in 0..300 {
+        xs.push(f"t{t}-{i}");
+        if i % 50 == 0 {
+            await task::yield_now();
+            unsafe { nabi_gc_collect(); }
+        }
+    }
+    f"{xs[0]}..{xs[299]}"
+}
+
+async fn main() {
+    let before = unsafe { nabi_gc_stats_collections() };
+    let ts: List<Task<str>> = [];
+    for t in 0..16 { ts.push(task::spawn(fill(t))); }
+    let rs = await task::join(ts);
+    println(f"{rs.len()} tasks: {rs[0]} {rs[15]}");
+    println(f"collections ran: {unsafe { nabi_gc_stats_collections() } > before}");
+}

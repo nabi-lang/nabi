@@ -1,0 +1,17 @@
+// expect-error: `@field.index` outside `@for_fields`: `@field` tokens work inside `@for_fields { .. }`
+// expect-error: `@Self.variant_count` on a struct: it counts an enum's variants; guard it with `@if_enum { .. }`
+
+// `@field` tokens name the field `@for_fields` is at.
+trait Pos { fn pos() -> usize; fn n() -> usize; }
+
+#[impl_derive(Pos)] @derive {
+    impl Pos for @Self {
+        fn pos() -> usize { @field.index }
+        fn n() -> usize { @Self.variant_count }
+    }
+}
+
+#[derive(Pos)]
+struct S { a: i32; }
+
+fn main() {}

@@ -1,0 +1,113 @@
+//! core::reflect::ops - the accessors a type's description points at.
+//! The compiler instantiates them for each described type; nothing calls
+//! them by name.
+
+use core::reflect::cast;
+
+pub(pkg) fn get<T: Inspect>(owner: any, field: usize) -> any | none { T::__inspect_get(owner, field) }
+pub(pkg) fn set<T: Inspect>(owner: any, field: usize, value: any) -> any | none {
+    T::__inspect_set(owner, field, value)
+}
+pub(pkg) fn build<T: Inspect>(variant: usize, fields: Dict<str, any>) -> (any | none, str) {
+    T::__inspect_build(variant, fields)
+}
+
+pub(pkg) fn list_len<T>(v: any) -> usize {
+    return match cast::<List<T>>(v) {
+        xs: List<T> => xs.len(),
+        none => 0,
+    };
+}
+
+pub(pkg) fn list_get<T>(v: any, i: usize) -> any | none {
+    return match cast::<List<T>>(v) {
+        xs: List<T> => {
+            if i >= xs.len() {
+                return none;
+            }
+            let held: any = xs[i];
+            held
+        },
+        none => none,
+    };
+}
+
+pub(pkg) fn list_items<T>(v: any) -> List<any> | none {
+    return match cast::<List<T>>(v) {
+        xs: List<T> => {
+            let out: List<any> = List::new();
+            for x in xs {
+                let held: any = x;
+                out.push(held);
+            }
+            out
+        },
+        none => none,
+    };
+}
+
+pub(pkg) fn list_from<T>(items: List<any>) -> any | none {
+    let out: List<T> = List::new();
+    for x in items {
+        match cast::<T>(x) {
+            y: T => out.push(y),
+            none => {
+                return none;
+            },
+        }
+    }
+    let held: any = out;
+    return held;
+}
+
+pub(pkg) fn dict_len<K: Hash, V>(v: any) -> usize {
+    return match cast::<Dict<K, V>>(v) {
+        d: Dict<K, V> => d.len(),
+        none => 0,
+    };
+}
+
+pub(pkg) fn dict_items<K: Hash, V>(v: any) -> List<(any, any)> | none {
+    return match cast::<Dict<K, V>>(v) {
+        d: Dict<K, V> => {
+            let out: List<(any, any)> = List::new();
+            for (k, x) in d {
+                let hk: any = k;
+                let hx: any = x;
+                out.push((hk, hx));
+            }
+            out
+        },
+        none => none,
+    };
+}
+
+pub(pkg) fn dict_from<K: Hash, V>(items: List<(any, any)>) -> any | none {
+    let out: Dict<K, V> = Dict::new();
+    for (k, x) in items {
+        match cast::<K>(k) {
+            a: K => match cast::<V>(x) {
+                b: V => {
+                    out.insert(a, b);
+                },
+                none => {
+                    return none;
+                },
+            },
+            none => {
+                return none;
+            },
+        }
+    }
+    let held: any = out;
+    return held;
+}
+
+// What `__inspect_build` says about a field.
+pub(pkg) fn wrong_type<F>(name: str, v: any) -> str {
+    f"field `{name}` is `{F::type_name()}`, not `{v.type_name_of_val()}`"
+}
+pub(pkg) fn missing<T>(name: str) -> str {
+    f"`{T::type_name()}` needs field `{name}`: it has no default"
+}
+pub(pkg) fn no_variant<T>(variant: usize) -> str { f"`{T::type_name()}` has no variant {variant}" }

@@ -1,0 +1,12 @@
+// A chunk size of 0 panics at the call, and the message shows a valid one.
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/std_207_iter_chunks_zero_panics.nabi:10:13:
+// expect-stderr: Iterator::chunks: size is 0; pass a positive size, e.g. `chunks(2)`
+// expect-stdout: 3
+
+fn main() {
+    let xs: List<i32> = [1, 2, 3];
+    println(f"{xs.len()}");
+    let n = xs.iter().chunks(0).count();
+    println(f"{n}");
+}

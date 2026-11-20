@@ -1,0 +1,59 @@
+// expect-exit: 0
+// expect-stdout:
+// ["c", "b", "a"]
+// a c
+// [3, 2, 1]
+
+// A concrete DoubleEndedIterator impl returns the supertrait's `Item`
+// as the type its Iterator impl gives it, written out or as `Self::Item`.
+use core::iter::DoubleEndedIterator;
+
+struct Letters { s: str; lo: usize; hi: usize; }
+
+impl Iterator for Letters {
+    type Item = str;
+    fn next(ref self) -> str | none {
+        if self.lo >= self.hi { return none; }
+        self.lo += 1;
+        self.s[self.lo - 1:self.lo]
+    }
+}
+
+impl DoubleEndedIterator for Letters {
+    fn next_back(ref self) -> str | none {
+        if self.hi <= self.lo { return none; }
+        self.hi -= 1;
+        self.s[self.hi:self.hi + 1]
+    }
+}
+
+struct Count { lo: i32; hi: i32; }
+
+impl Iterator for Count {
+    type Item = i32;
+    fn next(ref self) -> i32 | none {
+        if self.lo >= self.hi { return none; }
+        self.lo += 1;
+        self.lo
+    }
+}
+
+impl DoubleEndedIterator for Count {
+    fn next_back(ref self) -> Self::Item | none {
+        if self.hi <= self.lo { return none; }
+        self.hi -= 1;
+        self.hi + 1
+    }
+}
+
+fn main() -> i32 {
+    let r: List<str> = Letters { s: "abc", lo: 0, hi: 3 }.rev().collect();
+    println(f"{r:?}");
+    let it = Letters { s: "abc", lo: 0, hi: 3 };
+    let a = it.next() ?? "";
+    let c = it.next_back() ?? "";
+    println(f"{a} {c}");
+    let n: List<i32> = Count { lo: 0, hi: 3 }.rev().collect();
+    println(f"{n:?}");
+    return 0;
+}

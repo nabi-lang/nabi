@@ -1,0 +1,275 @@
+// std::nabion::reflect - any value to a `Value` and back through its
+// type's description (`core::reflect`), with no `ToNabion` impl.
+
+use core::reflect::{Field, TypeInfo, TypeKind, Variant, cast, info_of};
+use std::nabion::{FromNabion, NabionError, ToNabion, Value};
+
+fn prim_to<T: ToNabion>(v: any) -> Value | none {
+    return match cast::<T>(v) {
+        x: T => x.to_nabion(),
+        none => none,
+    };
+}
+
+fn prim_from<T: FromNabion>(v: Value) throws (NabionError) -> any {
+    let x: T = try T::from_nabion(v);
+    let held: any = x;
+    return held;
+}
+
+fn prim_value(name: str, v: any) -> Value | none {
+    return match name {
+        "bool" => prim_to::<bool>(v),
+        "char" => prim_to::<char>(v),
+        "str" => prim_to::<str>(v),
+        "f32" => prim_to::<f32>(v),
+        "f64" => prim_to::<f64>(v),
+        "i8" => prim_to::<i8>(v),
+        "i16" => prim_to::<i16>(v),
+        "i32" => prim_to::<i32>(v),
+        "i64" => prim_to::<i64>(v),
+        "isize" => prim_to::<isize>(v),
+        "u8" => prim_to::<u8>(v),
+        "u16" => prim_to::<u16>(v),
+        "u32" => prim_to::<u32>(v),
+        "u64" => prim_to::<u64>(v),
+        "usize" => prim_to::<usize>(v),
+        _ => none,
+    };
+}
+
+fn prim_any(name: str, v: Value) throws (NabionError) -> any {
+    return match name {
+        "bool" => try prim_from::<bool>(v),
+        "char" => try prim_from::<char>(v),
+        "str" => try prim_from::<str>(v),
+        "f32" => try prim_from::<f32>(v),
+        "f64" => try prim_from::<f64>(v),
+        "i8" => try prim_from::<i8>(v),
+        "i16" => try prim_from::<i16>(v),
+        "i32" => try prim_from::<i32>(v),
+        "i64" => try prim_from::<i64>(v),
+        "isize" => try prim_from::<isize>(v),
+        "u8" => try prim_from::<u8>(v),
+        "u16" => try prim_from::<u16>(v),
+        "u32" => try prim_from::<u32>(v),
+        "u64" => try prim_from::<u64>(v),
+        "usize" => try prim_from::<usize>(v),
+        _ => throw NabionError::new(f"`{name}` has no NABION form"),
+    };
+}
+
+fn undescribed(v: any) -> NabionError {
+    NabionError::new(f"`{v.type_name_of_val()}` has no description: add `#[derive(Inspect)]` to it")
+}
+
+/// `v` as a `Value`, read through its type's description: `Inspect`
+/// structs and enums, lists, dicts, sums and primitives.
+pub fn to_value_any(v: any) throws (NabionError) -> Value {
+    return match info_of(v) {
+        t: TypeInfo => try to_value_as(t, v),
+        none => throw undescribed(v),
+    };
+}
+
+// `v`, a `t` (or, for a sum or `any`, one of its members).
+fn to_value_as(t: TypeInfo, v: any) throws (NabionError) -> Value {
+    return match t.kind() {
+        TypeKind::Sum | TypeKind::Any => try to_value_any(v),
+        TypeKind::Prim | TypeKind::Str => match prim_value(t.name(), v) {
+            x: Value => x,
+            none => throw NabionError::new(f"`{v.type_name_of_val()}` is not a `{t.name()}`"),
+        },
+        TypeKind::List | TypeKind::Array => {
+            let out: List<Value> = List::new();
+            match t.list_items(v) {
+                xs: List<any> => {
+                    for x in xs {
+                        out.push(try item_value(t.element(), x));
+                    }
+                },
+                none => throw undescribed(v),
+            }
+            Value::List(out)
+        },
+        TypeKind::Dict => {
+            let out: Dict<Value, Value> = Dict::new();
+            match t.dict_items(v) {
+                xs: List<(any, any)> => {
+                    for (k, x) in xs {
+                        out.insert(try item_value(t.key(), k), try item_value(t.element(), x));
+                    }
+                },
+                none => throw undescribed(v),
+            }
+            Value::Dict(out)
+        },
+        TypeKind::Enum => match t.variant_of(v) {
+            var: Variant => {
+                let args: List<Value> = List::new();
+                let named: Dict<str, Value> = Dict::new();
+                for f in var.fields() {
+                    let x = try field_value(f, v);
+                    if f.name().byte(0) >= 48u8 && f.name().byte(0) <= 57u8 {
+                        args.push(x);
+                    } else {
+                        named.insert(f.name(), x);
+                    }
+                }
+                Value::Variant { path: f"{t.name()}::{var.name()}", args: args, named: named }
+            },
+            none => throw undescribed(v),
+        },
+        TypeKind::Struct if t.is_inspect() => {
+            let fields: Dict<str, Value> = Dict::new();
+            for f in t.fields() {
+                fields.insert(f.name(), try field_value(f, v));
+            }
+            Value::Struct { name: t.name(), fields: fields }
+        },
+        _ => {
+            if t.name() == "none" {
+                Value::None
+            } else {
+                throw undescribed(v)
+            }
+        },
+    };
+}
+
+fn item_value(r: core::reflect::TypeRef | none, x: any) throws (NabionError) -> Value {
+    return match r {
+        t: core::reflect::TypeRef => match t.info() {
+            i: TypeInfo => try to_value_as(i, x),
+            none => try to_value_any(x),
+        },
+        none => try to_value_any(x),
+    };
+}
+
+fn field_value(f: Field, owner: any) throws (NabionError) -> Value {
+    return match f.get(owner) {
+        x: any => try item_value(f.type_ref(), x) catch e {
+            throw e.within(f".{f.name()}");
+        },
+        none => throw NabionError::new(f"no field `{f.name()}`"),
+    };
+}
+
+/// A `t` made from `v`, as `to_value_any` writes it. A struct field the
+/// value leaves out takes its default.
+pub fn from_value_any(t: TypeInfo, v: Value) throws (NabionError) -> any {
+    if t.name() == "none" {
+        if v == Value::None {
+            let n: any = none;
+            return n;
+        }
+        throw NabionError::new(f"expected `none`, found {v.kind_name()}");
+    }
+    return match t.kind() {
+        TypeKind::Prim | TypeKind::Str => try prim_any(t.name(), v),
+        TypeKind::Sum => {
+            // The first member the value fits.
+            let i: usize = 0;
+            while i < t.generic_count() {
+                match t.generic_at(i).info() {
+                    m: TypeInfo => {
+                        let got: any | none = try from_value_any(m, v) catch _ { none };
+                        match got {
+                            x: any => {
+                                return x;
+                            },
+                            none => {},
+                        }
+                    },
+                    none => {},
+                }
+                i += 1;
+            }
+            throw NabionError::new(f"{v.kind_name()} fits no member of `{t.name()}`")
+        },
+        TypeKind::List | TypeKind::Array => match v {
+            Value::List(xs) => {
+                let elem = try info_of_ref(t.element(), t);
+                let items: List<any> = List::new();
+                for x in xs {
+                    items.push(try from_value_any(elem, x));
+                }
+                try t.list_from(items) catch e {
+                    throw NabionError::new(e.message);
+                }
+            },
+            other => throw NabionError::new(f"expected a list, found {other.kind_name()}"),
+        },
+        TypeKind::Dict => match v {
+            Value::Dict(d) => {
+                let (kt, vt) = (try info_of_ref(t.key(), t), try info_of_ref(t.element(), t));
+                let items: List<(any, any)> = List::new();
+                for (k, x) in d {
+                    items.push((try from_value_any(kt, k), try from_value_any(vt, x)));
+                }
+                try t.dict_from(items) catch e {
+                    throw NabionError::new(e.message);
+                }
+            },
+            other => throw NabionError::new(f"expected a dict, found {other.kind_name()}"),
+        },
+        TypeKind::Enum => match v {
+            Value::Variant { path, args, named } => {
+                let name = match path.rfind("::") {
+                    i: usize => path.get(i + 2..path.len()) ?? path,
+                    none => path,
+                };
+                let var = match t.variant(name) {
+                    x: Variant => x,
+                    none => throw NabionError::new(f"`{t.name()}` has no variant `{name}`"),
+                };
+                let parts: Dict<str, any> = Dict::new();
+                let i: usize = 0;
+                while i < var.field_count() {
+                    let f = var.field_at(i);
+                    let x: Value | none = if i < args.len() { args[i] } else { named.get(f.name()) };
+                    match x {
+                        y: Value => {
+                            parts.insert(f.name(), try from_value_any(try info_of_ref(f.type_ref(), t), y));
+                        },
+                        none => {},
+                    }
+                    i += 1;
+                }
+                try var.build(parts) catch e {
+                    throw NabionError::new(e.message);
+                }
+            },
+            other => throw NabionError::new(f"expected a `{t.name()}` variant, found {other.kind_name()}"),
+        },
+        _ => match v {
+            Value::Struct { fields, .. } => {
+                let parts: Dict<str, any> = Dict::new();
+                for f in t.fields() {
+                    match fields.get(f.name()) {
+                        x: Value => {
+                            let fi = try info_of_ref(f.type_ref(), t);
+                            parts.insert(f.name(), try from_value_any(fi, x));
+                        },
+                        none => {},
+                    }
+                }
+                try t.build(parts) catch e {
+                    throw NabionError::new(e.message);
+                }
+            },
+            other => throw NabionError::new(f"expected a `{t.name()}` struct, found {other.kind_name()}"),
+        },
+    };
+}
+
+fn info_of_ref(r: core::reflect::TypeRef | none, owner: TypeInfo) throws (NabionError) -> TypeInfo {
+    return match r {
+        x: core::reflect::TypeRef => match x.info() {
+            i: TypeInfo => i,
+            none => throw NabionError::new(f"`{x.name()}` in `{owner.name()}` has no description"),
+        },
+        none => throw NabionError::new(f"`{owner.name()}` has no element type"),
+    };
+}

@@ -1,0 +1,52 @@
+// expect-exit: 0
+// expect-stdout:
+// 1 2 3
+// 11 12
+// 21 1
+// 31 32
+
+// An operator whose method takes `ref self` takes its left operand as a
+// method call takes its receiver: a variable or a field of one is
+// written back, through generic impls and bounds too.
+pub trait Draw<D> {
+    type Output;
+    #[infix("∼", like = "==")]
+    fn draw(ref self, d: D) -> Output;
+}
+
+struct Counter { n: i64; }
+
+impl Draw<i64> for Counter {
+    type Output = i64;
+    fn draw(ref self, step: i64) -> i64 { self.n += step; self.n }
+}
+
+struct Box1<T> { v: T; }
+
+impl<T> Draw<i64> for Box1<T> {
+    type Output = i64;
+    fn draw(ref self, step: i64) -> i64 { step + 30 }
+}
+
+struct Holder { c: Counter; }
+
+fn fresh() -> Counter { Counter { n: 20 } }
+
+fn twice<G: Draw<i64, Output = i64>>(g: G) -> (i64, i64) {
+    let a = g ∼ 1;
+    let b = g ∼ 1;
+    (a, b)
+}
+
+fn main() {
+    let c = Counter { n: 0 };
+    let a = c ∼ 1;
+    let b = c ∼ 1;
+    println(f"{a} {b} {c ∼ 1}");
+    let h = Holder { c: Counter { n: 10 } };
+    let x = h.c ∼ 1;
+    println(f"{x} {h.c ∼ 1}");
+    println(f"{fresh() ∼ 1} {Box1 { v: 0 } ∼ 1 - 30}");
+    let (p, q) = twice(Counter { n: 30 });
+    println(f"{p} {q}");
+}

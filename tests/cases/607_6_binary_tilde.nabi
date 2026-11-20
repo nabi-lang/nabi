@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout: true false -4
+
+// The binary position of `~` (only prefix `~x` is fixed) can be bound:
+// `x ~ d` for "distributed as".
+pub struct N { pub m: f64; }
+pub trait Tilde<Rhs> {
+    type Output;
+    #[infix("~", like = "==")]
+    fn tilde(self, rhs: Rhs) -> Output;
+}
+impl Tilde<N> for f64 {
+    type Output = bool;
+    fn tilde(self, rhs: N) -> bool { self == rhs.m }
+}
+fn main() {
+    let x = 2.0;
+    let y = 1.0;
+    println(f"{x ~ N { m: 2.0 }} {y ~ N { m: 2.0 }} {~3}");
+}

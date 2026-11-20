@@ -1,0 +1,74 @@
+// expect-exit: 0
+// expect-stdout:
+// Shape Enum 3
+// Circle 0: r: f64
+// Rect 1: w: f64 h: f64
+// Empty 2:
+// Rect true
+// w=2 h=3
+// none
+// Circle 1.5
+// error: `Shape` needs field `r`: it has no default
+// Some(4) Maybe<i32> i32
+
+// An enum's variants and their fields; the variant a value holds; a
+// variant built from named fields. A variant's payload is read-only.
+use core::reflect::{TypeInfo, Variant, cast};
+
+#[derive(Inspect, Debug)]
+enum Shape { Circle { r: f64; }, Rect { w: f64; h: f64; }, Empty }
+
+#[derive(Inspect, Debug)]
+enum Maybe<T> { Some(T), None }
+
+fn fget(v: Variant, name: str, owner: any) -> f64 | none {
+    let f = v.field(name)?;
+    return f.get_as::<f64>(owner);
+}
+
+fn other(t: TypeInfo, owner: any) -> any | none {
+    return t.variant("Circle")?.field("r")?.get(owner);
+}
+
+let t = Shape::type_info();
+println(f"{t.name()} {t.kind():?} {t.variant_count()}");
+for v in t.variants() {
+    print(f"{v.name()} {v.index()}:");
+    for f in v.fields() {
+        print(f" {f.name()}: {f.type_ref().name()}");
+    }
+    println("");
+}
+let r = Shape::Rect { w: 2.0, h: 3.0 };
+match t.variant_of(r) {
+    v: Variant => {
+        println(f"{v.name()} {v.field_at(0).offset() != usize::MAX}");
+        println(f"w={fget(v, "w", r) ?? 0.0} h={fget(v, "h", r) ?? 0.0}");
+        // Another variant's field answers nothing.
+        match other(t, r) {
+            x: any => println(f"{x.type_name_of_val()}"),
+            none => println("none"),
+        }
+    },
+    none => println("no variant"),
+}
+let parts: Dict<str, any> = Dict::new();
+parts.insert("r", 1.5);
+match t.variant("Circle") {
+    v: Variant => {
+        let made = try v.build(parts) catch e { panic(f"{e}"); };
+        match cast::<Shape>(made) ?? Shape::Empty {
+            Shape::Circle { r } => println(f"Circle {r}"),
+            _ => println("wrong"),
+        }
+        let missing = try v.build(Dict::new()) catch e { println(f"error: {e}"); none };
+        let _ = missing;
+    },
+    none => println("no Circle"),
+}
+let m: Maybe<i32> = Maybe::Some(4);
+let mt = Maybe::<i32>::type_info();
+match mt.variant_of(m) {
+    v: Variant => println(f"{v.name()}({v.field_at(0).get_as::<i32>(m) ?? 0}) {mt.name()} {mt.generic_at(0).name()}"),
+    none => println("none"),
+}

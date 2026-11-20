@@ -1,0 +1,47 @@
+// expect-exit: 0
+// expect-stdout:
+// 4 6 4 1 -1
+// 2 12 3 1 2.5 0.5 2
+
+// A closure meets a trait implemented for its `fn` type, captures or
+// not: as an `F: Tr` argument (an untyped parameter typed by the one
+// `fn` impl), a method receiver, an operator operand, and through a
+// blanket `impl<F: Tr> Op for F`.
+use core::array::Vector;
+use core::range::Range;
+
+trait Integrand { fn integral(self, r: Range<f64>) -> f64; }
+impl Integrand for fn(f64) -> f64 {
+    fn integral(self, r: Range<f64>) -> f64 { (self(r.start) + self(r.end)) * 0.5 * (r.end - r.start) }
+}
+fn integrate<F: Integrand>(f: F, r: Range<f64>) -> f64 { f.integral(r) }
+fn sq(x: f64) -> f64 { x * x }
+
+trait Fun { fn eval1(self) -> f64; }
+impl Fun for fn(Vector<f64>) -> f64 { fn eval1(self) -> f64 { self([1.0]) } }
+trait AtMost {
+    #[infix("⩽", like = "<=")]
+    fn at_most(self, b: f64) -> f64;
+}
+impl<F: Fun> AtMost for F {
+    fn at_most(self, b: f64) -> f64 { self.eval1() - b }
+}
+trait Twice {
+    #[infix("⊛", like = "*")]
+    fn twice(self, b: f64) -> f64;
+}
+impl Twice for fn(Vector<f64>) -> f64 {
+    fn twice(self, b: f64) -> f64 { self([b]) * 2.0 }
+}
+fn generic<F: AtMost>(f: F) -> f64 { f ⩽ 0.5 }
+fn solve<F: Fun>(f: F) -> f64 { f.eval1() }
+
+fn main() {
+    let k = 3.0;
+    let c: Vector<f64> = [2.0];
+    println(f"{integrate(sq, 0.0..2.0)} {integrate(|x: f64| -> f64 { k * x }, 0.0..2.0)} {integrate(|x| x * 2.0, 0.0..2.0)} {solve(|x: Vector<f64>| -> f64 { x[0] })} {solve(|x: Vector<f64>| -> f64 { x[0] - c[0] })}");
+    let d: Vector<f64> = [3.0];
+    let f = |x: Vector<f64>| -> f64 { x[0] * d[0] };
+    let n = |x: Vector<f64>| -> f64 { x[0] };
+    println(f"{f ⩽ 1.0} {f ⊛ 2.0} {f.eval1()} {n.eval1()} {generic(f)} {generic(n)} {f.at_most(1.0)}");
+}

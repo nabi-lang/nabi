@@ -1,0 +1,46 @@
+// expect-exit: 0
+// expect-stdout:
+// env ok
+
+// `target_env` comes from the target: gnu or musl on
+// Linux, msvc on Windows, absent on macOS, iOS, FreeBSD, Android, WebAssembly and
+// without an OS.
+#[cfg(any(
+    all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
+    all(target_os = "windows", target_env = "msvc"),
+    all(
+        any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "android",
+            target_os = "wasi",
+            target_os = "unknown",
+            target_os = "none"
+        ),
+        not(any(target_env = "gnu", target_env = "musl", target_env = "msvc"))
+    )
+))]
+fn env() -> str { "env ok" }
+
+#[cfg(not(any(
+    all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
+    all(target_os = "windows", target_env = "msvc"),
+    all(
+        any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "android",
+            target_os = "wasi",
+            target_os = "unknown",
+            target_os = "none"
+        ),
+        not(any(target_env = "gnu", target_env = "musl", target_env = "msvc"))
+    )
+)))]
+fn env() -> str { "env wrong" }
+
+fn main() {
+    println(env());
+}

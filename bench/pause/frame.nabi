@@ -1,0 +1,105 @@
+// A 60 fps game-loop shape: a static asset heap, entities updated per
+// frame, per-frame garbage (particles, a debug line), a 120-frame
+// history ring (middle lifetime). Prints the frame-time distribution.
+//
+//     frame <frames> <asset MiB> <garbage KiB/frame> <busy|paced> [none|full|young]
+//
+// busy: frames back to back (frame time = work + GC); paced: sleep to
+// the next 16.67 ms tick (the marker gets idle time). The last argument
+// collects explicitly at the end of every frame (`gc::collect`, or the
+// runtime's minor-collection entry).
+use std::env;
+use std::thread;
+use bare::gc;
+use core::time::{Duration, Instant};
+
+extern "nabi" {
+    fn nabi_gc_collect_young();
+}
+
+trait Weigh { fn w(self) -> i64; }
+struct Particle { x: f64; y: f64; vx: f64; vy: f64; }
+impl Weigh for Particle { fn w(self) -> i64 { return (self.x + self.y) as i64; } }
+
+struct Entity { x: f64; y: f64; vx: f64; vy: f64; name: str; hp: i64; }
+
+fn main() -> i32 {
+    let args = env::args();
+    let frames = try! args[1].parse::<i64>();
+    let asset_mb = try! args[2].parse::<i64>();
+    let garbage_kb = try! args[3].parse::<i64>();
+    let paced = args[4] == "paced";
+    let gcmode = if args.len() > 5 { args[5] } else { "none" };
+
+    // Static asset: pointer-rich (strings in lists), never changes.
+    let asset: List<List<str>> = [];
+    let rows = asset_mb * 1048576 / 1024;
+    let i: i64 = 0;
+    while i < rows {
+        let row: List<str> = [];
+        let j = 0;
+        while j < 12 { row.push(f"tile {i}:{j} mesh/material ref"); j += 1; }
+        asset.push(row);
+        i += 1;
+    }
+
+    let ents: List<Entity> = [];
+    i = 0;
+    while i < 20000 {
+        ents.push(Entity { x: i as f64, y: 0.0, vx: 1.0, vy: 0.5, name: f"ent{i}", hp: 100 });
+        i += 1;
+    }
+    let history: List<List<f64>> = [];
+    let per_frame = garbage_kb * 1024 / 48;
+    let times: List<i64> = [];
+    let tick: i64 = 16666667;
+    let start = Instant::now();
+    let sum: i64 = 0;
+    let f: i64 = 0;
+    while f < frames {
+        let t0 = Instant::now();
+        // Update: every entity moves; a few respawn (new name string).
+        let k: usize = 0;
+        while k < ents.len() {
+            let e = ents[k];
+            e.x = e.x + e.vx;
+            e.y = e.y + e.vy;
+            if (f + k as i64) % 997 == 0 {
+                e.name = f"ent{k} respawned at frame {f}";
+                e.hp = 100;
+            }
+            ents[k] = e;
+            k += 1;
+        }
+        // Per-frame garbage: particles, gathered then dropped.
+        let ps: List<any Weigh> = [];
+        let p: i64 = 0;
+        while p < per_frame {
+            ps.push(Particle { x: p as f64, y: f as f64, vx: 0.0, vy: 1.0 });
+            p += 1;
+        }
+        for q in ps { sum += q.w(); }
+        let line = f"frame {f}: {ents.len()} entities, {ps.len()} particles";
+        sum += line.len() as i64;
+        // History: positions of the first 2000 entities, 120 frames kept.
+        let snap: List<f64> = List::with_capacity(4000);
+        k = 0;
+        while k < 2000 { snap.push(ents[k].x); snap.push(ents[k].y); k += 1; }
+        if history.len() < 120 { history.push(snap); } else { history[(f % 120) as usize] = snap; }
+        if gcmode == "full" { gc::collect(); }
+        if gcmode == "young" { unsafe { nabi_gc_collect_young() }; }
+        let dt = t0.elapsed().as_ns();
+        times.push(dt);
+        if paced {
+            let next = (f + 1) * tick;
+            let now = start.elapsed().as_ns();
+            if next > now { thread::sleep(Duration::ns(next - now)); }
+        }
+        f += 1;
+    }
+    if asset.len() > 3 { sum += asset[3][4].len() as i64; }
+    sum += history[0].len() as i64;
+    println(f"sum {sum}");
+    for t in times { println(f"frame {t}"); }
+    return 0;
+}

@@ -1,0 +1,29 @@
+[package]
+name = "nabic_driver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+nabic_ast = { workspace = true }
+nabic_codegen = { workspace = true }
+nabic_codegen_native = { workspace = true }
+nabic_core = { workspace = true }
+nabic_diagnostic = { workspace = true }
+nabic_hir = { workspace = true }
+nabic_ir_common = { workspace = true }
+nabic_lexer = { workspace = true }
+nabic_mir = { workspace = true }
+nabic_mono = { workspace = true }
+nabic_nabion = { workspace = true }
+nabic_parser = { workspace = true }
+nabic_target = { workspace = true }
+nabic_typeck = { workspace = true }
+nabic_wit = { workspace = true }
+nabicc_bindgen = { workspace = true }
+nabild = { workspace = true }
+
+[lints]
+workspace = true

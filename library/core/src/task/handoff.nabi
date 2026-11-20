@@ -1,0 +1,178 @@
+// core::task::handoff: blocked workers handed to spare threads, and
+// the monitor that finds them.
+
+use core::collections::raw::{GcBuf, buf_new, buf_same};
+use core::rt::{atomic_load, atomic_xchg};
+use core::sync::Mutex;
+use core::task::{Pool, Worker, new_worker, now_ns, start_worker};
+
+/// Most threads beyond the workers at once (handed-on blocked threads
+/// and spares); past it a blocked worker waits for its call.
+const HANDOFF_MAX_THREADS: i32 = 512;
+
+/// A spare idle this long exits.
+const SPARE_KEEP_ALIVE_NS: i64 = 10_000_000_000;
+
+/// One waiting spare: `word` goes 1 once `take` holds its worker.
+struct Spare {
+    word: GcBuf<i32>;
+    take: GcBuf<Worker | none>;
+    id: u64;
+}
+
+/// Pool threads beyond the workers: each handoff to a new thread adds
+/// one (the blocked thread finishes as an orphan, then waits here); an
+/// expired spare removes one.
+pub(pkg) struct Spares {
+    lock: Mutex<i32>;
+    /// Waiting spares, the latest last (under `lock`).
+    idle: List<Spare>;
+    /// Threads beyond the workers (under `lock`).
+    extra: GcBuf<i32>;
+}
+
+unsafe impl Send for Spares {}
+
+unsafe impl Sync for Spares {}
+
+impl Spares {
+    pub(pkg) const fn new() -> Spares {
+        unsafe { Spares { lock: Mutex::new(0), idle: List::new(), extra: buf_new(1) } }
+    }
+
+    /// Run `w` on a spare, else on a new thread (the monitor, after
+    /// `room`; only it takes spares).
+    fn give(self, w: Worker) {
+        unsafe {
+            let spare: Spare | none = none;
+            // Handed under the lock: an expiring spare sees it there.
+            using g = self.lock.lock() {
+                spare = self.idle.pop();
+                if let s: Spare = spare {
+                    w.tid[0] = s.id;
+                    s.take[0] = w;
+                    atomic_xchg(s.word, 0, 1, SeqCst);
+                } else {
+                    self.extra[0] += 1;
+                }
+            }
+            if let s: Spare = spare {
+                nabi_sync_wake(s.word, 0);
+            } else {
+                start_worker(w);
+            }
+        }
+    }
+
+    /// Whether a handoff can find a thread: a spare, or room under the
+    /// cap.
+    fn room(self) -> bool {
+        using g = self.lock.lock() {
+            return self.idle.len() > 0 || unsafe { self.extra[0] } < HANDOFF_MAX_THREADS;
+        }
+    }
+
+    /// Wait as spare `id` for a worker; `none` after the keep-alive.
+    pub(pkg) fn wait(self, id: u64) -> Worker | none {
+        unsafe {
+            let me = Spare { word: buf_new(1), take: buf_new(1), id };
+            using g = self.lock.lock() { self.idle.push(me); }
+            let until = now_ns() + SPARE_KEEP_ALIVE_NS;
+            loop {
+                let left = until - now_ns();
+                if left > 0 {
+                    nabi_sync_wait(me.word, 0, 0, left);
+                }
+                using g = self.lock.lock() {
+                    if atomic_load(me.word, 0, SeqCst) == 1 {
+                        return me.take[0];
+                    }
+                    if now_ns() >= until {
+                        self.drop_idle(me.word);
+                        self.extra[0] -= 1;
+                        return none;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remove the idle spare waiting on `word` (under `lock`).
+    const fn drop_idle(self, word: GcBuf<i32>) {
+        for i in 0..self.idle.len() {
+            if buf_same(self.idle[i].word, word) {
+                self.idle.remove(i);
+                return;
+            }
+        }
+    }
+
+    /// After a failed REPL cell (`hook_restart`): spares that are gone
+    /// no longer count.
+    pub(pkg) fn forget_lost(self) {
+        unsafe {
+            using g = self.lock.lock() {
+                let i = self.idle.len();
+                while i > 0 {
+                    i -= 1;
+                    if nabi_thread_lost(self.idle[i].id) != 0 {
+                        self.idle.remove(i);
+                        self.extra[0] -= 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The monitor: a worker whose lane stays blocked across a
+/// scan goes to a new thread. Scans every tick while some lane blocks;
+/// after 20 quiet ones it sleeps until a lane blocks.
+pub(pkg) fn monitor(pool: Pool) -> ! {
+    unsafe {
+        let quiet = 0;
+        nabi_session_enter();
+        loop {
+            nabi_session_pass();
+            let any = false;
+            for w in pool.workers {
+                let tick = nabi_lane_blocked(w.lane[0]);
+                if tick >= 0 {
+                    any = true;
+                    if tick == w.seen[0] && atomic_load(w.locals, 0, SeqCst) == 0 {
+                        hand_on(w, tick);
+                        w.seen[0] = -1;
+                        continue;
+                    }
+                }
+                w.seen[0] = tick;
+            }
+            quiet = if any { 0 } else { quiet + 1 };
+            nabi_session_leave();
+            nabi_lane_pause(if quiet >= 20 { 1 } else { 0 });
+            nabi_session_enter();
+        }
+    }
+}
+
+/// Move pool worker `w`, blocked in the call of `tick`, to a spare or a
+/// new thread; its old thread gets an orphan guest polling the same
+/// task. At the thread cap it stays blocked.
+fn hand_on(w: Worker, tick: i64) {
+    unsafe {
+        if !w.pool.spares.room() {
+            return;
+        }
+        let heir = new_worker(w.pool, 0, true, true);
+        // Stable: the blocked thread is inside that task's poll.
+        heir.running[0] = w.running[0];
+        let cell: GcBuf<Worker> = buf_new(1);
+        cell[0] = heir;
+        if nabi_lane_take(w.lane[0], tick, cell) == 0 {
+            return;
+        }
+        w.lane[0] = nabi_lane_new();
+        w.running[0] = none;
+        w.pool.spares.give(w);
+    }
+}

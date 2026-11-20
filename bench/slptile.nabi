@@ -1,0 +1,90 @@
+// A matrix product of 128 x 128 matrices in 4 x 4 tiles of C, f64 and
+// f32, 40 times: each step of k adds a row of A times four elements of
+// B to four adjacent elements of each tile row, written out lane by
+// lane (straight-line vectors: loads, a splat, a multiply, an add and a
+// store per row).
+use bare::mem::GcBuf;
+
+fn tiles64(a: GcBuf<f64>, b: GcBuf<f64>, c: GcBuf<f64>, n: usize) {
+    unsafe {
+        let i = 0usize;
+        while i < n {
+            let j = 0usize;
+            while j < n {
+                for p in 0..n {
+                    let bo = p * n + j;
+                    let (b0, b1, b2, b3) = (b.get(bo), b.get(bo + 1), b.get(bo + 2), b.get(bo + 3));
+                    for r in 0..4 {
+                        let x = a.get((i + r) * n + p);
+                        let co = (i + r) * n + j;
+                        c.set(co, c.get(co) + x * b0);
+                        c.set(co + 1, c.get(co + 1) + x * b1);
+                        c.set(co + 2, c.get(co + 2) + x * b2);
+                        c.set(co + 3, c.get(co + 3) + x * b3);
+                    }
+                }
+                j += 4;
+            }
+            i += 4;
+        }
+    }
+}
+
+fn tiles32(a: GcBuf<f32>, b: GcBuf<f32>, c: GcBuf<f32>, n: usize) {
+    unsafe {
+        let i = 0usize;
+        while i < n {
+            let j = 0usize;
+            while j < n {
+                for p in 0..n {
+                    let bo = p * n + j;
+                    let (b0, b1, b2, b3) = (b.get(bo), b.get(bo + 1), b.get(bo + 2), b.get(bo + 3));
+                    for r in 0..4 {
+                        let x = a.get((i + r) * n + p);
+                        let co = (i + r) * n + j;
+                        c.set(co, c.get(co) + x * b0);
+                        c.set(co + 1, c.get(co + 1) + x * b1);
+                        c.set(co + 2, c.get(co + 2) + x * b2);
+                        c.set(co + 3, c.get(co + 3) + x * b3);
+                    }
+                }
+                j += 4;
+            }
+            i += 4;
+        }
+    }
+}
+
+fn main() -> i32 {
+    let n: usize = 128;
+    let a: GcBuf<f64> = unsafe { GcBuf::new(n * n) };
+    let b: GcBuf<f64> = unsafe { GcBuf::new(n * n) };
+    let c: GcBuf<f64> = unsafe { GcBuf::new(n * n) };
+    let a32: GcBuf<f32> = unsafe { GcBuf::new(n * n) };
+    let b32: GcBuf<f32> = unsafe { GcBuf::new(n * n) };
+    let c32: GcBuf<f32> = unsafe { GcBuf::new(n * n) };
+    unsafe {
+        for i in 0..n * n {
+            a.set(i, (i % 5) as f64 * 0.5);
+            b.set(i, (i % 7) as f64 - 3.0);
+            c.set(i, 0.0);
+            a32.set(i, (i % 5) as f32 * 0.5);
+            b32.set(i, (i % 7) as f32 - 3.0);
+            c32.set(i, 0.0);
+        }
+    }
+    for _ in 0..40 {
+        tiles64(a, b, c, n);
+        tiles32(a32, b32, c32, n);
+    }
+    let s: f64 = 0.0;
+    let s32: f32 = 0.0;
+    unsafe {
+        for i in 0..n * n {
+            s += c.get(i) * (i % 3) as f64;
+            s32 += c32.get(i) * (i % 3) as f32;
+        }
+    }
+    println(f"{s} {s32}");
+    return 0;
+}

@@ -1,0 +1,30 @@
+// expect-exit: 0
+// expect-stdout:
+// 2 2 3
+
+// `Self::Elem` as a generic alias's argument in a trait signature:
+// generic callers see the impl's type through the alias.
+use core::array::{Array, Matrix};
+
+type Many<T> = List<T>;
+
+trait Wrap {
+    type Elem;
+    fn items(self) -> Matrix<Self::Elem>;
+    fn many(self) -> Many<Elem>;
+}
+
+impl Wrap for List<f64> {
+    type Elem = f64;
+    fn items(self) -> Matrix<f64> { Array::from_list(self, [1, self.len()]) }
+    fn many(self) -> Many<f64> { self + [0.0] }
+}
+
+fn first<W: Wrap>(w: W) -> usize { w.items().len() }
+
+fn more<W: Wrap>(w: W) -> usize { w.many().len() }
+
+fn main() {
+    let xs: List<f64> = [1.0, 2.0];
+    println(f"{first(xs)} {xs.items().len()} {more(xs)}");
+}

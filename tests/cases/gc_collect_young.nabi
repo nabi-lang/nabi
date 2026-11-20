@@ -1,0 +1,28 @@
+// expect-exit: 0
+// expect-stdout:
+// minor true
+// within true
+// kept 1000 499500
+
+// `bare::gc::collect_young` runs a minor collection (none while a
+// concurrent mark runs); `collect_young_within` runs one only when the
+// last ones say it fits the budget.
+use bare::gc;
+
+fn main() {
+    let keep: List<i64> = [];
+    for i in 0..1000 { keep.push(i); }
+    gc::collect();
+    let before = gc::stats();
+    for i in 0..20000 { let _junk = f"junk {i}"; }
+    gc::collect_young();
+    let s = gc::stats();
+    println(f"minor {s.minor > before.minor || s.concurrent > before.concurrent}");
+    gc::collect();
+    let ran = gc::collect_young_within(1000.0);
+    // A stress run may have started a concurrent mark meanwhile.
+    println(f"within {ran || gc::stats().concurrent > before.concurrent}");
+    let sum: i64 = 0;
+    for v in keep { sum += v; }
+    println(f"kept {keep.len()} {sum}");
+}

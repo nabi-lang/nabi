@@ -1,0 +1,9 @@
+// expect-exit: 101
+// expect-stderr: fatal error: out of memory
+// expect-stdout:
+
+// `oom()` is `-> !`: it fits an `i32` slot.
+fn main() -> i32 {
+    let n: i32 = panic::oom();
+    return n;
+}

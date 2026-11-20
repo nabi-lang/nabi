@@ -1,0 +1,36 @@
+// needs: threads
+// expect-exit: 0
+// expect-stdout:
+// collected while spinning: true
+// spin result: true
+
+// A loop back edge polls the yield flag, so a thread
+// spinning in a loop without calls still reaches a safepoint and a
+// stop-the-world collection on another thread completes.
+use core::sync::{LoadOrdering, StoreOrdering};
+use std::thread;
+
+extern "C" {
+    fn nabi_gc_collect();
+    fn nabi_gc_stats_collections() -> u64;
+}
+
+fn main() -> i32 {
+    let stop = Atomic::new(0);
+    let started = Atomic::new(0);
+    let h = thread::spawn(|| {
+        started.store(1, StoreOrdering::Relaxed);
+        let n = 0u64;
+        while stop.load(LoadOrdering::Relaxed) == 0 {
+            n = n + 1u64;
+        }
+        n > 0u64
+    });
+    while started.load(LoadOrdering::Relaxed) == 0 { thread::yield_now(); }
+    let before = unsafe { nabi_gc_stats_collections() };
+    unsafe { nabi_gc_collect(); }
+    println(f"collected while spinning: {unsafe { nabi_gc_stats_collections() } > before}");
+    stop.store(1, StoreOrdering::Relaxed);
+    println(f"spin result: {try! h.join()}");
+    return 0;
+}

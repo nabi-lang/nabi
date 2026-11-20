@@ -1,0 +1,24 @@
+// expect-exit: 0
+// expect-stdout:
+// unpaired surrogate at unit 2
+// Utf16Error(unpaired surrogate at unit 2) 2 true
+// high then ascii: 1
+// high at the end: 3
+// lone low first: 0
+
+// `str::from_utf16` throws `str::Utf16Error` at the first unpaired
+// surrogate; `valid_up_to` is its unit index.
+fn at(units: List<u16>) -> usize {
+    try str::from_utf16(units) catch e: str::Utf16Error { return e.valid_up_to(); };
+    panic("decoded")
+}
+
+fn main() {
+    try str::from_utf16([0x61u16, 0x62u16, 0xDC00u16]) catch e: str::Utf16Error {
+        println(f"{e}");
+        println(f"{e:?} {e.valid_up_to()} {e == e.clone()}");
+    };
+    println(f"high then ascii: {at([0x61u16, 0xD800u16, 0x62u16])}");
+    println(f"high at the end: {at([0xD83Du16, 0xDE00u16, 0x61u16, 0xD83Du16])}");
+    println(f"lone low first: {at([0xDE00u16])}");
+}

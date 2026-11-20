@@ -1,0 +1,12 @@
+// expect-exit: 0
+// expect-stdout:
+// [(0, 5), (1, 1), (1, 2)] Less Greater 1
+
+// `Ordering::then` / `then_with`: a tie-break; `then_with` runs its
+// function only on a tie.
+let xs = [(1, 2), (1, 1), (0, 5)];
+xs.sort_by(|a: (i64, i64), b: (i64, i64)| a.0.cmp(b.0).then(a.1.cmp(b.1)));
+let calls = [0];
+let lt = 1.cmp(2).then_with(|| -> Ordering { calls[0] += 1; Ordering::Greater });
+let gt = 2.cmp(2).then_with(|| -> Ordering { calls[0] += 1; Ordering::Greater });
+println(f"{xs:?} {lt:?} {gt:?} {calls[0]}");

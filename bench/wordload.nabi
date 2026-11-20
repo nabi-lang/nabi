@@ -1,0 +1,59 @@
+// Words read from a byte buffer one byte at a time (the hasher's
+// `le_word8`), variable shifts by a masked amount, and a short loop
+// whose poll sits beside live values. Output matches bench/c/wordload.c.
+use bare::mem::{GcBuf, buf_new};
+
+#[inline(always)]
+fn le_word8(buf: GcBuf<u8>, at: usize) -> u64 {
+    unsafe {
+        (buf[at] as u64)
+            | ((buf[at.wrapping_add(1)] as u64) << 8u64)
+            | ((buf[at.wrapping_add(2)] as u64) << 16u64)
+            | ((buf[at.wrapping_add(3)] as u64) << 24u64)
+            | ((buf[at.wrapping_add(4)] as u64) << 32u64)
+            | ((buf[at.wrapping_add(5)] as u64) << 40u64)
+            | ((buf[at.wrapping_add(6)] as u64) << 48u64)
+            | ((buf[at.wrapping_add(7)] as u64) << 56u64)
+    }
+}
+
+fn words(buf: GcBuf<u8>, n: usize) -> u64 {
+    let h: u64 = 0;
+    let i: usize = 0;
+    while i + 8 <= n {
+        h = (h ^ le_word8(buf, i)).wrapping_mul(0x100000001b3u64);
+        i += 8;
+    }
+    h
+}
+
+fn rot(x: u64, n: u64) -> u64 {
+    (x << (n % 64u64)) | (x >> ((64u64 - n % 64u64) % 64u64))
+}
+
+fn shifts(seed: u64, m: usize) -> u64 {
+    let x = seed;
+    let h: u64 = 0;
+    for k in 0..m {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        h = h.wrapping_add(rot(x, x >> 58u64)) ^ (x << ((k as u64) & 63u64));
+    }
+    h
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 16;
+    let buf: GcBuf<u8> = unsafe { buf_new(n) };
+    let x: u64 = 5;
+    for i in 0..n {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        unsafe { buf[i] = (x >> 56u64) as u8; }
+    }
+    let h: u64 = 0;
+    for r in 0..400usize {
+        h = h.wrapping_add(words(buf, n - (r % 8)));
+    }
+    let s = shifts(h, 20000000);
+    println(f"{h} {s}");
+    return 0;
+}

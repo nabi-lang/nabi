@@ -1,0 +1,11 @@
+// nabic-arg: --extern app=tests/cases/003_1_lib_and_main
+// expect-exit: 0
+// expect-stdout:
+// 5 6 0
+
+// A dependency that has both `src/lib.nabi` and `src/main.nabi` gives its
+// dependents the library only.
+use app::add;
+
+let o = app::origin();
+println(f"{add(2, 3)} {app::shapes::area(2, 3)} {o.x}");

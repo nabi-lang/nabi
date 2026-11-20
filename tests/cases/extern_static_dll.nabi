@@ -1,0 +1,16 @@
+// only-os: windows
+// expect-exit: 0
+// expect-stdout: true
+// An extern static of a block not linked
+// `kind = "static"` is a DLL's data on Windows, read through its import
+// address (`__imp_NlsAnsiCodePage`: ntdll's import library defines
+// nothing else for it).
+#[link("ntdll")]
+extern "system" {
+    static NlsAnsiCodePage: u16;
+}
+
+fn main() {
+    println(f"{unsafe { NlsAnsiCodePage } > 0u16}");
+}
+

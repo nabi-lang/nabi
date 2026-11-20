@@ -1,0 +1,1063 @@
+//! core::collections::sorted - `SortedDict<K, V>` and
+//! `SortedSet<T>`: ordered by `K: Ord`, kept in a B-tree. Lookup,
+//! insert and remove are O(log n); iteration is in key order, and
+//! `range`, `first` / `last`, `floor` / `ceil` find keys by order.
+//!
+//! The nodes live in flat lists by node number: node `n`'s keys and
+//! values fill slots `n * FULL ..` of `keys` / `vals`, its children
+//! slots `n * (FULL + 1) ..` of `kids`, and `lens[n]` counts its keys.
+//! Every node but the root holds `MIN - 1` to `FULL` keys. A vacated
+//! slot is zeroed, so a removed entry keeps nothing alive; a removed
+//! node's number goes on `free` for reuse.
+
+/// The B-tree's minimum degree: nodes hold at most `2 * MIN - 1` keys.
+const MIN: usize = 16;
+const FULL: usize = 2 * MIN - 1;
+
+// `meta` slots.
+const ROOT: usize = 0;
+const LEN: usize = 1;
+const STAMP: usize = 2;
+
+/// A map ordered by key. Copies share the map, as with `Dict`.
+pub struct SortedDict<K, V> {
+    keys: List<K>;
+    vals: List<V>;
+    kids: List<usize>;
+    lens: List<usize>;
+    leaf: List<bool>;
+    free: List<usize>;
+    /// One zeroed key and value: what a vacated slot gets.
+    zero: List<(K, V)>;
+    /// The root node, the entry count, and a stamp bumped by every
+    /// change to the tree's shape (iterators check it).
+    meta: List<usize>;
+}
+
+// Shares its lists like `List`.
+impl<K, V> !Sync for SortedDict<K, V> {}
+
+/// The bounds of a key range: `a..b`, `a..=b`, `a..`, `..b`, `..=b`
+/// and `..` implement it, so `d.range(3..7)` takes any of them.
+pub trait KeyRange<K> {
+    /// The lower bound and whether it is included; `none` when open.
+    fn lower(self) -> (K, bool) | none;
+    /// The upper bound and whether it is included; `none` when open.
+    fn upper(self) -> (K, bool) | none;
+}
+
+impl<K> KeyRange<K> for Range<K> {
+    fn lower(self) -> (K, bool) | none { (self.start, true) }
+    fn upper(self) -> (K, bool) | none { (self.end, false) }
+}
+
+impl<K> KeyRange<K> for RangeInclusive<K> {
+    fn lower(self) -> (K, bool) | none { (self.start, true) }
+    fn upper(self) -> (K, bool) | none { (self.end, true) }
+}
+
+impl<K> KeyRange<K> for RangeFrom<K> {
+    fn lower(self) -> (K, bool) | none { (self.start, true) }
+    fn upper(self) -> (K, bool) | none { none }
+}
+
+impl<K> KeyRange<K> for RangeTo<K> {
+    fn lower(self) -> (K, bool) | none { none }
+    fn upper(self) -> (K, bool) | none { (self.end, false) }
+}
+
+impl<K> KeyRange<K> for RangeToInclusive<K> {
+    fn lower(self) -> (K, bool) | none { none }
+    fn upper(self) -> (K, bool) | none { (self.end, true) }
+}
+
+impl<K> KeyRange<K> for RangeFull {
+    fn lower(self) -> (K, bool) | none { none }
+    fn upper(self) -> (K, bool) | none { none }
+}
+
+impl<K, V> SortedDict<K, V> {
+    #[inline]
+    const fn key(self, n: usize, i: usize) -> K { unsafe { self.keys.buffer()[n * FULL + i] } }
+    #[inline]
+    const fn val(self, n: usize, i: usize) -> V { unsafe { self.vals.buffer()[n * FULL + i] } }
+    #[inline]
+    const fn put(self, n: usize, i: usize, k: K, v: V) {
+        unsafe {
+            self.keys.buffer()[n * FULL + i] = k;
+            self.vals.buffer()[n * FULL + i] = v;
+        }
+    }
+    #[inline]
+    const fn kid(self, n: usize, i: usize) -> usize { unsafe { self.kids.buffer()[n * (FULL + 1) + i] } }
+    #[inline]
+    const fn set_kid(self, n: usize, i: usize, c: usize) { unsafe { self.kids.buffer()[n * (FULL + 1) + i] = c; } }
+    #[inline]
+    const fn count(self, n: usize) -> usize { unsafe { self.lens.buffer()[n] } }
+    #[inline]
+    const fn set_count(self, n: usize, c: usize) { unsafe { self.lens.buffer()[n] = c; } }
+    #[inline]
+    const fn is_leaf(self, n: usize) -> bool { unsafe { self.leaf.buffer()[n] } }
+
+    /// Zero key and value slot `i` of node `n`.
+    const fn vacate(self, n: usize, i: usize) {
+        let (zk, zv) = unsafe { self.zero.buffer()[0] };
+        self.put(n, i, zk, zv);
+    }
+
+    /// Insert `k`, `v` at position `i` of node `n` (not full).
+    const fn open_at(self, n: usize, i: usize, k: K, v: V) {
+        let c = self.count(n);
+        let j = c;
+        while j > i {
+            self.put(n, j, self.key(n, j - 1), self.val(n, j - 1));
+            j -= 1;
+        }
+        self.put(n, i, k, v);
+        self.set_count(n, c + 1);
+    }
+
+    /// Remove position `i` of node `n`.
+    const fn close_at(self, n: usize, i: usize) -> (K, V) {
+        let c = self.count(n);
+        let out = (self.key(n, i), self.val(n, i));
+        for j in i..c - 1 {
+            self.put(n, j, self.key(n, j + 1), self.val(n, j + 1));
+        }
+        self.vacate(n, c - 1);
+        self.set_count(n, c - 1);
+        out
+    }
+
+    /// Insert child `c` at position `i` of node `n`'s `m` children.
+    const fn kid_open(self, n: usize, i: usize, m: usize, c: usize) {
+        let j = m;
+        while j > i {
+            self.set_kid(n, j, self.kid(n, j - 1));
+            j -= 1;
+        }
+        self.set_kid(n, i, c);
+    }
+
+    /// Remove child `i` of node `n`'s `m` children.
+    const fn kid_close(self, n: usize, i: usize, m: usize) -> usize {
+        let c = self.kid(n, i);
+        for j in i..m - 1 {
+            self.set_kid(n, j, self.kid(n, j + 1));
+        }
+        c
+    }
+
+    /// A fresh empty node's number.
+    const fn node(self, leaf: bool) -> usize {
+        if let n: usize = self.free.pop() {
+            unsafe { self.leaf.buffer()[n] = leaf; }
+            return n;
+        }
+        let n = self.lens.len();
+        self.lens.push(0);
+        self.leaf.push(leaf);
+        // Fresh capacity is zero bits: the new slots are vacated ones.
+        self.keys.reserve(FULL);
+        self.vals.reserve(FULL);
+        self.kids.reserve(FULL + 1);
+        unsafe {
+            self.keys.set_len(self.keys.len() + FULL);
+            self.vals.set_len(self.vals.len() + FULL);
+            self.kids.set_len(self.kids.len() + FULL + 1);
+        }
+        n
+    }
+
+    const fn release(self, n: usize) {
+        for i in 0..self.count(n) {
+            self.vacate(n, i);
+        }
+        self.set_count(n, 0);
+        self.free.push(n);
+    }
+
+    const fn bump(self) { self.meta[STAMP] = self.meta[STAMP].wrapping_add(1); }
+}
+
+impl<K: Ord, V> SortedDict<K, V> {
+    /// An empty map.
+    pub const fn new() -> SortedDict<K, V> {
+        let zero: List<(K, V)> = List::with_capacity(1);
+        unsafe { zero.set_len(1); }
+        let d: SortedDict<K, V> = SortedDict { keys: [], vals: [], kids: [], lens: [], leaf: [], free: [], zero, meta: [0, 0, 0] };
+        d.node(true);
+        d
+    }
+
+    /// The number of entries.
+    pub const fn len(self) -> usize { self.meta[LEN] }
+
+    /// `true` when the map has no entry.
+    pub const fn is_empty(self) -> bool { self.meta[LEN] == 0 }
+
+    /// The first position in node `n` whose key is not below `k` (above
+    /// it when `strict`).
+    const fn seek(self, n: usize, k: K, strict: bool) -> usize {
+        let kb = unsafe { self.keys.buffer() };
+        let base = n * FULL;
+        let (lo, hi) = (0usize, self.count(n));
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let c = unsafe { kb[base + mid] }.cmp(k);
+            if c.is_lt() || (strict && c.is_eq()) { lo = mid + 1; } else { hi = mid; }
+        }
+        lo
+    }
+
+    /// The node and position of `k`, or `none`.
+    const fn locate(self, k: K) -> (usize, usize) | none {
+        let n = self.meta[ROOT];
+        loop {
+            let i = self.seek(n, k, false);
+            if i < self.count(n) && self.key(n, i).cmp(k).is_eq() {
+                return (n, i);
+            }
+            if self.is_leaf(n) {
+                return none;
+            }
+            n = self.kid(n, i);
+        }
+    }
+
+    /// `k`'s value, or `none`. O(log n).
+    pub const fn get(self, k: K) -> V | none {
+        if let (n, i): (usize, usize) = self.locate(k) {
+            return self.val(n, i);
+        }
+        none
+    }
+
+    /// `k`'s value, or `default` when absent.
+    pub const fn get_or(self, k: K, default: V) -> V {
+        if let (n, i): (usize, usize) = self.locate(k) {
+            return self.val(n, i);
+        }
+        default
+    }
+
+    /// `true` when `k` has an entry.
+    pub const fn contains_key(self, k: K) -> bool {
+        self.locate(k) is (usize, usize)
+    }
+
+    /// Store `v` under `k`; the old value, or `none` when `k` is new.
+    /// O(log n).
+    ///
+    /// ```nabi
+    /// use core::collections::SortedDict;
+    ///
+    /// let d: SortedDict<str, i32> = SortedDict::new();
+    /// d.insert("b", 2);
+    /// d["a"] = 1;
+    /// assert(d.insert("b", 3) == 2 && d["b"] == 3);
+    /// assert(d.keys().collect::<List<str>>() == ["a", "b"]);
+    /// ```
+    #[discardable]
+    pub const fn insert(self, k: K, v: V) -> V | none {
+        if let (n, i): (usize, usize) = self.locate(k) {
+            let old = self.val(n, i);
+            self.put(n, i, k, v);
+            return old;
+        }
+        self.bump();
+        let r = self.meta[ROOT];
+        if self.count(r) == FULL {
+            let s = self.node(false);
+            self.set_kid(s, 0, r);
+            self.meta[ROOT] = s;
+            self.split(s, 0);
+            r = s;
+        }
+        loop {
+            let i = self.seek(r, k, false);
+            if self.is_leaf(r) {
+                self.open_at(r, i, k, v);
+                break;
+            }
+            if self.count(self.kid(r, i)) == FULL {
+                self.split(r, i);
+                if self.key(r, i).cmp(k).is_lt() {
+                    i += 1;
+                }
+            }
+            r = self.kid(r, i);
+        }
+        self.meta[LEN] += 1;
+        none
+    }
+
+    /// Split the full child `i` of `x`: its middle key moves up into `x`.
+    const fn split(self, x: usize, i: usize) {
+        let y = self.kid(x, i);
+        let leaf = self.is_leaf(y);
+        let z = self.node(leaf);
+        for j in 0..MIN - 1 {
+            self.put(z, j, self.key(y, MIN + j), self.val(y, MIN + j));
+        }
+        if !leaf {
+            for j in 0..MIN {
+                self.set_kid(z, j, self.kid(y, MIN + j));
+            }
+        }
+        self.set_count(z, MIN - 1);
+        let (mk, mv) = (self.key(y, MIN - 1), self.val(y, MIN - 1));
+        for j in MIN - 1..FULL {
+            self.vacate(y, j);
+        }
+        self.set_count(y, MIN - 1);
+        self.kid_open(x, i + 1, self.count(x) + 1, z);
+        self.open_at(x, i, mk, mv);
+    }
+
+    /// Remove `k`; its value, or `none` when absent. O(log n).
+    ///
+    /// ```nabi
+    /// use core::collections::SortedDict;
+    ///
+    /// let d: SortedDict<i64, str> = SortedDict::from([(3, "c"), (1, "a")]);
+    /// assert(d.remove(1) == "a" && d.remove(1) is none && d.len() == 1);
+    /// ```
+    #[discardable]
+    pub const fn remove(self, k: K) -> V | none {
+        if !self.contains_key(k) {
+            return none;
+        }
+        self.bump();
+        let v = self.delete(self.meta[ROOT], k);
+        self.meta[LEN] -= 1;
+        let r = self.meta[ROOT];
+        if self.count(r) == 0 && !self.is_leaf(r) {
+            self.meta[ROOT] = self.kid(r, 0);
+            self.release(r);
+        }
+        v
+    }
+
+    /// Delete `k` (present) from the subtree at `x`, which holds at
+    /// least `MIN` keys unless it is the root.
+    const fn delete(self, x: usize, k: K) -> V {
+        loop {
+            let i = self.seek(x, k, false);
+            if i < self.count(x) && self.key(x, i).cmp(k).is_eq() {
+                if self.is_leaf(x) {
+                    let (_, v) = self.close_at(x, i);
+                    return v;
+                }
+                let v = self.val(x, i);
+                let y = self.kid(x, i);
+                let z = self.kid(x, i + 1);
+                if self.count(y) >= MIN {
+                    let (pk, pv) = self.edge(y, true);
+                    self.put(x, i, pk, pv);
+                    self.delete(y, pk);
+                    return v;
+                }
+                if self.count(z) >= MIN {
+                    let (sk, sv) = self.edge(z, false);
+                    self.put(x, i, sk, sv);
+                    self.delete(z, sk);
+                    return v;
+                }
+                self.merge(x, i);
+                x = y;
+                continue;
+            }
+            let c = self.kid(x, i);
+            if self.count(c) < MIN {
+                let n = self.count(x);
+                if i > 0 && self.count(self.kid(x, i - 1)) >= MIN {
+                    self.from_left(x, i);
+                } else if i < n && self.count(self.kid(x, i + 1)) >= MIN {
+                    self.from_right(x, i);
+                } else if i < n {
+                    self.merge(x, i);
+                } else {
+                    self.merge(x, i - 1);
+                    c = self.kid(x, i - 1);
+                }
+            }
+            x = c;
+        }
+    }
+
+    /// The last (`last`) or first entry of the subtree at `n`.
+    const fn edge(self, n: usize, last: bool) -> (K, V) {
+        while !self.is_leaf(n) {
+            n = self.kid(n, if last { self.count(n) } else { 0 });
+        }
+        let j = if last { self.count(n) - 1 } else { 0 };
+        (self.key(n, j), self.val(n, j))
+    }
+
+    /// Child `i` of `x` takes key `i - 1` of `x`; `x` takes the left
+    /// sibling's last key.
+    const fn from_left(self, x: usize, i: usize) {
+        let c = self.kid(x, i);
+        let l = self.kid(x, i - 1);
+        let lc = self.count(l);
+        if !self.is_leaf(c) {
+            self.kid_open(c, 0, self.count(c) + 1, self.kid(l, lc));
+        }
+        self.open_at(c, 0, self.key(x, i - 1), self.val(x, i - 1));
+        let (k, v) = self.close_at(l, lc - 1);
+        self.put(x, i - 1, k, v);
+    }
+
+    /// Child `i` of `x` takes key `i` of `x`; `x` takes the right
+    /// sibling's first key.
+    const fn from_right(self, x: usize, i: usize) {
+        let c = self.kid(x, i);
+        let r = self.kid(x, i + 1);
+        let cc = self.count(c);
+        self.open_at(c, cc, self.key(x, i), self.val(x, i));
+        if !self.is_leaf(r) {
+            self.set_kid(c, cc + 1, self.kid_close(r, 0, self.count(r) + 1));
+        }
+        let (k, v) = self.close_at(r, 0);
+        self.put(x, i, k, v);
+    }
+
+    /// Children `i` and `i + 1` of `x` and key `i` between them become
+    /// child `i`.
+    const fn merge(self, x: usize, i: usize) {
+        let y = self.kid(x, i);
+        let z = self.kid(x, i + 1);
+        let (yc, zc) = (self.count(y), self.count(z));
+        self.kid_close(x, i + 1, self.count(x) + 1);
+        let (mk, mv) = self.close_at(x, i);
+        self.put(y, yc, mk, mv);
+        for j in 0..zc {
+            self.put(y, yc + 1 + j, self.key(z, j), self.val(z, j));
+        }
+        if !self.is_leaf(y) {
+            for j in 0..zc + 1 {
+                self.set_kid(y, yc + 1 + j, self.kid(z, j));
+            }
+        }
+        self.set_count(y, yc + 1 + zc);
+        self.release(z);
+    }
+
+    /// Remove every entry.
+    pub const fn clear(self) {
+        self.bump();
+        self.keys.clear();
+        self.vals.clear();
+        self.kids.clear();
+        self.lens.clear();
+        self.leaf.clear();
+        self.free.clear();
+        self.meta[ROOT] = self.node(true);
+        self.meta[LEN] = 0;
+    }
+
+    /// The entry with the smallest key, or `none` when empty.
+    ///
+    /// ```nabi
+    /// use core::collections::SortedDict;
+    ///
+    /// let d: SortedDict<i64, str> = SortedDict::from([(5, "e"), (1, "a"), (3, "c")]);
+    /// assert(d.first() == (1, "a") && d.last() == (5, "e"));
+    /// assert(d.pop_first() == (1, "a") && d.len() == 2);
+    /// ```
+    pub const fn first(self) -> (K, V) | none {
+        if self.is_empty() { return none; }
+        self.edge(self.meta[ROOT], false)
+    }
+
+    /// The entry with the largest key, or `none` when empty.
+    pub const fn last(self) -> (K, V) | none {
+        if self.is_empty() { return none; }
+        self.edge(self.meta[ROOT], true)
+    }
+
+    /// Remove and return the entry with the smallest key.
+    #[discardable]
+    pub const fn pop_first(self) -> (K, V) | none {
+        if let (k, v): (K, V) = self.first() {
+            self.remove(k);
+            return (k, v);
+        }
+        none
+    }
+
+    /// Remove and return the entry with the largest key.
+    #[discardable]
+    pub const fn pop_last(self) -> (K, V) | none {
+        if let (k, v): (K, V) = self.last() {
+            self.remove(k);
+            return (k, v);
+        }
+        none
+    }
+
+    /// The entry with the largest key `<= k` (`< k` when `strict`).
+    const fn below(self, k: K, strict: bool) -> (K, V) | none {
+        let best: (K, V) | none = none;
+        let n = self.meta[ROOT];
+        if self.is_empty() { return none; }
+        loop {
+            // Keys before `i` are below `k` (or equal, unless strict).
+            let i = self.seek(n, k, !strict);
+            if i > 0 {
+                best = (self.key(n, i - 1), self.val(n, i - 1));
+            }
+            if self.is_leaf(n) { return best; }
+            n = self.kid(n, i);
+        }
+    }
+
+    /// The entry with the smallest key `>= k` (`> k` when `strict`).
+    const fn above(self, k: K, strict: bool) -> (K, V) | none {
+        let best: (K, V) | none = none;
+        let n = self.meta[ROOT];
+        if self.is_empty() { return none; }
+        loop {
+            let i = self.seek(n, k, strict);
+            if i < self.count(n) {
+                best = (self.key(n, i), self.val(n, i));
+            }
+            if self.is_leaf(n) { return best; }
+            n = self.kid(n, i);
+        }
+    }
+
+    /// The entry with the largest key at or below `k`, or `none`.
+    ///
+    /// ```nabi
+    /// use core::collections::SortedDict;
+    ///
+    /// let d: SortedDict<i64, str> = SortedDict::from([(10, "a"), (20, "b"), (30, "c")]);
+    /// assert(d.floor(25) == (20, "b") && d.floor(20) == (20, "b") && d.floor(5) is none);
+    /// assert(d.ceil(25) == (30, "c") && d.lower(20) == (10, "a") && d.higher(20) == (30, "c"));
+    /// ```
+    pub const fn floor(self, k: K) -> (K, V) | none { self.below(k, false) }
+
+    /// The entry with the smallest key at or above `k`, or `none`.
+    pub const fn ceil(self, k: K) -> (K, V) | none { self.above(k, false) }
+
+    /// The entry with the largest key strictly below `k`, or `none`.
+    pub const fn lower(self, k: K) -> (K, V) | none { self.below(k, true) }
+
+    /// The entry with the smallest key strictly above `k`, or `none`.
+    pub const fn higher(self, k: K) -> (K, V) | none { self.above(k, true) }
+
+    /// The entries in key order, lazily.
+    pub const fn iter(self) -> SortedIter<K, V> {
+        self.walk(none, none, true)
+    }
+
+    /// The entries in descending key order, lazily.
+    pub const fn iter_rev(self) -> SortedIter<K, V> {
+        self.walk(none, none, false)
+    }
+
+    /// The keys in order, lazily.
+    pub const fn keys(self) -> SortedKeys<K, V> { SortedKeys { it: self.iter() } }
+
+    /// The values in key order, lazily.
+    pub const fn values(self) -> SortedValues<K, V> { SortedValues { it: self.iter() } }
+
+    /// The entries whose keys are in `r` (`a..b`, `a..=b`, `a..`, `..b`,
+    /// ..), in key order, lazily; O(log n) to the first. The map must
+    /// not change while it is walked.
+    ///
+    /// ```nabi
+    /// use core::collections::SortedDict;
+    ///
+    /// let d: SortedDict<i64, str> = SortedDict::from([(1, "a"), (4, "d"), (7, "g"), (9, "i")]);
+    /// assert(d.range(3..9).map(|(k, _)| k).collect::<List<i64>>() == [4, 7]);
+    /// assert(d.range(4..=9).count() == 3 && d.range((..4)).count() == 1);
+    /// assert(d.range_rev(2..).map(|(k, _)| k).collect::<List<i64>>() == [9, 7, 4]);
+    /// ```
+    pub const fn range<R: KeyRange<K>>(self, r: R) -> SortedIter<K, V> {
+        self.walk(r.lower(), r.upper(), true)
+    }
+
+    /// `range` in descending key order.
+    pub const fn range_rev<R: KeyRange<K>>(self, r: R) -> SortedIter<K, V> {
+        self.walk(r.lower(), r.upper(), false)
+    }
+
+    const fn walk(self, lo: (K, bool) | none, hi: (K, bool) | none, fwd: bool) -> SortedIter<K, V> {
+        let it = SortedIter { d: self, nodes: [], at: [], stop: [], incl: false, fwd, stamp: self.meta[STAMP] };
+        let start = if fwd { lo } else { hi };
+        let end = if fwd { hi } else { lo };
+        if let (k, inc): (K, bool) = end {
+            it.stop.push(k);
+            it.incl = inc;
+        }
+        let n = self.meta[ROOT];
+        loop {
+            let i = if let (k, inc): (K, bool) = start {
+                // Forward: from the first key not below (above when
+                // excluded); backward: up to the last not above.
+                if fwd { self.seek(n, k, !inc) } else { self.seek(n, k, inc) }
+            } else if fwd { 0 } else { self.count(n) };
+            it.nodes.push(n);
+            it.at.push(i);
+            if self.is_leaf(n) { break; }
+            n = self.kid(n, i);
+        }
+        it
+    }
+}
+
+/// The entries of a `SortedDict` in key order (or reversed), within a
+/// range.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct SortedIter<K, V> {
+    d: SortedDict<K, V>;
+    /// The path from the root: per node, the next key position
+    /// (forward), or one past it (backward).
+    nodes: List<usize>;
+    at: List<usize>;
+    /// The far bound, if any, and whether it is included.
+    stop: List<K>;
+    incl: bool;
+    fwd: bool;
+    stamp: usize;
+}
+
+impl<K, V> Debug for SortedIter<K, V> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SortedIter") }
+}
+
+impl<K: Ord, V> Iterator for SortedIter<K, V> {
+    type Item = (K, V);
+    #[track_caller]
+    const fn next(ref self) -> (K, V) | none {
+        let d = self.d;
+        if d.meta[STAMP] != self.stamp {
+            panic("SortedDict changed while it was walked; collect what to change first, e.g. `d.keys().collect::<List<_>>()`, then change it");
+        }
+        loop {
+            let top = self.nodes.len();
+            if top == 0 { return none; }
+            let n = self.nodes[top - 1];
+            let i = self.at[top - 1];
+            let (k, v) = if self.fwd {
+                if i >= d.count(n) {
+                    self.nodes.pop();
+                    self.at.pop();
+                    continue;
+                }
+                self.at[top - 1] = i + 1;
+                if !d.is_leaf(n) {
+                    self.descend(d.kid(n, i + 1));
+                }
+                (d.key(n, i), d.val(n, i))
+            } else {
+                if i == 0 {
+                    self.nodes.pop();
+                    self.at.pop();
+                    continue;
+                }
+                self.at[top - 1] = i - 1;
+                if !d.is_leaf(n) {
+                    self.descend(d.kid(n, i - 1));
+                }
+                (d.key(n, i - 1), d.val(n, i - 1))
+            };
+            if let s: K = self.stop.first() {
+                let c = k.cmp(s);
+                let past = if self.fwd { c.is_gt() || (c.is_eq() && !self.incl) } else { c.is_lt() || (c.is_eq() && !self.incl) };
+                if past {
+                    self.nodes.clear();
+                    self.at.clear();
+                    return none;
+                }
+            }
+            return (k, v);
+        }
+    }
+}
+
+impl<K: Ord, V> SortedIter<K, V> {
+    /// Push the path to the subtree's first (forward) or last key.
+    const fn descend(ref self, n: usize) {
+        let d = self.d;
+        loop {
+            self.nodes.push(n);
+            self.at.push(if self.fwd { 0 } else { d.count(n) });
+            if d.is_leaf(n) { return; }
+            n = d.kid(n, if self.fwd { 0 } else { d.count(n) });
+        }
+    }
+}
+
+/// The keys of a `SortedDict` in order.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct SortedKeys<K, V> {
+    it: SortedIter<K, V>;
+}
+
+impl<K, V> Debug for SortedKeys<K, V> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SortedKeys") }
+}
+
+impl<K: Ord, V> Iterator for SortedKeys<K, V> {
+    type Item = K;
+    #[track_caller]
+    const fn next(ref self) -> K | none {
+        if let (k, _): (K, V) = self.it.next() { return k; }
+        none
+    }
+}
+
+/// The values of a `SortedDict` in key order.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct SortedValues<K, V> {
+    it: SortedIter<K, V>;
+}
+
+impl<K, V> Debug for SortedValues<K, V> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SortedValues") }
+}
+
+impl<K: Ord, V> Iterator for SortedValues<K, V> {
+    type Item = V;
+    #[track_caller]
+    const fn next(ref self) -> V | none {
+        if let (_, v): (K, V) = self.it.next() { return v; }
+        none
+    }
+}
+
+/// `for (k, v) in d`, in key order.
+impl<K: Ord, V> IntoIterator for SortedDict<K, V> {
+    type IntoIter = SortedIter<K, V>;
+    type Item = (K, V);
+    const fn into_iter(self) -> SortedIter<K, V> { self.iter() }
+}
+
+/// `d[k]`; panics when the key is absent.
+impl<K: Ord, V> Index<K> for SortedDict<K, V> {
+    type Output = V;
+    #[track_caller]
+    const fn index(self, k: K) -> V {
+        if let (n, i): (usize, usize) = self.locate(k) {
+            return self.val(n, i);
+        }
+        panic(f"key {core::fmt::shown::<K>(k)} not found; use `d.get(k)` to get `{V::type_name()} | none`")
+    }
+}
+
+/// `d[k] = v` inserts or replaces.
+impl<K: Ord, V> IndexSet<K, V> for SortedDict<K, V> {
+    const fn index_set(self, k: K, v: V) { self.insert(k, v); }
+}
+
+impl<K: Ord, V> Default for SortedDict<K, V> {
+    fn default() -> SortedDict<K, V> { SortedDict::new() }
+}
+
+/// `pairs.collect::<SortedDict<K, V>>()`; a later pair's value wins.
+impl<K: Ord, V> FromIterator<(K, V)> for SortedDict<K, V> {
+    const fn from_iter<I: IntoIterator<Item = (K, V)>>(it: I) -> SortedDict<K, V> {
+        let out: SortedDict<K, V> = SortedDict::new();
+        for (k, v) in it {
+            out.insert(k, v);
+        }
+        out
+    }
+}
+
+/// The pairs of a list; a later pair's value wins.
+impl<K: Ord, V> From<List<(K, V)>> for SortedDict<K, V> {
+    const fn from(pairs: List<(K, V)>) -> SortedDict<K, V> {
+        let out: SortedDict<K, V> = SortedDict::new();
+        for (k, v) in pairs {
+            out.insert(k, v);
+        }
+        out
+    }
+}
+
+/// A new map with every key and value cloned.
+impl<K: Ord + Clone, V: Clone> Clone for SortedDict<K, V> {
+    const fn clone(self) -> SortedDict<K, V> {
+        let out: SortedDict<K, V> = SortedDict::new();
+        for (k, v) in self {
+            out.insert(k.clone(), v.clone());
+        }
+        out
+    }
+}
+
+/// The same entries in the same order.
+impl<K: Ord, V: PartialEq> PartialEq for SortedDict<K, V> {
+    const fn eq(self, rhs: SortedDict<K, V>) -> bool {
+        if self.len() != rhs.len() { return false; }
+        let b = rhs.iter();
+        for (k, v) in self {
+            if let (k2, v2): (K, V) = b.next() {
+                if !k.cmp(k2).is_eq() || v != v2 { return false; }
+            }
+        }
+        true
+    }
+    fn ne(self, rhs: SortedDict<K, V>) -> bool { !self.eq(rhs) }
+}
+
+impl<K: Ord, V: Eq> Eq for SortedDict<K, V> {}
+
+/// The length, then each key and value in order.
+impl<K: Ord + Hash, V: Hash> Hash for SortedDict<K, V> {
+    const fn hash<H: Hasher>(self, ref h: H) {
+        h.write_length_prefix(self.len());
+        for (k, v) in self {
+            k.hash(ref h);
+            v.hash(ref h);
+        }
+    }
+}
+
+/// `{k: v, ..}` in key order.
+impl<K: Ord + Debug, V: Debug> Debug for SortedDict<K, V> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("{");
+        let first = true;
+        for (k, v) in self {
+            try f.debug_pair(k, v, first);
+            first = false;
+        }
+        try f.debug_close("}", first, false)
+    }
+}
+
+/// A set ordered by `T: Ord`, kept in a B-tree. Copies share the set.
+pub struct SortedSet<T> {
+    d: SortedDict<T, bool>;
+}
+
+impl<T> !Sync for SortedSet<T> {}
+
+impl<T: Ord> SortedSet<T> {
+    /// An empty set.
+    pub const fn new() -> SortedSet<T> { SortedSet { d: SortedDict::new() } }
+
+    /// The number of members.
+    pub const fn len(self) -> usize { self.d.len() }
+
+    /// `true` when the set has no member.
+    pub const fn is_empty(self) -> bool { self.d.is_empty() }
+
+    /// Add `x`; `true` when it was not there. O(log n).
+    ///
+    /// ```nabi
+    /// use core::collections::SortedSet;
+    ///
+    /// let s: SortedSet<i64> = SortedSet::from([5, 1, 3, 1]);
+    /// assert(s.to_list() == [1, 3, 5] && !s.insert(3) && s.insert(4));
+    /// assert(s.range(2..5).collect::<List<i64>>() == [3, 4]);
+    /// assert(s.floor(2) == 1 && s.ceil(2) == 3 && s.first() == 1 && s.last() == 5);
+    /// ```
+    #[discardable]
+    pub const fn insert(self, x: T) -> bool { self.d.insert(x, true) is none }
+
+    /// Remove `x`; `true` when it was there.
+    #[discardable]
+    pub const fn remove(self, x: T) -> bool { self.d.remove(x) is bool }
+
+    /// `true` when `x` is a member.
+    pub const fn contains(self, x: T) -> bool { self.d.contains_key(x) }
+
+    /// Remove every member.
+    pub const fn clear(self) { self.d.clear(); }
+
+    /// The smallest member, or `none`.
+    pub const fn first(self) -> T | none {
+        if let (k, _): (T, bool) = self.d.first() { return k; }
+        none
+    }
+
+    /// The largest member, or `none`.
+    pub const fn last(self) -> T | none {
+        if let (k, _): (T, bool) = self.d.last() { return k; }
+        none
+    }
+
+    /// Remove and return the smallest member.
+    #[discardable]
+    pub const fn pop_first(self) -> T | none {
+        if let (k, _): (T, bool) = self.d.pop_first() { return k; }
+        none
+    }
+
+    /// Remove and return the largest member.
+    #[discardable]
+    pub const fn pop_last(self) -> T | none {
+        if let (k, _): (T, bool) = self.d.pop_last() { return k; }
+        none
+    }
+
+    /// The largest member at or below `x`, or `none`.
+    pub const fn floor(self, x: T) -> T | none {
+        if let (k, _): (T, bool) = self.d.floor(x) { return k; }
+        none
+    }
+
+    /// The smallest member at or above `x`, or `none`.
+    pub const fn ceil(self, x: T) -> T | none {
+        if let (k, _): (T, bool) = self.d.ceil(x) { return k; }
+        none
+    }
+
+    /// The largest member strictly below `x`, or `none`.
+    pub const fn lower(self, x: T) -> T | none {
+        if let (k, _): (T, bool) = self.d.lower(x) { return k; }
+        none
+    }
+
+    /// The smallest member strictly above `x`, or `none`.
+    pub const fn higher(self, x: T) -> T | none {
+        if let (k, _): (T, bool) = self.d.higher(x) { return k; }
+        none
+    }
+
+    /// The members in order, lazily.
+    pub const fn iter(self) -> SortedKeys<T, bool> { self.d.keys() }
+
+    /// The members in descending order, lazily.
+    pub const fn iter_rev(self) -> SortedKeys<T, bool> { SortedKeys { it: self.d.iter_rev() } }
+
+    /// The members in `r`, in order, lazily.
+    pub const fn range<R: KeyRange<T>>(self, r: R) -> SortedKeys<T, bool> { SortedKeys { it: self.d.range(r) } }
+
+    /// `range` in descending order.
+    pub const fn range_rev<R: KeyRange<T>>(self, r: R) -> SortedKeys<T, bool> { SortedKeys { it: self.d.range_rev(r) } }
+
+    /// The members in a new list, in order.
+    pub const fn to_list(self) -> List<T> { self.d.keys().collect() }
+
+    /// Members of either set.
+    ///
+    /// ```nabi
+    /// use core::collections::SortedSet;
+    ///
+    /// let a: SortedSet<i64> = SortedSet::from([1, 2, 3]);
+    /// let b: SortedSet<i64> = SortedSet::from([2, 3, 4]);
+    /// assert(a.union(b).to_list() == [1, 2, 3, 4]);
+    /// assert(a.intersection(b).to_list() == [2, 3] && a.difference(b).to_list() == [1]);
+    /// assert(!a.is_subset(b) && a.intersection(b).is_subset(a));
+    /// ```
+    pub const fn union(self, other: SortedSet<T>) -> SortedSet<T> {
+        let out: SortedSet<T> = SortedSet::new();
+        for x in self { out.insert(x); }
+        for x in other { out.insert(x); }
+        out
+    }
+
+    /// Members of both sets.
+    pub const fn intersection(self, other: SortedSet<T>) -> SortedSet<T> {
+        let out: SortedSet<T> = SortedSet::new();
+        for x in self {
+            if other.contains(x) { out.insert(x); }
+        }
+        out
+    }
+
+    /// Members of `self` that are not in `other`.
+    pub const fn difference(self, other: SortedSet<T>) -> SortedSet<T> {
+        let out: SortedSet<T> = SortedSet::new();
+        for x in self {
+            if !other.contains(x) { out.insert(x); }
+        }
+        out
+    }
+
+    /// Members of exactly one of the sets.
+    pub const fn symmetric_difference(self, other: SortedSet<T>) -> SortedSet<T> {
+        self.difference(other).union(other.difference(self))
+    }
+
+    /// `true` when every member is in `other`.
+    pub const fn is_subset(self, other: SortedSet<T>) -> bool {
+        if self.len() > other.len() { return false; }
+        for x in self {
+            if !other.contains(x) { return false; }
+        }
+        true
+    }
+
+    /// `true` when every member of `other` is in `self`.
+    pub const fn is_superset(self, other: SortedSet<T>) -> bool { other.is_subset(self) }
+
+    /// `true` when no member is in both sets.
+    pub const fn is_disjoint(self, other: SortedSet<T>) -> bool { self.intersection(other).is_empty() }
+}
+
+/// `for x in s`, in order.
+impl<T: Ord> IntoIterator for SortedSet<T> {
+    type IntoIter = SortedKeys<T, bool>;
+    type Item = T;
+    const fn into_iter(self) -> SortedKeys<T, bool> { self.iter() }
+}
+
+impl<T: Ord> Default for SortedSet<T> {
+    fn default() -> SortedSet<T> { SortedSet::new() }
+}
+
+/// `it.collect()` into a sorted set.
+impl<T: Ord> FromIterator<T> for SortedSet<T> {
+    const fn from_iter<I: IntoIterator<Item = T>>(it: I) -> SortedSet<T> {
+        let out: SortedSet<T> = SortedSet::new();
+        for x in it { out.insert(x); }
+        out
+    }
+}
+
+/// The items of a list (duplicates dropped).
+impl<T: Ord> From<List<T>> for SortedSet<T> {
+    const fn from(items: List<T>) -> SortedSet<T> {
+        let out: SortedSet<T> = SortedSet::new();
+        for x in items { out.insert(x); }
+        out
+    }
+}
+
+/// `s += x`: insert `x`.
+impl<T: Ord> AddAssign<T> for SortedSet<T> {
+    const fn add_assign(ref self, rhs: T) { self.insert(rhs); }
+}
+
+/// A new set with every member cloned.
+impl<T: Ord + Clone> Clone for SortedSet<T> {
+    const fn clone(self) -> SortedSet<T> { SortedSet { d: self.d.clone() } }
+}
+
+/// Same members.
+impl<T: Ord> PartialEq for SortedSet<T> {
+    const fn eq(self, rhs: SortedSet<T>) -> bool { self.d == rhs.d }
+    fn ne(self, rhs: SortedSet<T>) -> bool { !self.eq(rhs) }
+}
+
+impl<T: Ord> Eq for SortedSet<T> {}
+
+/// The length, then each member in order.
+impl<T: Ord + Hash> Hash for SortedSet<T> {
+    const fn hash<H: Hasher>(self, ref h: H) {
+        h.write_length_prefix(self.len());
+        for x in self { x.hash(ref h); }
+    }
+}
+
+/// `{a, b, ..}` in order.
+impl<T: Ord + Debug> Debug for SortedSet<T> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("{");
+        let first = true;
+        for x in self {
+            try f.debug_entry("", x, first, false);
+            first = false;
+        }
+        try f.debug_close("}", first, false)
+    }
+}

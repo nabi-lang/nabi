@@ -1,0 +1,14 @@
+// An unresolved `use` points at the first segment that names nothing,
+// not at the path's root.
+// expect-error: 6:10: unresolved import: `std::fss` does not exist
+// expect-error: 7:10: unresolved import: `std::stdd::io` does not exist
+// expect-error: 8:17: unresolved import: `inner::nope` does not exist
+use std::fss;
+use std::stdd::{io};
+use pkg::inner::nope;
+
+mod inner {
+    pub fn f() {}
+}
+
+println("x");

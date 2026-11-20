@@ -1,0 +1,18 @@
+// expect-error: E0100
+// expect-error: a slice pattern can't destructure a `List<i32>` where it must always match
+// expect-error: let [first, ..rest] = xs else { return; };
+// forbid-error: cannot find value
+// expect-error: E0101
+// expect-error: this slice pattern has 3 element(s), but the array has 2
+
+// A list's length is known only at run time: a plain `let` cannot take
+// it apart, and the help names `let .. else`. A fixed array's pattern
+// must fit its length.
+fn main() {
+    let xs: List<i32> = [1, 2];
+    let [a, b] = xs;
+    println(a + b);
+    let arr: [i32; 2] = [1, 2];
+    let [p, q, r] = arr;
+    println(p);
+}

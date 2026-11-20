@@ -1,0 +1,41 @@
+// Dot products over 1M-element lists, 300 times: `f64` (its sum stays
+// in order: scalar) and `i32` that wraps (vectorized where the target
+// multiplies 32-bit lanes). Output matches bench/c/vecdot.c.
+fn dot(xs: List<f64>, ys: List<f64>) -> f64 {
+    let s = 0.0;
+    for i in 0..xs.len() {
+        s += xs[i] * ys[i];
+    }
+    s
+}
+
+fn idot(xs: List<i32>, ys: List<i32>) -> i32 {
+    let s: i32 = 0;
+    for i in 0..xs.len() {
+        s = s.wrapping_add(xs[i].wrapping_mul(ys[i]));
+    }
+    s
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 20;
+    let xs: List<f64> = List::filled(n, 0.0);
+    let ys: List<f64> = List::filled(n, 0.0);
+    let ws: List<i32> = List::filled(n, 0);
+    let js: List<i32> = List::filled(n, 0);
+    for i in 0..n {
+        xs[i] = (i % 100) as f64 * 0.01;
+        ys[i] = (i % 37) as f64 * 0.5;
+        ws[i] = (i % 1001) as i32 - 500;
+        js[i] = (i % 77) as i32;
+    }
+    let s = 0.0;
+    let t: i64 = 0;
+    for r in 0..300 {
+        ws[r] += 1;
+        s += dot(xs, ys);
+        t += idot(ws, js) as i64;
+    }
+    println(f"{s:.3} {t}");
+    return 0;
+}

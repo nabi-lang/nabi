@@ -1,0 +1,14 @@
+// nabic-arg: -C overflow-checks=on
+// expect-exit: 101
+// expect-stdout: 1s
+// expect-stderr: thread 'main' panicked at tests/cases/std_303_duration_overflow_panics.nabi:12:13:
+// expect-stderr: attempt to add with overflow
+
+// With overflow checks (the default) `Duration` overflow panics.
+use core::time::Duration;
+
+fn main() {
+    println(f"{Duration::secs(1)}");
+    let d = Duration::MAX + Duration::ns(1);
+    println(f"{d}");
+}

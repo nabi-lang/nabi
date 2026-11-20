@@ -1,0 +1,20 @@
+// needs: fs
+// expect-exit: 0
+// expect-stdout:
+// 3 [hi!]
+
+// `fn write<B: AsBytes>(self, data: B)` / `write_all<B: AsBytes>`
+// on `File` accept a `str` as well as bytes (like `fs::write`).
+use std::fs;
+use core::io::IoError;
+use std::env;
+
+fn main() throws (IoError) {
+    let p = env::temp_dir() / "nabi_probe_301w.txt";
+    let f = try fs::create(p);
+    let n = try f.write("hi");
+    try f.write_all("!");
+    try f.close();
+    println(f"{n + 1} [{try fs::read_to_str(p)}]");
+    try fs::remove_file(p);
+}

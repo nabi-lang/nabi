@@ -1,0 +1,5 @@
+// nabic-arg: -C overflow-check
+// expect-error: error[E0132]: unknown codegen option `overflow-check`; did you mean `overflow-checks`?
+// expect-error: help: `-C` takes `overflow-checks[=yes|no]`, `icf[=yes|no]`, `target-cpu=<cpu>`, `target-feature=+f1,-f2` or `subsystem=console|windows`
+
+fn main() {}

@@ -1,0 +1,11 @@
+// expect-error: 9:15: mismatched types: variadic argument expects `[i64; 2]`, found `[i64; 1]`
+
+// Rows of a `...[T; C]` matrix literal share one length.
+#[literal("w" "[" {{expr} % "," +} % ";" + "]")]
+fn w_literal<const C: usize>(rows: ...[i64; C]) -> usize { C }
+
+fn main() -> i32 {
+    let ok = w[1, 2; 3, 4];
+    let bad = w[1, 2; 3];
+    return 0;
+}

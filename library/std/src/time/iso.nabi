@@ -1,0 +1,226 @@
+// std::time::iso: ISO 8601 / RFC 3339 parsing. Every error names
+// the byte where the text went wrong and what belongs there.
+
+use std::time::civil::{DateTime, Time};
+use std::time::date::{Date, MAX_YEAR, MIN_YEAR, check_ymd};
+use std::time::offset::Offset;
+
+/// A cursor over the text being parsed.
+pub(pkg) struct Scan {
+    s: str;
+    i: usize;
+}
+
+impl Scan {
+    pub(pkg) const fn new(s: str) -> Scan { Scan { s, i: 0 } }
+    pub(pkg) const fn pos(self) -> usize { self.i }
+    pub(pkg) const fn text(self) -> str { self.s }
+    pub(pkg) const fn done(self) -> bool { self.i >= self.s.len() }
+    pub(pkg) const fn peek(self) -> u8 { if self.i < self.s.len() { self.s.byte(self.i) } else { 0u8 } }
+    pub(pkg) const fn rest(self) -> str { self.s[self.i:self.s.len()] }
+    pub(pkg) const fn skip(ref self, n: usize) { self.i += n; }
+
+    /// The error at the cursor: `expected <what> at byte N, found ...`.
+    pub(pkg) const fn fail(self, what: str) -> ParseError { self.fail_at(self.i, what) }
+
+    pub(pkg) const fn fail_at(self, at: usize, what: str) -> ParseError {
+        let found = if at >= self.s.len() {
+            "the end of the text"
+        } else {
+            let c = self.s[at:self.s.len()].chars().next() ?? ' ';
+            f"`{c}`"
+        };
+        ParseError::new(self.s, at, f"expected {what} at byte {at}, found {found}")
+    }
+
+    /// An error about the value at byte `at` (`month 13 is out of range`).
+    /// The place goes before a `; hint` part.
+    pub(pkg) const fn bad_at(self, at: usize, msg: str) -> ParseError {
+        if let (head, hint) = msg.split_once("; ") { return ParseError::new(self.s, at, f"{head} at byte {at}; {hint}"); }
+        ParseError::new(self.s, at, f"{msg} at byte {at}")
+    }
+
+    const fn range(self, at: usize, what: str, v: i32, range: str) -> ParseError {
+        self.bad_at(at, f"{what} {v} is out of range ({range})")
+    }
+
+    pub(pkg) const fn eat(ref self, b: u8) -> bool {
+        if self.peek() == b && !self.done() {
+            self.i += 1;
+            return true;
+        }
+        false
+    }
+
+    pub(pkg) const fn expect(ref self, b: u8, what: str) throws (ParseError) {
+        if !self.eat(b) { throw self.fail(what); }
+    }
+
+    /// Exactly `n` digits.
+    pub(pkg) const fn num(ref self, n: usize, what: str) throws (ParseError) -> i32 {
+        let v = 0;
+        for _ in 0..n {
+            let b = self.peek();
+            if self.done() || b < b'0' || b > b'9' { throw self.fail(what); }
+            v = v * 10 + (b - b'0') as i32;
+            self.i += 1;
+        }
+        v
+    }
+
+    /// `YYYY-MM-DD`, or `+YYYYYY-MM-DD` / `-YYYYYY-MM-DD`.
+    pub(pkg) const fn date(ref self) throws (ParseError) -> Date {
+        let start = self.i;
+        let y = 0;
+        if self.peek() == b'+' || self.peek() == b'-' {
+            let neg = self.peek() == b'-';
+            self.i += 1;
+            y = try self.num(6, "a six-digit year after the sign (`+012345`)");
+            if neg {
+                if y == 0 { throw self.bad_at(start, "year -000000 is not allowed; write `+000000` or `0000`"); }
+                y = -y;
+            }
+        } else {
+            y = try self.num(4, "a four-digit year (`2024`)");
+        }
+        try self.expect(b'-', "`-` after the year");
+        let at_m = self.i;
+        let m = try self.num(2, "a two-digit month (`01`..`12`)");
+        try self.expect(b'-', "`-` after the month");
+        let at_d = self.i;
+        let d = try self.num(2, "a two-digit day (`01`..`31`)");
+        try check_ymd(y, m, d) catch e: ValueError {
+            let at = if y < MIN_YEAR || y > MAX_YEAR { start } else if m < 1 || m > 12 { at_m } else { at_d };
+            throw self.bad_at(at, e.message());
+        };
+        try Date::new(y, m, d) catch _ { throw self.bad_at(start, "date out of range"); }
+    }
+
+    /// `HH:MM`, `HH:MM:SS` or `HH:MM:SS.fffffffff` (`,` also starts the
+    /// fraction; at most nine digits).
+    pub(pkg) const fn time(ref self) throws (ParseError) -> Time {
+        let at_h = self.i;
+        let h = try self.num(2, "a two-digit hour (`00`..`23`)");
+        if h > 23 { throw self.range(at_h, "hour", h, "00..=23"); }
+        try self.expect(b':', "`:` after the hour");
+        let at_m = self.i;
+        let m = try self.num(2, "two-digit minutes (`00`..`59`)");
+        if m > 59 { throw self.range(at_m, "minute", m, "00..=59"); }
+        let s = 0;
+        let ns = 0;
+        if self.eat(b':') {
+            let at_s = self.i;
+            s = try self.num(2, "two-digit seconds (`00`..`59`)");
+            if s == 60 { throw self.bad_at(at_s, "leap second 60 is not supported (no leap seconds); use `59`"); }
+            if s > 59 { throw self.range(at_s, "second", s, "00..=59"); }
+            if self.peek() == b'.' || self.peek() == b',' {
+                self.i += 1;
+                ns = try self.fraction();
+            }
+        }
+        Time::from_nanos_of_day(((h as i64) * 3600 + (m as i64) * 60 + (s as i64)) * 1000000000 + (ns as i64))
+    }
+
+    /// 1 to 9 digits after the decimal point, as nanoseconds.
+    pub(pkg) const fn fraction(ref self) throws (ParseError) -> i32 {
+        let start = self.i;
+        let v = 0;
+        while !self.done() && self.peek() >= b'0' && self.peek() <= b'9' {
+            if self.i - start == 9 { throw self.bad_at(self.i, "more than nine fraction digits (nanoseconds are the finest)"); }
+            v = v * 10 + (self.peek() - b'0') as i32;
+            self.i += 1;
+        }
+        let n = self.i - start;
+        if n == 0 { throw self.fail("digits after the decimal point"); }
+        for _ in n..9 { v *= 10; }
+        v
+    }
+
+    /// `2024-03-10T02:30:00` (`t` or a space may stand for `T`).
+    pub(pkg) const fn datetime(ref self) throws (ParseError) -> DateTime {
+        let d = try self.date();
+        if !(self.eat(b'T') || self.eat(b't') || self.eat(b' ')) {
+            throw self.fail("`T` between the date and the time");
+        }
+        let t = try self.time();
+        DateTime::of(d, t)
+    }
+
+    /// `Z` (when `allow_z`), `+HH:MM`, `+HHMM`, `+HH` or `+HH:MM:SS`.
+    pub(pkg) const fn offset(ref self, allow_z: bool) throws (ParseError) -> Offset {
+        if allow_z && (self.eat(b'Z') || self.eat(b'z')) { return Offset::UTC; }
+        let start = self.i;
+        let neg = false;
+        if self.eat(b'-') {
+            neg = true;
+        } else if !self.eat(b'+') {
+            throw self.fail(if allow_z { "an offset (`Z`, `+09:00` or `-05:00`)" } else { "an offset (`+09:00` or `-05:00`)" });
+        }
+        let h = try self.num(2, "two-digit offset hours (`+09:00`)");
+        let m = 0;
+        let s = 0;
+        let colon = self.eat(b':');
+        if colon || (self.peek() >= b'0' && self.peek() <= b'9' && !self.done()) {
+            m = try self.num(2, "two-digit offset minutes");
+            if colon && self.eat(b':') { s = try self.num(2, "two-digit offset seconds"); }
+        }
+        if m > 59 || s > 59 || h > 25 { throw self.bad_at(start, "offset out of range (+/-25:59:59 at most)"); }
+        let secs = h * 3600 + m * 60 + s;
+        try Offset::from_secs(if neg { -secs } else { secs }) catch e: ValueError { throw self.bad_at(start, e.message()); }
+    }
+
+    /// Nothing may follow.
+    pub(pkg) const fn end(self) throws (ParseError) {
+        if !self.done() { throw self.fail("the end of the text"); }
+    }
+}
+
+/// `+09:00` etc. as a whole text.
+pub(pkg) const fn parse_offset(s: str, allow_z: bool) throws (ParseError) -> Offset {
+    let c = Scan::new(s);
+    let o = try c.offset(allow_z);
+    try c.end();
+    o
+}
+
+impl FromStr for Date {
+    type Err = ParseError;
+    /// `2024-02-29`; `+012345-01-01` for a six-digit year.
+    const fn from_str(s: str) throws (ParseError) -> Date {
+        let c = Scan::new(s);
+        let d = try c.date();
+        try c.end();
+        d
+    }
+}
+
+impl FromStr for Time {
+    type Err = ParseError;
+    /// `09:05`, `09:05:30` or `09:05:30.25`.
+    const fn from_str(s: str) throws (ParseError) -> Time {
+        let c = Scan::new(s);
+        let t = try c.time();
+        try c.end();
+        t
+    }
+}
+
+impl FromStr for DateTime {
+    type Err = ParseError;
+    /// `2024-03-10T02:30:00` (seconds and fraction optional).
+    const fn from_str(s: str) throws (ParseError) -> DateTime {
+        let c = Scan::new(s);
+        let dt = try c.datetime();
+        if !c.done() && (c.peek() == b'Z' || c.peek() == b'z' || c.peek() == b'+' || c.peek() == b'-') {
+            throw c.bad_at(c.pos(), "a `DateTime` has no offset; parse the text as a `Zoned` or a `SystemTime`");
+        }
+        try c.end();
+        dt
+    }
+}
+
+impl FromStr for Offset {
+    type Err = ParseError;
+    /// `Z`, `+09:00`, `-0530` or `+05`.
+    const fn from_str(s: str) throws (ParseError) -> Offset { try parse_offset(s, true) }
+}

@@ -1,0 +1,6 @@
+#[keyword("guarded")]
+pub fn guarded_handler(n: i32, body: fn(i32)) {
+    println("enter");
+    body(n);
+    println("leave");
+}

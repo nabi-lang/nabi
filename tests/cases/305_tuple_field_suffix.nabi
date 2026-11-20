@@ -1,0 +1,8 @@
+// expect-error: error[E0010]
+// expect-error: invalid tuple field index `1u8`
+
+// A tuple index is plain decimal digits, so `t.1u8` is rejected.
+fn main() -> i32 {
+    let t = (1, 2);
+    return t.1u8;
+}

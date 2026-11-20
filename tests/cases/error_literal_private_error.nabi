@@ -1,0 +1,7 @@
+// Error fields are private: build one with `new`, not a struct literal.
+// expect-error: field `message` of `ValueError` is private to module `core::error`
+
+fn main() {
+    let e = ValueError { message: "bad" };
+    println(f"{e}");
+}

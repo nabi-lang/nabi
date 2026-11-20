@@ -1,0 +1,12 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/int_bigint_write_bytes_short.nabi:11:5:
+// expect-stderr: Int::write_le_bytes: the value needs 2 bytes but `out` has 1; pass a view of at least 2 bytes
+// expect-stdout: [127]
+
+fn main() {
+    let out: List<u8> = [0u8];
+    let x: int = 127;
+    x.write_le_bytes(out);
+    println(f"{out:?}");
+    int::from(128).write_le_bytes(out);
+}

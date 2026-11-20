@@ -1,0 +1,55 @@
+// Elements narrower than the arithmetic, over 1M elements, 300 times:
+// sums of bytes and halves into wider accumulators, a byte map into
+// `u16`, words narrowed into bytes. Loads widened, stores narrowed.
+fn sum_bytes(bs: List<u8>) -> u32 {
+    let s: u32 = 0;
+    for b in bs {
+        s = s.wrapping_add(b as u32);
+    }
+    s
+}
+
+fn sum_halves(xs: List<i16>) -> i32 {
+    let s: i32 = 0;
+    for x in xs {
+        s = s.wrapping_add(x as i32);
+    }
+    s
+}
+
+fn scale(bs: List<u8>, ws: List<u16>) {
+    let n = bs.len().min(ws.len());
+    for i in 0..n {
+        ws[i] = (bs[i] as u16).wrapping_mul(5).wrapping_add(1);
+    }
+}
+
+fn low_bytes(ws: List<u16>, bs: List<u8>) {
+    let n = ws.len().min(bs.len());
+    for i in 0..n {
+        bs[i] = (ws[i] >> 2) as u8;
+    }
+}
+
+fn main() -> i32 {
+    let n: usize = 1 << 20;
+    let bs: List<u8> = List::filled(n, 0u8);
+    let hs: List<i16> = List::filled(n, 0i16);
+    let ws: List<u16> = List::filled(n, 0u16);
+    let x: u64 = 5;
+    for i in 0..n {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        bs[i] = (x >> 40) as u8;
+        hs[i] = (x >> 48) as i16;
+    }
+    let t: u64 = 0;
+    for r in 0..300 {
+        t += sum_bytes(bs) as u64;
+        t = t.wrapping_add(sum_halves(hs) as u64);
+        scale(bs, ws);
+        low_bytes(ws, bs);
+        bs[r] = r as u8;
+    }
+    println(f"{t} {bs[1000]} {ws[77]}");
+    return 0;
+}

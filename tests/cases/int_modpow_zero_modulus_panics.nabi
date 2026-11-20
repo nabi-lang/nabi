@@ -1,0 +1,10 @@
+// `modpow` with a zero modulus panics at the call.
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/int_modpow_zero_modulus_panics.nabi:9:16:
+// expect-stderr: Int::modpow: the modulus is zero
+// expect-stdout:
+
+fn main() {
+    let x: int = 3;
+    println(f"{x.modpow(2, 0)}");
+}

@@ -1,0 +1,12 @@
+// expect-error: type `Weak<List<i32>>` does not satisfy trait bound `Send` required by `channel` (a hand-off cannot copy what a `Weak` names, so it stays with its thread: send the `GcPtr`)
+
+// A hand-off cannot copy what a weak reference names: it stays with its
+// thread.
+use bare::gc::{GcPtr, Weak};
+
+fn main() {
+    let p = GcPtr::new([1]);
+    let (tx, rx) = channel::<Weak<List<i32>>>();
+    try! tx.send(Weak::new(p));
+    let _ = rx.recv();
+}

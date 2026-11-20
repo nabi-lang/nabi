@@ -1,0 +1,17 @@
+// expect-error: argument `s` of `wcslen` expects
+// expect-error: help: the pointers point at different types: build the data as
+
+// A `wchar_t*` is `ConstPtr<c_wchar>`, whose unit differs per target:
+// a buffer of another unit type is refused, with what to write instead.
+use bare::ptr::ConstPtr;
+
+extern "C" {
+    fn wcslen(s: ConstPtr<c_wchar>) -> c_size_t;
+}
+
+fn main() {
+    let units: List<u8> = [97, 0];
+    let p = bare::gc::pin(units);
+    let raw: ConstPtr<u8> = ConstPtr::<u8>::dangling().with_addr(p.as_data_ptr().addr());
+    println(f"{unsafe { wcslen(raw) }}");
+}

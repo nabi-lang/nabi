@@ -1,0 +1,38 @@
+// expect-exit: 0
+// expect-stdout:
+// 3 3 10 -3 1 2
+
+// `F = fn(..) + Send + Sync` (a named fn, a capture-free closure) and
+// `F = fn(..)` (a closure over an array, as its `fn` type) are two
+// instances of one generic function, in either order.
+use core::array::Vector;
+
+pub struct Objective { f: fn(Vector<f64>) -> f64; }
+impl Objective {
+    pub fn at(self, x: Vector<f64>) -> f64 { (self.f)(x) }
+}
+pub trait IntoObjective { fn into_objective(self) -> Objective; }
+impl IntoObjective for fn(Vector<f64>) -> f64 {
+    fn into_objective(self) -> Objective { Objective { f: self } }
+}
+pub struct Constraint { pub o: Objective; pub b: f64; }
+impl Constraint {
+    pub fn le<F: IntoObjective>(c: F, b: f64) -> Constraint { Constraint { o: c.into_objective(), b: b } }
+}
+pub trait Relation {
+    #[infix("⩽", like = "<=")]
+    fn at_most(self, b: f64) -> Constraint;
+}
+impl Relation for fn(Vector<f64>) -> f64 {
+    fn at_most(self, b: f64) -> Constraint { Constraint::le(self, b) }
+}
+
+fn main() {
+    let budget = |x: Vector<f64>| -> f64 { x[0] + x[1] };
+    let a = Constraint::le(budget, 1.0);
+    let c = budget ⩽ 2.0;
+    let d: Vector<f64> = [5.0];
+    let e = Constraint::le(|x: Vector<f64>| -> f64 { x[0] * d[0] }, 3.0);
+    let g = (|x: Vector<f64>| -> f64 { x[0] - d[0] }) ⩽ 4.0;
+    println(f"{a.o.at([1.0, 2.0])} {c.o.at([2.0, 1.0])} {e.o.at([2.0])} {g.o.at([2.0])} {a.b} {c.b}");
+}

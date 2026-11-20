@@ -1,0 +1,14 @@
+// A trait impl needs this package's trait, type, or a trait argument before any bare parameter.
+// expect-error: 12:1: `impl Display for List<i32>`: neither the trait nor the type is defined in this package (orphan rule)
+// forbid-warning: `impl Mine
+
+trait Mine { fn m(self) -> i32; }
+
+struct Local {}
+
+impl Mine for i32 { fn m(self) -> i32 { self } }
+impl Default for Local { fn default() -> Local { Local {} } }
+
+impl Display for List<i32> { fn fmt(self, ref f: Formatter) throws (FmtError) {} }
+
+fn main() {}

@@ -1,0 +1,110 @@
+//! bare::ffi::objc::string - `NSString` and `str`. Both copy: an
+//! `NSString` holds UTF-16, a `str` UTF-8.
+
+use bare::ffi::CStr;
+use bare::ffi::objc::{Class, Id, Object, Sel};
+use bare::mem::transmute_unchecked;
+use bare::ptr::{CPtr, ConstPtr};
+
+extern "C" {
+    fn sel_registerName(name: str) -> Sel;
+    fn objc_getClass(name: str) -> CPtr<u8>;
+    #[link_name = "objc_msgSend"]
+    fn send_ptr(r: CPtr<u8>, s: Sel) -> CPtr<u8>;
+    #[link_name = "objc_msgSend"]
+    fn send_init_bytes(r: CPtr<u8>, s: Sel, bytes: ConstPtr<u8>, len: usize, encoding: usize) -> CPtr<u8>;
+    #[link_name = "objc_msgSend"]
+    fn send_word(r: CPtr<u8>, s: Sel) -> usize;
+    #[link_name = "objc_msgSend"]
+    fn send_unit(r: CPtr<u8>, s: Sel, i: usize) -> u16;
+}
+
+/// `NSUTF8StringEncoding`.
+const UTF8: usize = 4;
+
+/// `NSString`, Foundation's string class: a program using it links
+/// Foundation (`#[link(name = "Foundation", kind = "framework")]`).
+pub struct NSString {}
+
+impl Object for NSString {
+    fn name() -> str { "NSString" }
+    // Looked up, not a static reference: only a program that uses it
+    // links Foundation.
+    fn class() -> Class {
+        let c = unsafe { objc_getClass("NSString") };
+        if c.is_null() {
+            panic("`NSString` is Foundation's: link it with `#[link(name = \"Foundation\", kind = \"framework\")]`");
+        }
+        unsafe { transmute_unchecked(c) }
+    }
+}
+
+impl NSString {
+    /// An `NSString` holding a copy of `s`.
+    pub fn from_str(s: str) -> Id<NSString> {
+        let a = unsafe { send_ptr(NSString::class().as_raw(), sel_registerName("alloc")) };
+        let p = unsafe { send_init_bytes(a, sel_registerName("initWithBytes:length:encoding:"), s.as_ptr(), s.len(), UTF8) };
+        unsafe { Id::<NSString>::from_retained(p) } ?? panic("`-[NSString initWithBytes:length:encoding:]` returned nil")
+    }
+}
+
+impl Id<NSString> {
+    /// The text as a `str`, copied. An unpaired UTF-16 surrogate, which
+    /// UTF-8 cannot hold, becomes U+FFFD.
+    pub fn to_str(self) -> str {
+        let p = unsafe { send_ptr(self.as_raw(), sel_registerName("UTF8String")) };
+        let c = unsafe { CStr::from_ptr(ConstPtr::<c_char>::dangling().with_addr(p.addr())) };
+        match c {
+            c: CStr => str::from_utf8_lossy(c.as_bytes()),
+            // `UTF8String` refuses a string with an unpaired surrogate.
+            none => lossy(self),
+        }
+    }
+}
+
+/// `NSString::from_str(s)`, short: `ns("text")`.
+pub fn ns(s: str) -> Id<NSString> { NSString::from_str(s) }
+
+/// The text from its UTF-16 code units, an unpaired surrogate as
+/// U+FFFD.
+fn lossy(s: Id<NSString>) -> str {
+    let n = unsafe { send_word(s.as_raw(), sel_registerName("length")) };
+    let units: List<u16> = [];
+    for i in 0..n {
+        units.push(unsafe { send_unit(s.as_raw(), sel_registerName("characterAtIndex:"), i) });
+    }
+    let bytes: List<u8> = [];
+    let i = 0usize;
+    while i < n {
+        let u = units[i] as u32;
+        let c = 0xFFFDu32;
+        if u < 0xD800u32 || u > 0xDFFFu32 {
+            c = u;
+        } else if u < 0xDC00u32 && i + 1 < n && units[i + 1] as u32 >= 0xDC00u32 && units[i + 1] as u32 <= 0xDFFFu32 {
+            c = 0x10000u32 + ((u - 0xD800u32) << 10) + (units[i + 1] as u32 - 0xDC00u32);
+            i += 1;
+        }
+        utf8(c, bytes);
+        i += 1;
+    }
+    str::from_utf8_lossy(bytes)
+}
+
+/// Append `c`'s UTF-8 bytes.
+fn utf8(c: u32, bytes: List<u8>) {
+    if c < 0x80u32 {
+        bytes.push(c as u8);
+    } else if c < 0x800u32 {
+        bytes.push((0xC0u32 | (c >> 6)) as u8);
+        bytes.push((0x80u32 | (c & 0x3Fu32)) as u8);
+    } else if c < 0x10000u32 {
+        bytes.push((0xE0u32 | (c >> 12)) as u8);
+        bytes.push((0x80u32 | ((c >> 6) & 0x3Fu32)) as u8);
+        bytes.push((0x80u32 | (c & 0x3Fu32)) as u8);
+    } else {
+        bytes.push((0xF0u32 | (c >> 18)) as u8);
+        bytes.push((0x80u32 | ((c >> 12) & 0x3Fu32)) as u8);
+        bytes.push((0x80u32 | ((c >> 6) & 0x3Fu32)) as u8);
+        bytes.push((0x80u32 | (c & 0x3Fu32)) as u8);
+    }
+}

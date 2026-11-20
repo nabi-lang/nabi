@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout:
+// 2 1 2 5
+// 3 2 1 5
+
+// A path starts at a module, so a function imported under its module's
+// name (`use norm::norm;`) leaves the module as the root of later paths.
+mod norm;
+mod thing;
+mod geo;
+
+pub use norm::norm;
+pub use thing::{thing, other};
+use geo::geo;
+use geo::area;
+
+fn main() {
+    println(f"{norm(-2.0)} {thing()} {other()} {area(5)}");
+    println(f"{norm::norm(-3.0)} {thing::other()} {thing::thing()} {geo::geo(5)}");
+}

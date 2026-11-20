@@ -1,0 +1,27 @@
+// expect-exit: 0
+// expect-stdout:
+// [none, 1.0, 2.5] [1.0, none] [none, none, 1.0]
+// f64 str
+
+// Without an expected type a list literal's elements agree as branches
+// do: the element whose sum holds every other's type is the element
+// type, whichever comes first.
+pub trait IntoCol { fn kind(self) -> str; }
+
+impl IntoCol for List<f64 | none> { fn kind(self) -> str { "f64" } }
+
+impl IntoCol for List<str | none> { fn kind(self) -> str { "str" } }
+
+fn k<T: IntoCol>(x: T) -> str { x.kind() }
+
+fn opt(x: f64) -> f64 | none { if x > 0.0 { x } else { none } }
+
+fn main() {
+    let a = opt(1.0);
+    let xs = [none, a, 2.5];
+    let ys = [a, none];
+    let zs = [none, none, a];
+    println(f"{xs:?} {ys:?} {zs:?}");
+    let s: str | none = "s";
+    println(f"{k([none, a])} {k([none, s])}");
+}

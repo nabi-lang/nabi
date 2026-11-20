@@ -1,0 +1,32 @@
+// expect-exit: 0
+// expect-stdout:
+// epoch 0 0
+// from_unix 1700000000 1700000000250000000
+// plus 1700000010 minus 1699999999
+// since 10s
+// earlier -10s
+// unix_secs floors -2 -1500000001 true
+// now elapsed true
+// boot monotonic true
+
+// `SystemTime` is ns from `UNIX_EPOCH`; `from_unix` /
+// `unix_secs` / `unix_nanos`, `+` / `-` a `Duration`, and `duration_since`
+// negative when `earlier` is later. `BootTime`.
+use std::time::{BootTime, SystemTime, UNIX_EPOCH};
+
+fn main() {
+    println(f"epoch {UNIX_EPOCH.unix_secs()} {UNIX_EPOCH.unix_nanos()}");
+    let t = SystemTime::from_unix(1700000000, 250000000);
+    println(f"from_unix {t.unix_secs()} {t.unix_nanos()}");
+    let later = t + Duration::secs(10);
+    let before = t - Duration::secs(1);
+    println(f"plus {later.unix_secs()} minus {before.unix_secs()}");
+    println(f"since {later.duration_since(t)}");
+    println(f"earlier {t.duration_since(later)}");
+    let pre = UNIX_EPOCH - Duration::ns(1500000001);
+    println(f"unix_secs floors {pre.unix_secs()} {pre.unix_nanos()} {SystemTime::from_unix(pre.unix_secs(), 499999999) == pre}");
+    println(f"now elapsed {SystemTime::now().elapsed() >= Duration::ZERO}");
+    let b = BootTime::now();
+    let c = BootTime::now();
+    println(f"boot monotonic {c.duration_since(b) >= Duration::ZERO}");
+}

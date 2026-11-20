@@ -1,0 +1,14 @@
+// A future that captures a guard cannot be a task, `spawn_local` neither:
+// one error, at the spawn.
+// expect-error: 11:17: `task::spawn` cannot take a guard: it captures the guard `g`, which stays with its `using` block: read the value first (`let v = g.get();`) and capture `v`
+
+async fn main() {
+    let m = Mutex::new([1, 2]);
+    using g = m.lock() {
+        // The guard itself, not what it protects.
+        let f = async { g.get().len() };
+        // Spawned from inside its block.
+        let t = task::spawn(f);
+        println(f"{await t}");
+    }
+}

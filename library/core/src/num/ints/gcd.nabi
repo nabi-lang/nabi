@@ -1,0 +1,68 @@
+// `gcd` / `lcm` for the fixed-width integers (Euclid on the magnitudes
+// as `u64`).
+
+const fn gcd_u64(a: u64, b: u64) -> u64 {
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a
+}
+
+#[impl_macro(gcd_unsigned)] @macro {
+    (@rep[sep = ","] { @t: ty }) => {
+        @for @t {
+            impl @t {
+                /// The greatest common divisor (`0` for `0` and `0`).
+                pub const fn gcd(self, other: @t) -> @t { gcd_u64(self as u64, other as u64) as @t }
+
+                /// The least common multiple (`0` when either is 0);
+                /// panics when it overflows (use `int` for big ones).
+                #[track_caller]
+                pub const fn lcm(self, other: @t) -> @t {
+                    if self == 0 || other == 0 {
+                        return 0;
+                    }
+                    let g = self.gcd(other);
+                    (self / g).checked_mul(other) ?? panic(f"lcm of {self} and {other} overflows; compute it as `int`")
+                }
+            }
+        }
+    }
+}
+gcd_unsigned!(u8, u16, u32, u64, usize);
+
+#[impl_macro(gcd_signed)] @macro {
+    (@rep[sep = ","] { @t: ty }) => {
+        @for @t {
+            impl @t {
+                /// The greatest common divisor, never negative (`0` for
+                /// `0` and `0`); panics when it is `-MIN` (use `int`).
+                #[track_caller]
+                pub const fn gcd(self, other: @t) -> @t {
+                    let a = if self < 0 { 0u64.wrapping_sub(self as i64 as u64) } else { self as u64 };
+                    let b = if other < 0 { 0u64.wrapping_sub(other as i64 as u64) } else { other as u64 };
+                    let g = gcd_u64(a, b);
+                    if g > @t::MAX as u64 {
+                        panic(f"gcd of {self} and {other} is {g}, past {@t::MAX}; compute it as `int`");
+                    }
+                    g as @t
+                }
+
+                /// The least common multiple, never negative (`0` when
+                /// either is 0); panics when it overflows.
+                #[track_caller]
+                pub const fn lcm(self, other: @t) -> @t {
+                    if self == 0 || other == 0 {
+                        return 0;
+                    }
+                    let g = self.gcd(other);
+                    let m = ((self / g).checked_mul(other) ?? panic(f"lcm of {self} and {other} overflows; compute it as `int`"));
+                    m.checked_abs() ?? panic(f"lcm of {self} and {other} overflows; compute it as `int`")
+                }
+            }
+        }
+    }
+}
+gcd_signed!(i8, i16, i32, i64, isize);

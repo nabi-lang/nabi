@@ -1,0 +1,12 @@
+// expect-error: 10:13: `x == 0..3` is a range of `bool`s: `==` binds tighter than `..`
+// expect-error: help: to compare with a range, write `x == (0..3)`; for the range, write `(x == 0)..3`
+// expect-error: 11:13: `0..=x < 3` ends at a `bool`: `<` binds tighter than `..=`
+// expect-error: help: to compare the range, write `(0..=x) < 3`; for the range, write `0..=(x < 3)`
+
+// `..` binds looser than a comparison: written bare, one would be a range of
+// `bool`s, which is never meant.
+fn main() {
+    let x = 1;
+    let a = x == 0..3;
+    let b = 0..=x < 3;
+}

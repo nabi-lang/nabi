@@ -1,0 +1,36 @@
+// needs: net
+// skip-wasm-runner: jco
+// (preview2-shim 0.31.1, the latest, files an accepted socket's
+// pollable under its input stream: closing the socket in wasi-libc's
+// order, the stream before the socket's pollable, traps; fixed by
+// targets/wasi/shim.patch)
+// expect-exit: 0
+// expect-stdout:
+// closed: true
+// again: ok
+// read after close: InvalidInput
+
+// A socket's `close` throws what the OS reports; closing twice is a
+// no-op, and a call after it fails with `InvalidInput`.
+use core::marker::share;
+use core::io::IoError;
+use std::net;
+
+fn main() throws (IoError) {
+    let l = try net::tcp_listen("127.0.0.1:0");
+    let addr = try l.local_addr();
+    let c_own = try net::tcp_connect(addr);
+    // A second handle checks what a closed socket does.
+    let c = unsafe { share(c_own) };
+    let (s, _) = try l.accept();
+    try c.close();
+    let closed = try { _ = try c.local_addr(); false } catch _ { true };
+    println(f"closed: {closed}");
+    try c.close();
+    println("again: ok");
+    let buf: List<u8> = [0u8];
+    try c.read(buf) catch e { println(f"read after close: {e.kind():?}"); 0 };
+    try s.close();
+    try l.close();
+    try c_own.close();
+}

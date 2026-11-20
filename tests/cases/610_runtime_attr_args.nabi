@@ -1,0 +1,20 @@
+// expect-error: 14:5: `#[range]` takes 2 values
+// expect-error: help: `#[range]` takes `min: f64, max: f64`; write `#[range(0, 10)]`
+// expect-error: 15:5: `max` of `#[range]` takes a number
+// expect-error: 16:5: `#[range]` has no field `step`
+// expect-error: 17:5: `#[range]` needs `max`
+
+// A runtime attribute's arguments are checked like a literal of its
+// struct; the error says what to write.
+#[runtime_attribute(range)]
+pub struct Range { pub min: f64; pub max: f64; }
+
+#[derive(Inspect)]
+struct Enemy {
+    #[range(0, 1, 2)] a: i32;
+    #[range(0, "far")] b: i32;
+    #[range(min = 0, step = 1)] c: i32;
+    #[range(min = 0)] d: i32;
+}
+
+fn main() {}

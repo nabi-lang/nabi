@@ -1,0 +1,16 @@
+// expect-error: error[E0133]: `tx` was moved at line 10, and is used here
+// expect-error: capture_moves.nabi:13:10: `tx` was moved at line 10, and is used here
+
+// A closure or an `async` block that captures a resource takes it.
+
+use core::channel::channel;
+
+async fn main() {
+    let (tx, rx) = channel::<i32>();
+    let t = task::spawn(async {
+        try! await tx.send_async(1);
+    });
+    try! tx.send(2);
+    await t;
+    println(f"{rx.recv() ?? 0}");
+}

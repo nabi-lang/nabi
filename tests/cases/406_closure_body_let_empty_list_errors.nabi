@@ -1,0 +1,17 @@
+// expect-error: 13:24: type annotations needed: cannot infer the type of an empty `List` literal
+// forbid-error: internal compiler error
+
+// A closure body's `let` infers on its own: an empty list no impl picks
+// is reported there, also when the closure itself is an inferred `let`.
+trait AsV<T> { fn v(self) -> List<T>; }
+impl<T> AsV<T> for List<T> { fn v(self) -> List<T> { self } }
+impl AsV<f64> for List<i64> { fn v(self) -> List<f64> { [] } }
+fn go<X: AsV<f64>>(x: X) throws (str) -> f64 { 1.0 }
+
+fn main() {
+    let run = || -> f64 {
+        let m = try go([]) catch _ { return -1.0; };
+        m
+    };
+    println(f"{run()}");
+}

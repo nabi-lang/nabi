@@ -1,0 +1,150 @@
+// needs: net threads
+// expect-exit: 0
+// expect-stdout:
+// addr 127.0.0.1:0 [::1]:8080 10.1.2.3 2001:db8::1
+// blocking echo: hello over tcp
+// peer is local: true
+// async echo: 3 clients ok
+// async read_to_end: 100000 bytes
+// incoming: ping
+// resolve localhost: true
+// refused: true
+
+// std::net: a TCP echo server and its clients in one program,
+// with the blocking API (an OS thread serves) and the async one (tasks
+// on the pool suspend in accept / read / write).
+use std::net::{TcpListener, TcpStream, SocketAddr, Ipv4Addr, Ipv6Addr, Shutdown};
+use std::net;
+use core::io::IoError;
+use std::thread;
+
+fn text(buf: List<u8>, n: usize) -> str {
+    return try! str::from_utf8(buf[0:n]);
+}
+
+let any: SocketAddr = try! "127.0.0.1:0".parse::<SocketAddr>();
+let v6: SocketAddr = try! "[::1]:8080".parse::<SocketAddr>();
+let ip: Ipv4Addr = try! "10.1.2.3".parse::<Ipv4Addr>();
+let ip6: Ipv6Addr = try! "2001:db8:0:0:0:0:0:1".parse::<Ipv6Addr>();
+println(f"addr {any} {v6} {ip} {ip6}");
+
+// Blocking: a thread echoes one connection; it owns the listener.
+let listener = try! TcpListener::bind(any);
+let addr = try! listener.local_addr();
+let server = thread::spawn(|| {
+    let (conn, peer) = try! listener.accept();
+    let buf = List::filled(64, 0u8);
+    loop {
+        let n = try! conn.read(buf);
+        if n == 0 { break; }
+        let part: List<u8> = List::new();
+        let i: usize = 0;
+        while i < n { part.push(buf[i]); i = i + 1; }
+        try! conn.write_all(part);
+    }
+    try! conn.close();
+    try! listener.close();
+    peer.port() as i32
+});
+let c = try! TcpStream::connect(addr);
+try! c.write_all("hello over tcp");
+try! c.shutdown(Shutdown::Write);
+let back = try! c.read_to_end();
+println(f"blocking echo: {text(back, back.len())}");
+let peer_port = try! server.join();
+println(f"peer is local: {(try! c.local_addr()).port() as i32 == peer_port}");
+try! c.close();
+
+// Async: the server task accepts, a task per connection echoes.
+let l2 = try! TcpListener::bind(any);
+let a2 = try! l2.local_addr();
+// The server task owns the listener.
+let srv = task::spawn(async {
+    let served = 0;
+    while served < 4 {
+        let (conn, peer) = try! await l2.accept_async();
+        task::spawn(async {
+            let buf = List::filled(4096, 0u8);
+            loop {
+                let n = try! await conn.read_async(buf);
+                if n == 0 { break; }
+                let part: List<u8> = List::new();
+                let i: usize = 0;
+                while i < n { part.push(buf[i]); i = i + 1; }
+                try! await conn.write_all_async(part);
+            }
+            try! conn.close();
+            0
+        });
+        served = served + 1;
+    }
+    try! l2.close();
+    served
+});
+let clients: List<Task<bool>> = [];
+let k = 0;
+while k < 3 {
+    let me = k;
+    clients.push(task::spawn(async {
+        let s = try! await TcpStream::connect_async(a2);
+        let msg = f"client {me}";
+        try! await s.write_all_async(msg);
+        let buf = List::filled(64, 0u8);
+        let n = try! await s.read_async(buf);
+        try! s.close();
+        text(buf, n) == msg
+    }));
+    k = k + 1;
+}
+let oks = 0;
+for ok in await task::join(clients) { if ok { oks = oks + 1; } }
+println(f"async echo: {oks} clients ok");
+
+// A large payload: write and read concurrently (the socket buffers fill).
+let big = task::spawn(async {
+    let (r, w) = (try! await net::tcp_connect_async(a2)).split();
+    // The writer task owns its buffer: a list cannot be shared with it.
+    let wt = task::spawn(async {
+        let data = List::filled(100000, 0u8);
+        try! await w.write_all_async(data);
+        try! await w.close_async();
+        0
+    });
+    let got = try! await r.read_to_end_async();
+    await wt;
+    try! r.close();
+    got.len()
+});
+println(f"async read_to_end: {await big} bytes");
+await srv;
+
+// `incoming()` over a blocking listener.
+let l3 = try! net::tcp_listen("127.0.0.1:0");
+let a3 = try! l3.local_addr();
+let t3 = thread::spawn(|| {
+    let c = try! net::tcp_connect(f"{a3}");
+    try! c.write_all("ping");
+    try! c.close();
+    0
+});
+try for s in l3.incoming() {
+    let all = try! s.read_to_end();
+    println(f"incoming: {text(all, all.len())}");
+    try! s.close();
+    break;
+} catch e: IoError {
+    println(f"incoming: {e}");
+}
+try! t3.join();
+try! l3.close();
+
+let found = (try! net::resolve("localhost:80"))[0];
+println(f"resolve localhost: {found.port() == 80u16}");
+
+// Nobody listens on the closed listener's port any more.
+let refused = false;
+try {
+    let s = TcpStream::connect(a3);
+    s.close();
+} catch e: IoError { refused = true; };
+println(f"refused: {refused}");

@@ -1,0 +1,21 @@
+// only-os: macos linux
+// (POSIX environ / optind)
+// expect-exit: 0
+// expect-stdout: true 7
+// `extern "C" { static .. }` names a C global; `static mut`
+// can be written, both inside `unsafe`. `environ` and `optind` are libc
+// globals.
+extern "C" {
+    static environ: usize;
+    static mut optind: i32;
+}
+
+fn main() {
+    let set = unsafe { environ != 0usize };
+    let next = unsafe {
+        optind = 6;
+        optind + 1
+    };
+    println(f"{set} {next}");
+}
+

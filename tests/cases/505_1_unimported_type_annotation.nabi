@@ -1,0 +1,14 @@
+// expect-error: 10:12: cannot find type `ConstPtr` in this scope
+// expect-error: add `use bare::ptr::ConstPtr;`
+
+// A type is in scope only once imported. The missing import
+// is the one error; nothing that follows from it is reported.
+use bare::ptr::addr_of;
+
+fn main() -> i32 {
+    let x: u8 = 5;
+    let p: ConstPtr<u8> = addr_of(x).as_const();
+    if p.is_null() { return 1; }
+    let q: ConstPtr<u8> = 0 as ConstPtr<u8>;
+    return 0;
+}

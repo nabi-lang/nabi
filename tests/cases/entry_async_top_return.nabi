@@ -1,0 +1,11 @@
+// expect-exit: 0
+// expect-stdout:
+// before
+
+// A top-level `return;` in an async implicit `main` ends the program.
+async fn f() -> i32 { 1 }
+
+println("before");
+let x = await f();
+if x == 1 { return; }
+println(f"{x}");

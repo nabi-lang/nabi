@@ -1,0 +1,359 @@
+//! core::collections::deque - `Deque<T>`, a growable ring buffer
+//! with O(1) push and pop at both ends. `meta` holds `[head, len, cap]`;
+//! a vacated slot is overwritten with a zeroed `T` so the deque does not
+//! keep a popped value alive.
+
+use core::marker::{Memo, Transfer, buf_is_null, copy_buf};
+
+/// A growable ring buffer with O(1) push and pop at both ends.
+pub struct Deque<T> {
+    meta: GcBuf<usize>;
+    data: GcBuf<GcBuf<T>>;
+    /// One zeroed `T`: what a vacated slot holds.
+    zero: GcBuf<T>;
+}
+
+// Shares its buffer like `List`.
+impl<T> !Sync for Deque<T> {}
+
+impl<T> Deque<T> {
+    /// An empty deque.
+    pub const fn new() -> Deque<T> {
+        Deque::with_capacity(8)
+    }
+
+    /// Room for `cap` items before the first growth.
+    #[track_caller]
+    pub const fn with_capacity(cap: usize) -> Deque<T> {
+        unsafe {
+            let meta: GcBuf<usize> = buf_new(3);
+            let c = cap.max(1);
+            meta[2] = c;
+            let data: GcBuf<GcBuf<T>> = buf_new(1);
+            data[0] = buf_new(buf_len(c, size_of::<T>()));
+            Deque { meta, data, zero: buf_new(1) }
+        }
+    }
+
+    /// The number of items.
+    pub const fn len(self) -> usize {
+        unsafe {
+            self.meta[1]
+        }
+    }
+
+    /// `true` when the deque holds no item.
+    pub const fn is_empty(self) -> bool {
+        unsafe {
+            self.meta[1] == 0
+        }
+    }
+
+    /// The items the ring holds before it grows.
+    pub const fn capacity(self) -> usize {
+        unsafe {
+            self.meta[2]
+        }
+    }
+
+    /// Ring position of element `i`.
+    const fn slot(self, i: usize) -> usize {
+        unsafe {
+            (self.meta[0] + i) % self.meta[2]
+        }
+    }
+
+    /// Double the ring when full; the elements move to `0..len`.
+    const fn grow(self) {
+        unsafe {
+            let n = self.meta[1];
+            let cap = self.meta[2];
+            if n < cap {
+                return;
+            }
+            let old = self.data[0];
+            let new_cap = cap_mul(cap, 2);
+            let store: GcBuf<T> = buf_new(buf_len(new_cap, size_of::<T>()));
+            for i in 0..n {
+                store[i] = old[self.slot(i)];
+            }
+            self.data[0] = store;
+            self.meta[0] = 0;
+            self.meta[2] = new_cap;
+        }
+    }
+
+    /// Add `x` at the back.
+    pub const fn push_back(self, x: T) {
+        unsafe {
+            self.grow();
+            let n = self.meta[1];
+            self.data[0][self.slot(n)] = x;
+            self.meta[1] = n + 1;
+        }
+    }
+
+    /// Add `x` at the front.
+    pub const fn push_front(self, x: T) {
+        unsafe {
+            self.grow();
+            let cap = self.meta[2];
+            let head = (self.meta[0] + cap - 1) % cap;
+            self.data[0][head] = x;
+            self.meta[0] = head;
+            self.meta[1] += 1;
+        }
+    }
+
+    /// Remove and return the front item.
+    #[discardable]
+    pub const fn pop_front(self) -> T | none {
+        unsafe {
+            let n = self.meta[1];
+            if n == 0 {
+                return none;
+            }
+            let head = self.meta[0];
+            let store = self.data[0];
+            let x = store[head];
+            store[head] = self.zero[0];
+            self.meta[0] = (head + 1) % self.meta[2];
+            self.meta[1] = n - 1;
+            x
+        }
+    }
+
+    /// Remove and return the back item.
+    #[discardable]
+    pub const fn pop_back(self) -> T | none {
+        unsafe {
+            let n = self.meta[1];
+            if n == 0 {
+                return none;
+            }
+            let at = self.slot(n - 1);
+            let store = self.data[0];
+            let x = store[at];
+            store[at] = self.zero[0];
+            self.meta[1] = n - 1;
+            x
+        }
+    }
+
+    /// Element `i` from the front, or `none` out of bounds.
+    pub const fn get(self, i: usize) -> T | none {
+        unsafe {
+            if i >= self.meta[1] {
+                return none;
+            }
+            self.data[0][self.slot(i)]
+        }
+    }
+
+    /// The front item.
+    pub const fn front(self) -> T | none {
+        self.get(0)
+    }
+
+    /// The back item.
+    pub const fn back(self) -> T | none {
+        unsafe {
+            let n = self.meta[1];
+            if n == 0 {
+                return none;
+            }
+            self.get(n - 1)
+        }
+    }
+
+    /// Drop every item.
+    pub const fn clear(self) {
+        unsafe {
+            let store = self.data[0];
+            for i in 0..self.meta[1] {
+                store[self.slot(i)] = self.zero[0];
+            }
+            self.meta[0] = 0;
+            self.meta[1] = 0;
+        }
+    }
+
+    /// The items, front to back, lazily.
+    pub const fn iter(self) -> DequeIter<T> {
+        unsafe {
+            let pos: GcBuf<usize> = buf_new(1);
+            DequeIter { deque: self, pos }
+        }
+    }
+}
+
+/// Front to back.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct DequeIter<T> {
+    deque: Deque<T>;
+    pos: GcBuf<usize>;
+}
+
+impl<T> Debug for DequeIter<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("DequeIter") }
+}
+
+impl<T> Iterator for DequeIter<T> {
+    type Item = T;
+    const fn next(ref self) -> T | none {
+        unsafe {
+            let i = self.pos[0];
+            if i >= self.deque.len() {
+                return none;
+            }
+            self.pos[0] = i + 1;
+            self.deque.get(i)
+        }
+    }
+}
+
+impl<T> IntoIterator for Deque<T> {
+    type IntoIter = DequeIter<T>;
+    type Item = T;
+    const fn into_iter(self) -> DequeIter<T> {
+        self.iter()
+    }
+}
+
+impl<T> Default for Deque<T> {
+    fn default() -> Deque<T> { Deque::new() }
+}
+
+/// A new deque with every item cloned.
+impl<T: Clone> Clone for Deque<T> {
+    const fn clone(self) -> Deque<T> {
+        let r: Deque<T> = Deque::with_capacity(self.len());
+        for x in self {
+            r.push_back(x.clone());
+        }
+        r
+    }
+}
+
+/// `it.collect()` into a deque, front to back.
+impl<T> FromIterator<T> for Deque<T> {
+    const fn from_iter<I: IntoIterator<Item = T>>(it: I) -> Deque<T> {
+        let out: Deque<T> = Deque::new();
+        for x in it {
+            out.push_back(x);
+        }
+        out
+    }
+}
+
+/// `d += x`: push `x` at the back.
+impl<T> AddAssign<T> for Deque<T> {
+    const fn add_assign(ref self, rhs: T) {
+        self.push_back(rhs);
+    }
+}
+
+/// Equal items, front to back.
+impl<T: PartialEq> PartialEq for Deque<T> {
+    const fn eq(self, rhs: Deque<T>) -> bool {
+        if self.len() != rhs.len() { return false; }
+        for i in 0..self.len() {
+            if self[i] != rhs[i] { return false; }
+        }
+        true
+    }
+    fn ne(self, rhs: Deque<T>) -> bool { !self.eq(rhs) }
+}
+
+impl<T: Eq> Eq for Deque<T> {}
+
+/// `d[i]`; panics out of bounds.
+impl<T> Index<usize> for Deque<T> {
+    type Output = T;
+    #[track_caller]
+    const fn index(self, i: usize) -> T {
+        unsafe {
+            if i >= self.len() {
+                return index_oob("index", i, self.len());
+            }
+            self.data[0][self.slot(i)]
+        }
+    }
+}
+
+/// `d[i] = v`; panics out of bounds.
+impl<T> IndexSet<usize, T> for Deque<T> {
+    #[track_caller]
+    fn index_set(self, i: usize, value: T) {
+        unsafe {
+            if i >= self.len() {
+                index_oob("index", i, self.len());
+            }
+            self.data[0][self.slot(i)] = value;
+        }
+    }
+}
+
+/// `[a, b, c]`, front to back.
+impl<T: Debug> Debug for Deque<T> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("[");
+        let first = true;
+        for x in self {
+            try f.debug_entry("", x, first, false);
+            first = false;
+        }
+        try f.debug_close("]", first, false)
+    }
+}
+
+/// A hand-off's copy: the same ring; its slots go
+/// through `transfer` from the memo's queue. The memo keeps the copy in a
+/// box (a deque is three buffers).
+impl<T> Transfer for Deque<T> {
+    const fn transfer_copy(self, m: Memo) -> Deque<T> {
+        if buf_is_null(self.meta) {
+            return self;
+        }
+        unsafe {
+            if let got: GcBuf<Deque<T>> = m.find_at::<usize, Deque<T>>(self.meta, 0, 0, 0) {
+                return got[0];
+            }
+            let boxed: GcBuf<Deque<T>> = buf_new(1);
+            m.note_at::<usize, Deque<T>>(self.meta, 0, 0, 0, boxed);
+            let meta: GcBuf<usize> = buf_new(3);
+            meta[0] = self.meta[0];
+            meta[1] = self.meta[1];
+            meta[2] = self.meta[2];
+            let data: GcBuf<GcBuf<T>> = buf_new(1);
+            let zero: GcBuf<T> = buf_new(1);
+            let cap = self.meta[2];
+            data[0] = copy_buf(self.data[0], 0, cap, 1, cap, m);
+            let d = Deque { meta, data, zero };
+            boxed[0] = d;
+            d
+        }
+    }
+
+    const fn transfer_keep(self, m: Memo) -> Deque<T> {
+        if buf_is_null(self.meta) {
+            return self;
+        }
+        unsafe {
+            if let _: GcBuf<Deque<T>> = m.find_at::<usize, Deque<T>>(self.meta, 0, 0, 0) {
+                return self;
+            }
+            let boxed: GcBuf<Deque<T>> = buf_new(1);
+            boxed[0] = self;
+            m.note_at::<usize, Deque<T>>(self.meta, 0, 0, 0, boxed);
+        }
+        self
+    }
+
+    const fn transfer_visit(self, m: Memo) -> Deque<T> {
+        if !buf_is_null(self.meta) && m.visit(self.meta) {
+            unsafe { m.later_visit(self.data[0], self.meta[2]) };
+        }
+        self
+    }
+}

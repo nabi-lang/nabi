@@ -1,0 +1,9 @@
+// expect-error: 6:16: `continue` outside of a loop labelled `'b`
+
+// `continue` names only loop labels; a block label is an error.
+fn main() -> i32 {
+    let v: i32 = 'b: {
+        loop { continue 'b; }
+    };
+    return v;
+}

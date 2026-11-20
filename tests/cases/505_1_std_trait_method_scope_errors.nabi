@@ -1,0 +1,15 @@
+// expect-error: 13:13: method `outcomes` comes from trait `std::random::SampleRange`, which is not in scope
+// expect-error: help: add `use std::random::SampleRange;`
+// expect-error: 14:13: method `count` comes from trait `geo::Units`, which is not in scope
+// expect-error: help: add `use pkg::geo::Units;`
+
+// A trait's methods take a `use` of it, except the prelude's and core's:
+// std's `SampleRange`, or a trait of another module of the package.
+mod geo {
+    pub trait Units { fn count(self) -> u64; }
+    impl Units for f64 { fn count(self) -> u64 { 99 } }
+}
+fn main() {
+    let r = (0..5).outcomes();
+    let n = 2.0.count();
+}

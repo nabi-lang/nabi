@@ -1,0 +1,17 @@
+[package]
+name = "nabic_wit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# WIT (WebAssembly Interface Types): `.wit` files
+# parsed and resolved, and the nabi bindings of `ffi::wit::import` /
+# `ffi::wit::export` generated from them.
+[dependencies]
+nabic_core = { workspace = true }
+nabic_lexer = { workspace = true }
+
+[lints]
+workspace = true

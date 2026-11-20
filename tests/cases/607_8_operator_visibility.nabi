@@ -1,0 +1,29 @@
+// expect-error: 23:5: operator `⊕` needs trait `ops::Combine`, which is not visible here
+
+// An operator binding works only where its trait is
+// visible: a private trait's operator works in its module
+// only; a `pub` one wherever it can be named (`607_op_trait_full_path`).
+pub struct V { pub x: i32; }
+
+mod ops {
+    trait Combine {
+        #[infix("⊕", like = "+")]
+        fn combine(self, rhs: sup::V) -> sup::V;
+    }
+    impl Combine for sup::V {
+        fn combine(self, rhs: sup::V) -> sup::V { sup::V { x: self.x + rhs.x } }
+    }
+    pub fn inside() -> i32 {
+        (sup::V { x: 1 } ⊕ sup::V { x: 1 }).x
+    }
+}
+
+fn hidden() -> i32 {
+    let a = V { x: 1 };
+    (a ⊕ V { x: 2 }).x
+}
+
+fn main() -> i32 {
+    println(f"{ops::inside()} {hidden()}");
+    return 0;
+}

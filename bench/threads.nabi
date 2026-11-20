@@ -1,0 +1,81 @@
+// Thread scaling: one total amount of work split over N threads, either
+// arithmetic only (`cpu`) or boxing as it goes (`alloc`).
+//
+//     threads [<n> [cpu|alloc]]      (default: 4, both)
+//
+// `bench.py --scaling` times n = 1, 2, 4, 8: the same work should take
+// 1/n of the time, up to the machine's cores.
+use std::env;
+use std::thread;
+
+const CPU_WORK: i64 = 400000000;
+const ALLOC_WORK: i64 = 20000000;
+
+trait Weigh { fn w(self) -> i64; }
+struct Blob { a: i64; b: i64; c: i64; d: i64; }
+impl Weigh for Blob { fn w(self) -> i64 { return self.a + self.d; } }
+
+fn make(i: i64) -> any Weigh { return Blob { a: i, b: i, c: i, d: 1 }; }
+
+fn spin(n: i64, seed: i64) -> i64 {
+    let x = seed | 1;
+    let total: i64 = 0;
+    let i: i64 = 0;
+    while i < n {
+        x = x ^ (x << 13);
+        x = x ^ (x >> 7);
+        x = x ^ (x << 17);
+        total = total ^ x;
+        i += 1;
+    }
+    return total & 0xffff;
+}
+
+fn churn(n: i64) -> i64 {
+    // Every 16th box stays reachable from a ring, so none is elided.
+    let ring: List<any Weigh> = [];
+    let total: i64 = 0;
+    let i: i64 = 0;
+    while i < n {
+        let x = make(i);
+        total += x.w();
+        if i & 15 == 0 {
+            if ring.len() < 1024 { ring.push(x); } else { ring[((i >> 4) & 1023) as usize] = x; }
+        }
+        i += 1;
+    }
+    for x in ring { total += x.w(); }
+    return total;
+}
+
+fn split(n: i64, alloc: bool) -> i64 {
+    let hs: List<thread::JoinHandle<i64>> = [];
+    let t: i64 = 0;
+    while t < n {
+        let seed = t + 1;
+        if alloc {
+            let per = ALLOC_WORK / n;
+            hs.push(thread::spawn(|| churn(per)));
+        } else {
+            let per = CPU_WORK / n;
+            hs.push(thread::spawn(|| spin(per, seed)));
+        }
+        t += 1;
+    }
+    let total: i64 = 0;
+    for h in hs { total += try! h.join(); }
+    return total;
+}
+
+fn main() -> i32 {
+    let args = env::args();
+    let n: i64 = if args.len() > 1 { try! args[1].parse::<i64>() } else { 4 };
+    let kind = if args.len() > 2 { args[2] } else { "both" };
+    if kind != "alloc" {
+        println(f"cpu {split(n, false)}");
+    }
+    if kind != "cpu" {
+        println(f"alloc {split(n, true)}");
+    }
+    return 0;
+}

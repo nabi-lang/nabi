@@ -1,0 +1,10 @@
+// expect-error: body not found
+// expect-error: rename
+
+// A Rust mod.rs habit: the body is in geom/mod.nabi, but nabi wants
+// geom.nabi. The error points at the rename (only because mod.nabi is here).
+mod geom;
+
+fn main() {
+    println(f"{geom::n()}");
+}

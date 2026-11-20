@@ -1,0 +1,31 @@
+// expect-error: error[E0133]: `tx` was moved at line 13, and is used here
+// expect-error: affine_move_then_use_error.nabi:14:10: `tx` was moved at line 13, and is used here
+// expect-error: help: a `Sender<i32>` has one owner, and `tx` gave it away; use the new owner, or keep a copy with `.clone()` before it moves
+// expect-error: affine_move_then_use_error.nabi:25:5: `a` may have been moved at line 22, and is used here
+
+// A `Drop` resource has one owner: `let b = a` moves it, and `a` is gone.
+
+use core::channel::channel;
+use bare::alloc::Allocation;
+
+fn moved_sender() {
+    let (tx, rx) = channel::<i32>();
+    let other = tx;
+    try! tx.send(1);
+    try! other.send(2);
+    println(f"{rx.recv() ?? 0}");
+}
+
+fn moved_on_one_path(c: bool) -> usize {
+    let a = try! Allocation::<u8>::new(4);
+    if c {
+        let b = a;
+        println(f"{b.len()}");
+    }
+    a.len()
+}
+
+fn main() {
+    moved_sender();
+    println(f"{moved_on_one_path(true)}");
+}

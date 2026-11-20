@@ -1,0 +1,22 @@
+// expect-exit: 0
+// expect-stdout: 1 2 4
+
+pub mod outer {
+    pub fn a() -> i32 { 1i32 }
+
+    pub mod mid {
+        pub fn b() -> i32 { 2i32 }
+
+        pub mod inner {
+            pub fn c() -> i32 { 4i32 }
+        }
+    }
+}
+
+use outer::**;
+
+fn main() {
+    // a, b, c all reachable through deep glob
+    println(f"{a()} {b()} {c()}");
+}
+

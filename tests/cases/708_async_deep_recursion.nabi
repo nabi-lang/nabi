@@ -1,0 +1,17 @@
+// expect-exit: 0
+// needs: deep-stack
+// expect-stdout:
+// depth 2000
+
+// `async fn` recursion allocates a frame per call. The
+// implementation note allows nested `await` to run on the native stack,
+// so this stays at a depth that an 8 MB native stack handles; a browser's
+// engine stack holds about a quarter of it at -O0.
+async fn deep(n: i32) -> i32 {
+    if n == 0 { 0 } else { 1 + await deep(n - 1) }
+}
+
+async fn main() {
+    let d = await deep(2000);
+    println(f"depth {d}");
+}

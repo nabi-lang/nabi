@@ -1,0 +1,21 @@
+// expect-error: cyclic meta expansion: ping → pong → ping
+// An expansion that re-applies itself is an error.
+#[impl_attribute(ping)]
+pub @attribute {
+    #[pong]
+    @item
+}
+
+#[impl_attribute(pong)]
+pub @attribute {
+    #[ping]
+    @item
+}
+
+#[ping]
+fn f() -> i32 { return 0; }
+
+fn main() -> i32 {
+    return f();
+}
+

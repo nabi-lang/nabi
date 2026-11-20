@@ -1,0 +1,224 @@
+// core::num::assign - the `*Assign` impls of the
+// primitives, `int` / `float` and `str`. A primitive's method is
+// `#[intrinsic("nabi.OP_assign.TYPE")]`: `a += b` and a by-name call both
+// lower to `a = a op b`. `%%=` has no machine op; it calls `Modulo`.
+// One block per (type, trait); keep it regular.
+
+// i8 .. usize share one block per (type, trait); a macro generates them.
+// `@t` in the intrinsic name interpolates the type.
+
+#[impl_macro(int_assign_ops)] @macro {
+    (@rep[sep = ","] { @t: ty }) => {
+        @for @t {
+            impl AddAssign for @t {
+                #[intrinsic("nabi.add_assign.@t")]
+                const fn add_assign(ref self, rhs: @t) { self = self + rhs; }
+            }
+            impl SubAssign for @t {
+                #[intrinsic("nabi.sub_assign.@t")]
+                const fn sub_assign(ref self, rhs: @t) { self = self - rhs; }
+            }
+            impl MulAssign for @t {
+                #[intrinsic("nabi.mul_assign.@t")]
+                const fn mul_assign(ref self, rhs: @t) { self = self * rhs; }
+            }
+            impl DivAssign for @t {
+                #[intrinsic("nabi.div_assign.@t")]
+                const fn div_assign(ref self, rhs: @t) { self = self / rhs; }
+            }
+            impl RemAssign for @t {
+                #[intrinsic("nabi.rem_assign.@t")]
+                const fn rem_assign(ref self, rhs: @t) { self = self % rhs; }
+            }
+            impl ModuloAssign for @t {
+                #[intrinsic("nabi.mod_assign.@t")]
+                const fn modulo_assign(ref self, rhs: @t) { self = self %% rhs; }
+            }
+            impl BitAndAssign for @t {
+                #[intrinsic("nabi.and_assign.@t")]
+                const fn bitand_assign(ref self, rhs: @t) { self = self & rhs; }
+            }
+            impl BitOrAssign for @t {
+                #[intrinsic("nabi.or_assign.@t")]
+                const fn bitor_assign(ref self, rhs: @t) { self = self | rhs; }
+            }
+            impl BitXorAssign for @t {
+                #[intrinsic("nabi.xor_assign.@t")]
+                const fn bitxor_assign(ref self, rhs: @t) { self = self ^ rhs; }
+            }
+            impl ShlAssign for @t {
+                #[intrinsic("nabi.shl_assign.@t")]
+                const fn shl_assign(ref self, rhs: @t) { self = self << rhs; }
+            }
+            impl ShrAssign for @t {
+                #[intrinsic("nabi.shr_assign.@t")]
+                const fn shr_assign(ref self, rhs: @t) { self = self >> rhs; }
+            }
+        }
+    }
+}
+
+int_assign_ops!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
+
+// f32
+
+impl AddAssign for f32 {
+    #[intrinsic("nabi.add_assign.f32")]
+    const fn add_assign(ref self, rhs: f32) { self = self + rhs; }
+}
+
+impl SubAssign for f32 {
+    #[intrinsic("nabi.sub_assign.f32")]
+    const fn sub_assign(ref self, rhs: f32) { self = self - rhs; }
+}
+
+impl MulAssign for f32 {
+    #[intrinsic("nabi.mul_assign.f32")]
+    const fn mul_assign(ref self, rhs: f32) { self = self * rhs; }
+}
+
+impl DivAssign for f32 {
+    #[intrinsic("nabi.div_assign.f32")]
+    const fn div_assign(ref self, rhs: f32) { self = self / rhs; }
+}
+
+impl RemAssign for f32 {
+    #[intrinsic("nabi.rem_assign.f32")]
+    const fn rem_assign(ref self, rhs: f32) { self = self % rhs; }
+}
+
+impl ModuloAssign for f32 {
+    #[intrinsic("nabi.mod_assign.f32")]
+    const fn modulo_assign(ref self, rhs: f32) { self = self %% rhs; }
+}
+
+// f64
+
+impl AddAssign for f64 {
+    #[intrinsic("nabi.add_assign.f64")]
+    const fn add_assign(ref self, rhs: f64) { self = self + rhs; }
+}
+
+impl SubAssign for f64 {
+    #[intrinsic("nabi.sub_assign.f64")]
+    const fn sub_assign(ref self, rhs: f64) { self = self - rhs; }
+}
+
+impl MulAssign for f64 {
+    #[intrinsic("nabi.mul_assign.f64")]
+    const fn mul_assign(ref self, rhs: f64) { self = self * rhs; }
+}
+
+impl DivAssign for f64 {
+    #[intrinsic("nabi.div_assign.f64")]
+    const fn div_assign(ref self, rhs: f64) { self = self / rhs; }
+}
+
+impl RemAssign for f64 {
+    #[intrinsic("nabi.rem_assign.f64")]
+    const fn rem_assign(ref self, rhs: f64) { self = self % rhs; }
+}
+
+impl ModuloAssign for f64 {
+    #[intrinsic("nabi.mod_assign.f64")]
+    const fn modulo_assign(ref self, rhs: f64) { self = self %% rhs; }
+}
+
+// bool
+
+impl BitAndAssign for bool {
+    #[intrinsic("nabi.and_assign.bool")]
+    const fn bitand_assign(ref self, rhs: bool) { self = self & rhs; }
+}
+
+impl BitOrAssign for bool {
+    #[intrinsic("nabi.or_assign.bool")]
+    const fn bitor_assign(ref self, rhs: bool) { self = self | rhs; }
+}
+
+impl BitXorAssign for bool {
+    #[intrinsic("nabi.xor_assign.bool")]
+    const fn bitxor_assign(ref self, rhs: bool) { self = self ^ rhs; }
+}
+
+// int: a new value each time
+
+impl AddAssign for Int {
+    const fn add_assign(ref self, rhs: Int) { self = self + rhs; }
+}
+
+impl SubAssign for Int {
+    const fn sub_assign(ref self, rhs: Int) { self = self - rhs; }
+}
+
+impl MulAssign for Int {
+    fn mul_assign(ref self, rhs: Int) { self = self * rhs; }
+}
+
+impl DivAssign for Int {
+    fn div_assign(ref self, rhs: Int) { self = self / rhs; }
+}
+
+impl RemAssign for Int {
+    fn rem_assign(ref self, rhs: Int) { self = self % rhs; }
+}
+
+impl ModuloAssign for Int {
+    fn modulo_assign(ref self, rhs: Int) { self = self %% rhs; }
+}
+
+impl BitAndAssign for Int {
+    const fn bitand_assign(ref self, rhs: Int) { self = self & rhs; }
+}
+
+impl BitOrAssign for Int {
+    const fn bitor_assign(ref self, rhs: Int) { self = self | rhs; }
+}
+
+impl BitXorAssign for Int {
+    const fn bitxor_assign(ref self, rhs: Int) { self = self ^ rhs; }
+}
+
+impl ShlAssign<u32> for Int {
+    const fn shl_assign(ref self, rhs: u32) { self = self << rhs; }
+}
+
+impl ShrAssign<u32> for Int {
+    const fn shr_assign(ref self, rhs: u32) { self = self >> rhs; }
+}
+
+// float: a new value each time
+
+impl AddAssign for Float {
+    const fn add_assign(ref self, rhs: Float) { self = self + rhs; }
+}
+
+impl SubAssign for Float {
+    const fn sub_assign(ref self, rhs: Float) { self = self - rhs; }
+}
+
+impl MulAssign for Float {
+    const fn mul_assign(ref self, rhs: Float) { self = self * rhs; }
+}
+
+impl DivAssign for Float {
+    const fn div_assign(ref self, rhs: Float) { self = self / rhs; }
+}
+
+impl RemAssign for Float {
+    fn rem_assign(ref self, rhs: Float) { self = self % rhs; }
+}
+
+impl ModuloAssign for Float {
+    fn modulo_assign(ref self, rhs: Float) { self = self %% rhs; }
+}
+
+// str: a new str each time (str is immutable)
+
+impl AddAssign for str {
+    const fn add_assign(ref self, rhs: str) { self = self + rhs; }
+}
+
+impl AddAssign<char> for str {
+    const fn add_assign(ref self, rhs: char) { self = self + unsafe { nabi_str_from_char(rhs as u32) }; }
+}

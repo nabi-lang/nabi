@@ -1,0 +1,57 @@
+// std::time::offset: `Offset`, a fixed difference from UTC.
+
+/// A fixed offset from UTC in seconds, east positive (`+09:00` is
+/// 32400), within +/-25:59:59. `Display` is `+09:00` (`+05:30:15` when
+/// it has seconds).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Offset {
+    secs: i32;
+}
+
+const MAX_SECS: i32 = 93599;
+
+impl Offset {
+    /// UTC itself, `+00:00`.
+    pub const UTC: Offset = Offset { secs: 0 };
+
+    /// `hours` and `minutes` east of UTC; both negative (or `hours` 0)
+    /// for west: `Offset::new(-3, -30)` is `-03:30`.
+    pub const fn new(hours: i32, minutes: i32) throws (ValueError) -> Offset {
+        if minutes <= -60 || minutes >= 60 {
+            throw ValueError::new(f"offset minutes {minutes} is out of range (-59..=59)");
+        }
+        if (hours > 0 && minutes < 0) || (hours < 0 && minutes > 0) {
+            throw ValueError::new(f"offset {hours}h {minutes}min mixes signs; give both the same sign");
+        }
+        try Offset::from_secs(hours * 3600 + minutes * 60)
+    }
+
+    /// `secs` seconds east of UTC; `ValueError` past +/-25:59:59.
+    pub const fn from_secs(secs: i32) throws (ValueError) -> Offset {
+        if secs < -MAX_SECS || secs > MAX_SECS {
+            throw ValueError::new(f"offset {secs}s is out of range (-93599..=93599)");
+        }
+        Offset { secs }
+    }
+
+    /// Seconds east of UTC.
+    pub const fn secs(self) -> i32 { self.secs }
+    /// `true` for `+00:00`.
+    pub const fn is_utc(self) -> bool { self.secs == 0 }
+}
+
+impl Display for Offset {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(offset_str(self.secs, ":")) }
+}
+
+impl Debug for Offset {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+/// `+hh<sep>mm`, then `<sep>ss` when the seconds are not zero.
+pub(pkg) const fn offset_str(secs: i32, sep: str) -> str {
+    let sign = if secs < 0 { "-" } else { "+" };
+    let a = if secs < 0 { -secs } else { secs };
+    if a % 60 != 0 { return f"{sign}{a / 3600:02}{sep}{a / 60 % 60:02}{sep}{a % 60:02}"; }
+    f"{sign}{a / 3600:02}{sep}{a / 60 % 60:02}"
+}

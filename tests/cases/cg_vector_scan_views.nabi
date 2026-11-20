@@ -1,0 +1,92 @@
+// Vectorized early exits (`-O2`): a search from an offset to a bound
+// passed in, and `&&` of two slices' elements (the second read only
+// where the first test holds, within the second slice's length), stop
+// where the scalar loop stops, for views at any offset, of any length,
+// strided or reversed.
+// expect-exit: 0
+// expect-stdout:
+// from 3918 3493
+// pair -651 -651 219
+// step -1 -1 14
+// short 7 40 -1
+
+fn find_from(b: List<u8>, c: u8, at: usize, end: usize) -> usize {
+    let i = at;
+    while i < end {
+        if b[i] == c {
+            return i;
+        }
+        i += 1;
+    }
+    end
+}
+
+fn pair(s0: Slice<u8>, s1: Slice<u8>, a: u8, c: u8) -> i64 {
+    let k = s0.len();
+    let i: usize = 0;
+    while i < k {
+        if s0[i] == a && s1[i] == c {
+            return i as i64;
+        }
+        i += 1;
+    }
+    -1
+}
+
+fn pair_and(s0: Slice<u8>, s1: Slice<u8>, a: u8, c: u8) -> i64 {
+    let k = s0.len();
+    let i: usize = 0;
+    while i < k {
+        if (s0[i] == a) & (s1[i] == c) {
+            return i as i64;
+        }
+        i += 1;
+    }
+    -1
+}
+
+fn main() -> i32 {
+    let n: usize = 100;
+    let b: List<u8> = List::from_fn(n, |i: usize| if i % 37 == 5 { 1u8 } else { 0u8 });
+    let b2: List<u8> = List::from_fn(n, |i: usize| if i % 23 == 6 { 2u8 } else { 0u8 });
+    let s: usize = 0;
+    let e: usize = 0;
+    for at in 0..n {
+        for end in at..n + 1 {
+            let r = find_from(b, 1u8, at, end);
+            s += r;
+            e += if r < end { 1 } else { 0 };
+        }
+    }
+    println(f"from {s % 10007} {e}");
+    // `b[j] == 1 && b2[j + 1] == 2` at j = 5 only: walk offsets
+    // and lengths around the first.
+    let p: i64 = 0;
+    let q: i64 = 0;
+    let hits: i64 = 0;
+    for at in 0..60 {
+        for len in 0..40 {
+            let x = pair(b[at:at + len], b2[at + 1:at + 1 + len], 1u8, 2u8);
+            let y = pair_and(b[at:at + len], b2[at + 1:at + 1 + len], 1u8, 2u8);
+            p += x;
+            q += y;
+            hits += if x >= 0 { 1 } else { 0 };
+        }
+    }
+    println(f"pair {p + 1000} {q + 1000} {hits}");
+    let r = pair(b[0:n].step(2), b2[1:n].step(2), 1u8, 2u8);
+    let v = pair(b[0:n].step(-1), b2[0:n].step(-1), 1u8, 2u8);
+    let w = pair_and(b[0:n].step(3), b2[0:n].step(3), 1u8, 0u8);
+    println(f"step {r} {v} {w}");
+    // The second slice shorter: its elements past its length are never
+    // read where the first test fails.
+    let z: List<u8> = List::filled(64, 0u8);
+    let o: List<u8> = List::filled(64, 9u8);
+    o[7] = 1u8;
+    o[40] = 1u8;
+    let t0 = pair(o[0:64], z[0:8], 1u8, 0u8);
+    let t1 = pair(o[8:64], z[0:64], 1u8, 0u8) + 8;
+    let t2 = pair(o[8:40], z[0:2], 1u8, 0u8);
+    println(f"short {t0} {t1} {t2}");
+    return 0;
+}

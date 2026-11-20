@@ -1,0 +1,52 @@
+// expect-exit: 0
+// gc-stress: 50
+// expect-stdout:
+// 500
+// 124750
+// 1
+
+// List buffers are GC objects: a `List<List<i32>>` keeps its inner
+// lists alive across collections (the outer buffer's elements are
+// traced), and dropped lists are reclaimed.
+extern "C" {
+    fn nabi_gc_collect();
+    fn nabi_gc_stats_live_bytes() -> usize;
+}
+
+fn build(n: i32) -> List<List<i32>> {
+    let outer: List<List<i32>> = List::new();
+    let i = 0;
+    while i < n {
+        let inner: List<i32> = List::with_capacity(1);
+        inner.push(i);
+        inner.push(i * 2);
+        outer.push(inner);
+        unsafe { nabi_gc_collect() };
+        i = i + 1;
+    }
+    return outer;
+}
+
+fn main() -> i32 {
+    let lists = build(500);
+    unsafe { nabi_gc_collect() };
+    println(f"{lists.len() as i32}");
+    let total = 0;
+    for l in lists {
+        total = total + l[0];
+    }
+    println(f"{total}");
+    // Garbage from a big temporary list is reclaimed.
+    let before = unsafe { nabi_gc_stats_live_bytes() };
+    let k = 0;
+    while k < 20 {
+        let tmp: List<i64> = List::with_capacity(10000);
+        tmp.push(1i64);
+        k = k + 1;
+    }
+    unsafe { nabi_gc_collect() };
+    let after = unsafe { nabi_gc_stats_live_bytes() };
+    println(f"{if after < before + 200000usize { 1 } else { 0 }}");
+    return 0;
+}
+

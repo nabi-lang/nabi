@@ -1,0 +1,25 @@
+// PEM (RFC 7468): base64 blocks between `-----BEGIN <label>-----` and
+// `-----END <label>-----` lines.
+
+use std::net::tls::TlsError;
+
+/// The DER of every block labelled `label`, in order.
+pub(pkg) fn blocks(text: str, label: str) throws (TlsError) -> List<List<u8>> {
+    let begin = f"-----BEGIN {label}-----";
+    let end = f"-----END {label}-----";
+    let out: List<List<u8>> = [];
+    let rest = text;
+    loop {
+        let at = rest.find(begin);
+        if at is none { break; }
+        let from = (at ?? 0) + begin.len();
+        let tail = rest[from:rest.len()];
+        let stop = tail.find(end);
+        if stop is none { throw TlsError::certificate(f"PEM: unterminated {label}"); }
+        let s = stop ?? 0;
+        let body: str = tail[0:s].split_whitespace().collect();
+        out.push(try core::encoding::base64::decode(body) catch e { throw TlsError::certificate(f"PEM {label}: {e.message()}"); });
+        rest = tail[s + end.len():tail.len()];
+    }
+    out
+}

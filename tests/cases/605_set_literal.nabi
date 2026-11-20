@@ -1,0 +1,10 @@
+// expect-exit: 0
+// expect-stdout:
+// 3
+
+// `{1, 2, 3}` is a set literal - a stdlib `Set`.
+fn main() -> i32 {
+    let s = {1, 2, 3};
+    println(f"{s.len() as i32}");
+    return 0;
+}

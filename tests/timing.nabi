@@ -1,0 +1,203 @@
+// Timing-leak check of core::crypto (timing.rs): dudect-style.
+// Each probe runs an operation on inputs of two classes in random order
+// and prints `<probe> <t>`, the largest Welch t of the two timing
+// distributions over several crop levels. |t| stays small when the time
+// does not depend on the class. The `control` probe is an early-exit
+// compare that must show a leak, so a quiet result means something.
+//   timing [scale=1]
+use core::crypto::{constant_time_eq, HashAlgorithm, Hmac, Aead, AeadAlgorithm, EcCurve, Secret};
+use core::crypto::{x25519, ed25519, ecdsa};
+use core::crypto::mlkem::DecapsulationKey768;
+use std::random;
+use std::env;
+
+/// Welch's t of the samples of class 0 against class 1, among those below
+/// `cut` (all of them for `cut` < 0).
+fn welch(xs: List<i64>, cls: List<bool>, cut: i64) -> f64 {
+    let n0 = 0.0;
+    let n1 = 0.0;
+    let s0 = 0.0;
+    let s1 = 0.0;
+    let q0 = 0.0;
+    let q1 = 0.0;
+    for i in 0..xs.len() {
+        if cut >= 0 && xs[i] > cut { continue; }
+        let x = xs[i] as f64;
+        if cls[i] { n1 += 1.0; s1 += x; q1 += x * x; } else { n0 += 1.0; s0 += x; q0 += x * x; }
+    }
+    if n0 < 2.0 || n1 < 2.0 { return 0.0; }
+    let m0 = s0 / n0;
+    let m1 = s1 / n1;
+    let v0 = (q0 - n0 * m0 * m0) / (n0 - 1.0);
+    let v1 = (q1 - n1 * m1 * m1) / (n1 - 1.0);
+    let d = v0 / n0 + v1 / n1;
+    if d <= 0.0 { return 0.0; }
+    (m0 - m1) / d.sqrt()
+}
+
+/// Largest |t| over the uncropped samples and the crops at the 50, 75,
+/// 90, 95 and 99th percentile, as dudect does against heavy tails.
+fn leak(xs: List<i64>, cls: List<bool>) -> f64 {
+    let sorted: List<i64> = [];
+    for x in xs { sorted.push(x); }
+    sorted.sort();
+    let worst = welch(xs, cls, -1).abs();
+    for p in [50usize, 75, 90, 95, 99] {
+        let t = welch(xs, cls, sorted[sorted.len() * p / 100]).abs();
+        if t > worst { worst = t; }
+    }
+    worst
+}
+
+/// Time `op(class, i)` for `n` samples in random class order and print
+/// the probe's t. `prep(class, i)` runs before each sample, untimed. The
+/// first tenth warms caches and is dropped.
+fn probe(name: str, n: usize, prep: fn(bool, usize), op: fn(bool, usize) -> bool) {
+    let bits = random::bytes(n);
+    let xs: List<i64> = [];
+    let cls: List<bool> = [];
+    let sink = 0usize;
+    for i in 0..n {
+        let c = (bits[i] & 1u8) == 1u8;
+        prep(c, i);
+        let t0 = Instant::now();
+        let r = op(c, i);
+        let dt = t0.elapsed().as_ns();
+        if r { sink += 1; }
+        if i >= n / 10 { xs.push(dt); cls.push(c); }
+    }
+    println(f"{name} {leak(xs, cls):.2} (sink {sink % 2})");
+}
+
+fn arg_scale() -> usize {
+    for a in env::args() {
+        if a.starts_with("scale=") { return try! a[6:a.len()].parse::<usize>(); }
+    }
+    1
+}
+
+/// Copy `src` into `dst` in place, so both classes read one buffer.
+fn load(dst: List<u8>, src: List<u8>) {
+    for i in 0..src.len() { dst[i] = src[i]; }
+}
+
+fn none_prep(_c: bool, _i: usize) {}
+
+/// Byte compare that stops at the first difference.
+fn leaky_eq(a: List<u8>, b: List<u8>) -> bool {
+    for i in 0..a.len() {
+        if a[i] != b[i] { return false; }
+    }
+    true
+}
+
+/// `tag` with byte `at` flipped.
+fn flip(b: List<u8>, at: usize) -> List<u8> {
+    let r: List<u8> = [];
+    for x in b { r.push(x); }
+    r[at] = r[at] ^ 0x01u8;
+    r
+}
+
+fn main() {
+    let k = arg_scale();
+    let reps = 16usize;
+
+    // Equal vs differing at the first byte: an early exit shows.
+    let a = random::bytes(64);
+    let same: List<u8> = [];
+    for x in a { same.push(x); }
+    let diff = flip(a, 0);
+    let b = flip(a, 0);
+    let pick = |c: bool, _i: usize| { load(b, if c { diff } else { same }); };
+    probe("control", 100000 * k, pick, |_c, _i| {
+        let r = false;
+        for _ in 0..reps { r = r ^ leaky_eq(a, b); }
+        r
+    });
+    probe("constant_time_eq", 100000 * k, pick, |_c, _i| {
+        let r = false;
+        for _ in 0..reps { r = r ^ constant_time_eq(a, b); }
+        r
+    });
+
+    // A wrong tag at the first vs the last byte: both fail.
+    let key = random::bytes(32);
+    let msg = random::bytes(64);
+    let tag = Hmac::mac(HashAlgorithm::Sha256, key, msg);
+    let t_first = flip(tag, 0);
+    let t_last = flip(tag, 31);
+    let t = flip(tag, 0);
+    probe("hmac_verify", 100000 * k, |c: bool, _i: usize| { load(t, if c { t_last } else { t_first }); }, |_c, _i| {
+        Hmac::verify(HashAlgorithm::Sha256, key, msg, t)
+    });
+
+    for alg in [AeadAlgorithm::ChaCha20Poly1305, AeadAlgorithm::Aes256Gcm] {
+        let ae = try! Aead::new(alg, random::bytes(32));
+        let nonce = random::bytes(12);
+        let ct = try! ae.seal(nonce, "", random::bytes(64));
+        let c_first = flip(ct, ct.len() - 16);
+        let c_last = flip(ct, ct.len() - 1);
+        let x = flip(ct, 0);
+        probe(f"aead_open {alg:?}", 100000 * k, |c: bool, _i: usize| { load(x, if c { c_last } else { c_first }); }, |_c, _i| {
+            let r = try! ae.open(nonce, "", x);
+            match r { _: List<u8> => true, none => false }
+        });
+    }
+
+    // Key schedule and encryption: an all-zero key vs random keys.
+    let n_keys = 64usize;
+    let zero_key: List<u8> = [];
+    for _ in 0..32 { zero_key.push(0u8); }
+    let rand_keys: List<List<u8>> = [];
+    for _ in 0..n_keys { rand_keys.push(random::bytes(32)); }
+    let pt = random::bytes(64);
+    let nonce12 = random::bytes(12);
+    probe("aes256gcm_seal_key", 100000 * k, none_prep, |c, i| {
+        let kk = if c { rand_keys[i % n_keys] } else { zero_key };
+        let ae = try! Aead::new(AeadAlgorithm::Aes256Gcm, kk);
+        (try! ae.seal(nonce12, "", pt)).len() > 0
+    });
+
+    // Scalar multiplication: a low-weight scalar vs random scalars.
+    let low: List<u8> = [];
+    for _ in 0..32 { low.push(0u8); }
+    low[0] = 8u8;
+    low[31] = 0x40u8;
+    let x_low = try! x25519::PrivateKey::from_bytes(low);
+    let x_rand: List<x25519::PrivateKey> = [];
+    for _ in 0..n_keys { x_rand.push(try! x25519::PrivateKey::from_bytes(random::bytes(32))); }
+    let peer = (try! x25519::PrivateKey::from_bytes(random::bytes(32))).public_key();
+    probe("x25519", 10000 * k, none_prep, |c, i| {
+        let sk = if c { x_rand[i % n_keys] } else { x_low };
+        match sk.diffie_hellman(peer) { s: Secret => s.len() > 0, none => false }
+    });
+
+    let one: List<u8> = [];
+    for _ in 0..31 { one.push(0u8); }
+    one.push(1u8);
+    let e_low = try! ecdsa::SigningKey::from_bytes(EcCurve::P256, one);
+    let e_rand: List<ecdsa::SigningKey> = [];
+    for _ in 0..n_keys { e_rand.push(try! ecdsa::SigningKey::from_bytes(EcCurve::P256, random::bytes(32))); }
+    probe("ecdsa_p256_sign", 4000 * k, none_prep, |c, i| {
+        let sk = if c { e_rand[i % n_keys] } else { e_low };
+        sk.sign(HashAlgorithm::Sha256, msg).len() > 0
+    });
+
+    let ed_fixed = try! ed25519::SigningKey::from_seed(low);
+    let ed_rand: List<ed25519::SigningKey> = [];
+    for _ in 0..n_keys { ed_rand.push(try! ed25519::SigningKey::from_seed(random::bytes(32))); }
+    probe("ed25519_sign", 10000 * k, none_prep, |c, i| {
+        let sk = if c { ed_rand[i % n_keys] } else { ed_fixed };
+        sk.sign(msg).len() > 0
+    });
+
+    // Implicit rejection: a valid vs a corrupted ciphertext.
+    let dk = try! DecapsulationKey768::from_seed(random::bytes(32), random::bytes(32));
+    let (_, good) = try! dk.encapsulation_key().encapsulate(random::bytes(32));
+    let bad = flip(good, 100);
+    let m = flip(good, 0);
+    probe("mlkem768_decapsulate", 10000 * k, |c: bool, _i: usize| { load(m, if c { bad } else { good }); }, |_c, _i| {
+        (try! dk.decapsulate(m)).len() > 0
+    });
+}

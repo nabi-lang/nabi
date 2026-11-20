@@ -1,0 +1,257 @@
+//! std::reload - hot reload under `nabi dev`: where changes apply, code
+//! that runs around them, and state that lives through them.
+//!
+//! `nabi dev` swaps in each package you edit while the program runs.
+//! Calls reach the new code at once; a change to a type's fields
+//! applies at a moment when no running frame uses the type, usually
+//! `point()`. Outside `nabi dev` everything here does nothing.
+//!
+//! ```nabi
+//! fn main() {
+//!     let state = new_state();
+//!     loop {
+//!         step(state);
+//!         reload::point();
+//!     }
+//! }
+//!
+//! // `main` never names `World` itself, so a change to it can apply.
+//! fn new_state() -> reload::State<World> { reload::State::new(World::new()) }
+//! ```
+
+use bare::mem::{GcBuf, buf_new, transmute_unchecked};
+use core::sync::Mutex;
+use std::env;
+use std::plugin;
+use std::process;
+
+extern "nabi" {
+    fn nabi_hot_active() -> i32;
+    fn nabi_hot_connect(endpoint: str) -> str;
+    fn nabi_hot_ready() -> str;
+    fn nabi_hot_point();
+    fn nabi_hot_events() -> str;
+    fn nabi_hot_hold(on: i32);
+    fn nabi_hot_hooks(table: usize) -> usize;
+}
+
+/// One applied change, as the hooks see it.
+#[derive(Clone, Debug)]
+pub struct Reload {
+    /// The package that changed.
+    pub package: str;
+    /// Its new version (counted by `nabi dev`).
+    pub version: u64;
+    /// The functions whose code changed, as `game::spawn_wave`.
+    pub functions: List<str>;
+    /// The types whose fields changed, as `game::Enemy`.
+    pub types: List<str>;
+}
+
+/// Hooks by name: `[0]` those that run before a change, `[1]` after.
+/// The runtime keeps the one table (a root), not a static: every hot
+/// module's copy of this code shares it, and a program that never
+/// registers a hook makes none.
+fn table() -> GcBuf<Mutex<Dict<str, fn(Reload) + Send + Sync>>> {
+    let w = unsafe { nabi_hot_hooks(0usize) };
+    if w != 0usize {
+        return unsafe { transmute_unchecked(w) };
+    }
+    let t: GcBuf<Mutex<Dict<str, fn(Reload) + Send + Sync>>> = unsafe { buf_new(2) };
+    unsafe {
+        t[0] = Mutex::new_unshared(Dict::new());
+        t[1] = Mutex::new_unshared(Dict::new());
+    }
+    let mine: usize = unsafe { transmute_unchecked(t) };
+    let won = unsafe { nabi_hot_hooks(mine) };
+    // `t` stays live across the call: the runtime roots it there.
+    if won == mine {
+        return t;
+    }
+    unsafe { transmute_unchecked(won) }
+}
+
+/// Running under `nabi dev`.
+pub fn active() -> bool {
+    unsafe { nabi_hot_active() } != 0
+}
+
+/// Apply a change that is ready, here. Call it where no local holds a
+/// value of a type you may edit (the top of a frame loop); it does
+/// nothing when no change waits or outside `nabi dev`.
+pub fn point() {
+    if !active() {
+        return;
+    }
+    if any_before() {
+        run_hooks(false, parse(unsafe { nabi_hot_ready() }));
+    }
+    unsafe { nabi_hot_point() };
+    run_hooks(true, parse(unsafe { nabi_hot_events() }));
+}
+
+/// Run `f` after each change applies, on the thread in `point()`. A hook
+/// registered again under the same `name` replaces the old one.
+pub fn on_reload(name: str, f: fn(Reload) + Send + Sync) {
+    add(name, true, f);
+}
+
+/// Run `f` before each change applies, on the thread in `point()`. While
+/// such a hook is registered, every change waits for `point()`.
+pub fn before_reload(name: str, f: fn(Reload) + Send + Sync) {
+    add(name, false, f);
+}
+
+fn add(name: str, after: bool, f: fn(Reload) + Send + Sync) {
+    let m = unsafe { table()[if after { 1usize } else { 0usize }] };
+    using g = m.lock() { g.get().insert(name, f); }
+    unsafe { nabi_hot_hold(if any_before() { 1 } else { 0 }) };
+}
+
+/// Run the hooks that run after (`after`) or before a change on each
+/// of `changes`, by name, outside the table's lock.
+fn run_hooks(after: bool, changes: List<Reload>) {
+    if changes.len() == 0 {
+        return;
+    }
+    let m = unsafe { table()[if after { 1usize } else { 0usize }] };
+    let names: List<str> = List::new();
+    using g = m.lock() { for (name, _) in g.get() { names.push(name); } }
+    for name in names {
+        let found: fn(Reload) + Send + Sync | none = none;
+        using g = m.lock() { found = g.get().get(name); }
+        if let f: fn(Reload) + Send + Sync = found {
+            for r in changes {
+                f(r);
+            }
+        }
+    }
+}
+
+/// Whether a hook that runs before changes is registered.
+fn any_before() -> bool {
+    if unsafe { nabi_hot_hooks(0usize) } == 0usize {
+        return false;
+    }
+    let m = unsafe { table()[0] };
+    let n = 0usize;
+    using g = m.lock() { n = g.get().len(); }
+    n > 0
+}
+
+/// Lines of `package \t version \t fn,fn \t type,type`.
+fn parse(text: str) -> List<Reload> {
+    let out: List<Reload> = List::new();
+    for line in text.split("\n") {
+        if line == "" {
+            continue;
+        }
+        let parts: List<str> = List::new();
+        for p in line.split("\t") {
+            parts.push(p);
+        }
+        if parts.len() < 4 {
+            continue;
+        }
+        let version = try parts[1].parse::<u64>() catch _ { 0u64 };
+        out.push(Reload { package: parts[0], version, functions: items(parts[2]), types: items(parts[3]) });
+    }
+    out
+}
+
+fn items(text: str) -> List<str> {
+    let out: List<str> = List::new();
+    for p in text.split(",") {
+        if p != "" {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// A value kept across reloads. It lives in its own box, which a change
+/// to `T`'s fields rewrites in place or moves; copies of a `State` share
+/// it. Keep the state of `main`'s loop in one: a local of type `T` there
+/// would hold the change back.
+pub struct State<T> {
+    cell: GcBuf<GcBuf<T>>;
+}
+
+impl<T> State<T> {
+    /// A state holding `v`.
+    pub fn new(v: T) -> State<T> {
+        unsafe {
+            let inner: GcBuf<T> = buf_new(1);
+            inner[0] = v;
+            let outer: GcBuf<GcBuf<T>> = buf_new(1);
+            outer[0] = inner;
+            State { cell: outer }
+        }
+    }
+
+    /// A copy of the value.
+    pub fn get(self) -> T {
+        unsafe {
+            let inner = self.cell[0];
+            inner[0]
+        }
+    }
+
+    /// Store `v`.
+    pub fn set(self, v: T) {
+        unsafe {
+            let inner = self.cell[0];
+            inner[0] = v;
+        }
+    }
+
+    /// Store `f` of the value.
+    pub fn update(self, f: fn(T) -> T) {
+        self.set(f(self.get()));
+    }
+}
+
+/// The whole `main` of the program `nabi dev` runs: connect to
+/// `nabi dev`, load the packages' first versions (`NABI_DEV_PLUGINS`,
+/// one path a line, dependencies first) and call `NABI_DEV_MAIN` of the
+/// last one.
+pub fn host_main() {
+    let endpoint = try env::var("NABI_DEV") catch _ { "" };
+    if endpoint != "" {
+        let err = unsafe { nabi_hot_connect(endpoint) };
+        if err != "" {
+            eprintln(f"nabi dev: cannot reach {endpoint}: {err}; running without reload");
+        }
+    }
+    let files = try env::var("NABI_DEV_PLUGINS") catch _ {
+        eprintln("nabi dev: NABI_DEV_PLUGINS is not set; run the program with `nabi dev`");
+        process::exit(101);
+    };
+    let main_path = try env::var("NABI_DEV_MAIN") catch _ {
+        eprintln("nabi dev: NABI_DEV_MAIN is not set; run the program with `nabi dev`");
+        process::exit(101);
+    };
+    let last: plugin::Plugin | none = none;
+    for f in files.split("\n") {
+        if f == "" {
+            continue;
+        }
+        let p = try plugin::load(f) catch e {
+            eprintln(f"nabi dev: {f}: {e.message()}");
+            process::exit(101);
+        };
+        last = p;
+    }
+    let root = match last {
+        p: plugin::Plugin => p,
+        none => {
+            eprintln("nabi dev: NABI_DEV_PLUGINS names no file; run the program with `nabi dev`");
+            process::exit(101);
+        }
+    };
+    let run = try root.get::<fn()>(main_path) catch e {
+        eprintln(f"nabi dev: {e.message()}");
+        process::exit(101);
+    };
+    run();
+}

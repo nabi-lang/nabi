@@ -1,0 +1,73 @@
+// Middle-lifetime objects (worst case for a generational collector): a
+// ring of `ring MiB` of entries; each step replaces the oldest with a
+// fresh one, so every entry lives exactly one trip around the ring:
+// longer than a young cycle (32 MiB budget), short against the program.
+//
+//     cache <ring MiB> <churn MiB> <threads> [str|box]
+//
+// box: a 48-byte box per entry (~64 B with the slot); str: a 40..60
+// byte f-string per entry (~80 B). Each thread owns ring/N.
+use std::env;
+use std::thread;
+
+trait Weigh { fn w(self) -> i64; }
+struct Blob { a: i64; b: i64; c: i64; d: i64; }
+impl Weigh for Blob { fn w(self) -> i64 { return self.a + self.d; } }
+
+fn make(i: i64) -> any Weigh { return Blob { a: i, b: i, c: i, d: 1 }; }
+
+fn boxes(ring_mb: i64, churn_mb: i64) -> i64 {
+    let n = ring_mb * 1048576 / 64;
+    let steps = churn_mb * 1048576 / 64;
+    let ring: List<any Weigh> = [];
+    let i: i64 = 0;
+    while i < n { ring.push(make(i)); i += 1; }
+    let total: i64 = 0;
+    i = 0;
+    while i < steps {
+        let at = (i % n) as usize;
+        total += ring[at].w();
+        ring[at] = make(i);
+        i += 1;
+    }
+    return total;
+}
+
+fn strs(ring_mb: i64, churn_mb: i64) -> i64 {
+    let n = ring_mb * 1048576 / 80;
+    let steps = churn_mb * 1048576 / 80;
+    let ring: List<str> = [];
+    let i: i64 = 0;
+    while i < n { ring.push(f"entry {i} of the cache, padded out"); i += 1; }
+    let total: i64 = 0;
+    i = 0;
+    while i < steps {
+        let at = (i % n) as usize;
+        total += ring[at].len() as i64;
+        ring[at] = f"entry {i} of the cache, padded out";
+        i += 1;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    let args = env::args();
+    let ring = try! args[1].parse::<i64>();
+    let churn = try! args[2].parse::<i64>();
+    let t = try! args[3].parse::<i64>();
+    let kind = if args.len() > 4 { args[4] } else { "box" };
+    let hs: List<thread::JoinHandle<i64>> = [];
+    let k: i64 = 0;
+    while k < t {
+        if kind == "str" {
+            hs.push(thread::spawn(|| strs(ring / t, churn / t)));
+        } else {
+            hs.push(thread::spawn(|| boxes(ring / t, churn / t)));
+        }
+        k += 1;
+    }
+    let total: i64 = 0;
+    for h in hs { total += try! h.join(); }
+    println(f"{total}");
+    return 0;
+}

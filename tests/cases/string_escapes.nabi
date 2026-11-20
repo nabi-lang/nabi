@@ -1,0 +1,18 @@
+// expect-exit: 0
+// expect-stdout:
+// hello
+// world
+// 	tab
+// quote: "x"
+// backslash: \
+
+// `decode_str_escapes` (HIR) translates `\n` `\t` `\r` `\0` `\\` `\"` `\'`
+// `\xHH`. Raw strings (`r"..."`) skip the decode.
+fn main() -> i32 {
+    println("hello\nworld");
+    println("\ttab");
+    println("quote: \"x\"");
+    println("backslash: \\");
+    return 0;
+}
+

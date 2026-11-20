@@ -1,0 +1,18 @@
+// A trait argument of an impl must name a type, even one no call
+// picks the impl by.
+// expect-error: cannot find type `Bogus` in this scope
+// expect-error: cannot find type `Array` in this scope
+// expect-error: help: write `array::Array`, or add `use core::array::Array;`
+trait Mul2<Rhs> {
+    fn mul2(self, rhs: Rhs) -> usize;
+}
+
+impl<T> Mul2<Bogus<T>> for List<T> {
+    fn mul2(self, rhs: List<T>) -> usize { 2 }
+}
+
+impl<T> Mul2<Array<T, 2>> for i32 {
+    fn mul2(self, rhs: i32) -> usize { 1 }
+}
+
+fn main() {}

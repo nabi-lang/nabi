@@ -1,0 +1,26 @@
+// needs: process
+// expect-exit: 0
+// expect-stdout:
+// 2
+
+// A named fn passed to an `extern "C"` function's `fn` parameter goes as
+// a plain C function pointer; nabi `fn` values are
+// `{code, env}` pairs everywhere else. `raise` runs the handler at once
+// on this thread.
+extern "C" {
+    fn signal(sig: i32, handler: fn(i32)) -> usize;
+    fn raise(sig: i32) -> i32;
+}
+
+static TOTAL: Atomic<i64> = Atomic::new(0);
+
+fn show(sig: i32) {
+    TOTAL.fetch_add(sig as i64);
+}
+
+fn main() -> i32 {
+    unsafe { signal(2, show) };
+    unsafe { raise(2) };
+    println(f"{TOTAL.load()}");
+    return 0;
+}

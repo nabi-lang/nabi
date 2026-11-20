@@ -1,0 +1,72 @@
+// core::task::cancel: what a cancelled task checks while it unwinds:
+// requests, cleanups, sources.
+
+use core::future::Context;
+use core::rt::{atomic_load, atomic_xchg};
+use core::task::TaskRef;
+
+/// Is the task polling with `ctx` cancelled? (A
+/// cancellation point.) A true answer means the caller leaves: the cancelled task (or
+/// `select` proxy) is marked `unwinding`. False while the task runs the
+/// cleanups of its cancel: an `await` there completes.
+pub(pkg) fn cancel_requested(ctx: Context) -> bool {
+    match cancel_source(ctx.waker.task) {
+        t: TaskRef => unsafe {
+            if t.state[7] != 0 {
+                return false;
+            }
+            atomic_xchg(t.state, 4, 1, SeqCst);
+            true
+        },
+        none => false,
+    }
+}
+
+/// A frame left by the cancel is about to poll inside its cleanups.
+#[lang("cleanup_running_fn")]
+pub(pkg) fn cleanup_running(ctx: Context) {
+    unsafe { cleanup_task(ctx).state[7] = 1; }
+}
+
+/// A frame left by the cancel finished its cleanups.
+#[lang("cleanup_done_fn")]
+pub(pkg) fn cleanup_done(ctx: Context) {
+    unsafe { cleanup_task(ctx).state[7] = 0; }
+}
+
+/// The task whose `cleaning` flag covers `ctx`: the cancelled one.
+pub(pkg) fn cleanup_task(ctx: Context) -> TaskRef {
+    match cancel_source(ctx.waker.task) {
+        t: TaskRef => t,
+        none => ctx.waker.task,
+    }
+}
+
+/// Whether a future that just returned `Ready` with `ctx` may have left
+/// because of a cancel (its value is then a placeholder): the `await`
+/// after a ready poll checks this, not the bare flag, so a value a
+/// hand-written future handed over (a message, a guard) is kept when the
+/// cancel lands meanwhile - the next cancellation point leaves.
+pub(pkg) fn unwinding(ctx: Context) -> bool {
+    unsafe {
+        let t = ctx.waker.task;
+        if atomic_load(t.state, 4, SeqCst) != 0 {
+            return true;
+        }
+        t.state[3] != 0 && unwinding(Context::from_waker(t.up[0]))
+    }
+}
+
+/// The cancelled task `t` answers to: itself, or (a `select` proxy) its
+/// parent's chain.
+pub(pkg) fn cancel_source(t: TaskRef) -> TaskRef | none {
+    unsafe {
+        if atomic_load(t.state, 1, SeqCst) != 0 {
+            return t;
+        }
+        if t.state[3] == 0 {
+            return none;
+        }
+        cancel_source(t.up[0].task)
+    }
+}

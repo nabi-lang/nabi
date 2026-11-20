@@ -1,0 +1,20 @@
+// only-target: wasm32-wasip2
+// expect-exit: 101
+// expect-stdout: zero wait done
+// expect-stderr: thread 'main' panicked at /nabi/library/std/src/wit.nabi:*:
+// expect-stderr: wit: an async import, stream or future blocked outside an async export (a synchronous task cannot wait); call it from an `async` export
+
+// A synchronous task (`main` of a preview 2 command) cannot
+// wait for the component model (it would trap): an async import that
+// returns at once works, one that blocks is a panic naming the rule.
+ffi::wit::import { "wit" }
+
+use wasi::clocks::monotonic_clock;
+use core::task;
+
+fn main() {
+    task::block_on(monotonic_clock::wait_for(0u64));
+    println("zero wait done");
+    task::block_on(monotonic_clock::wait_for(50000000u64));
+    println("not reached");
+}

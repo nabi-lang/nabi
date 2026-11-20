@@ -1,0 +1,218 @@
+// core::num::bigint::convert: the conversions between `Int` and the
+// primitives.
+
+use core::num::bigint::Int;
+
+const fn overflow(ty: str) -> OverflowError { OverflowError::new("try_from", ty) }
+
+/// The low 64 bits of the two's complement form (`wrapping_into`).
+const fn low_bits(v: Int) -> u64 {
+    if v.big is none { return v.small as u64; }
+    let (neg, m) = v.parts();
+    let low = m.low64();
+    if neg { low.wrapping_neg() } else { low }
+}
+
+impl From<i8> for Int { const fn from(value: i8) -> Int { Int::from_i64(value as i64) } }
+
+impl From<i16> for Int { const fn from(value: i16) -> Int { Int::from_i64(value as i64) } }
+
+impl From<i32> for Int { const fn from(value: i32) -> Int { Int::from_i64(value as i64) } }
+
+impl From<i64> for Int { const fn from(value: i64) -> Int { Int::from_i64(value) } }
+
+impl From<isize> for Int { const fn from(value: isize) -> Int { Int::from_i64(value as i64) } }
+
+impl From<u8> for Int { const fn from(value: u8) -> Int { Int::from_i64(value as i64) } }
+
+impl From<u16> for Int { const fn from(value: u16) -> Int { Int::from_i64(value as i64) } }
+
+impl From<u32> for Int { const fn from(value: u32) -> Int { Int::from_i64(value as i64) } }
+
+impl From<u64> for Int { const fn from(value: u64) -> Int { Int::from_u64(value) } }
+
+impl From<usize> for Int { const fn from(value: usize) -> Int { Int::from_u64(value as u64) } }
+
+/// Rounds to nearest (ties to even); throws past `+/-f64::MAX`.
+/// `to_f64` is the infallible form.
+impl TryFrom<Int> for f64 {
+    type Error = OverflowError;
+    fn try_from(value: Int) throws (OverflowError) -> f64 {
+        let r = value.to_f64();
+        if r.is_infinite() { throw overflow("f64"); }
+        r
+    }
+}
+
+/// Rounds to nearest; `+/-f64::MAX` past the range.
+impl SaturatingFrom<Int> for f64 {
+    fn saturating_from(value: Int) -> f64 {
+        let r = value.to_f64();
+        if r.is_infinite() { return if r < 0.0 { -f64::MAX } else { f64::MAX }; }
+        r
+    }
+}
+
+impl TryFrom<Int> for i8 {
+    type Error = OverflowError;
+    const fn try_from(value: Int) throws (OverflowError) -> i8 {
+        let v = value.to_i64() ?? 128;
+        if v < -128 || v > 127 { throw overflow("i8"); }
+        v as i8
+    }
+}
+
+impl TryFrom<Int> for i16 {
+    type Error = OverflowError;
+    const fn try_from(value: Int) throws (OverflowError) -> i16 {
+        let v = value.to_i64() ?? 32768;
+        if v < -32768 || v > 32767 { throw overflow("i16"); }
+        v as i16
+    }
+}
+
+impl TryFrom<Int> for i32 {
+    type Error = OverflowError;
+    const fn try_from(value: Int) throws (OverflowError) -> i32 {
+        match value.to_i32() {
+            v: i32 => v,
+            none => throw overflow("i32"),
+        }
+    }
+}
+
+impl TryFrom<Int> for i64 {
+    type Error = OverflowError;
+    const fn try_from(value: Int) throws (OverflowError) -> i64 {
+        match value.to_i64() {
+            v: i64 => v,
+            none => throw overflow("i64"),
+        }
+    }
+}
+
+impl TryFrom<Int> for isize {
+    type Error = OverflowError;
+    const fn try_from(value: Int) throws (OverflowError) -> isize {
+        match value.to_i64() {
+            v: i64 => v as isize,
+            none => throw overflow("isize"),
+        }
+    }
+}
+
+impl TryFrom<Int> for u8 {
+    type Error = OverflowError;
+    const fn try_from(value: Int) throws (OverflowError) -> u8 {
+        let v = value.to_u64() ?? 256u64;
+        if v > 255u64 { throw overflow("u8"); }
+        v as u8
+    }
+}
+
+impl TryFrom<Int> for u16 {
+    type Error = OverflowError;
+    const fn try_from(value: Int) throws (OverflowError) -> u16 {
+        let v = value.to_u64() ?? 65536u64;
+        if v > 65535u64 { throw overflow("u16"); }
+        v as u16
+    }
+}
+
+impl TryFrom<Int> for u32 {
+    type Error = OverflowError;
+    const fn try_from(value: Int) throws (OverflowError) -> u32 {
+        let v = value.to_u64() ?? 0x1_0000_0000u64;
+        if v > 0xFFFF_FFFFu64 { throw overflow("u32"); }
+        v as u32
+    }
+}
+
+impl TryFrom<Int> for u64 {
+    type Error = OverflowError;
+    const fn try_from(value: Int) throws (OverflowError) -> u64 {
+        match value.to_u64() {
+            v: u64 => v,
+            none => throw overflow("u64"),
+        }
+    }
+}
+
+impl TryFrom<Int> for usize {
+    type Error = OverflowError;
+    const fn try_from(value: Int) throws (OverflowError) -> usize {
+        match value.to_u64() {
+            v: u64 => v as usize,
+            none => throw overflow("usize"),
+        }
+    }
+}
+
+/// `value` clamped to `lo..=hi` as an `i64`.
+const fn clamp_i64(value: Int, lo: i64, hi: i64) -> i64 {
+    if value < Int::from_i64(lo) { return lo; }
+    if value > Int::from_i64(hi) { return hi; }
+    value.small
+}
+
+/// `value` clamped to `0..=hi` as a `u64`.
+const fn clamp_u64(value: Int, hi: u64) -> u64 {
+    if value.is_negative() { return 0u64; }
+    match value.to_u64() {
+        v: u64 => if v > hi { hi } else { v },
+        none => hi,
+    }
+}
+
+impl SaturatingFrom<Int> for i8 { const fn saturating_from(value: Int) -> i8 { clamp_i64(value, -128, 127) as i8 } }
+
+impl SaturatingFrom<Int> for i16 { const fn saturating_from(value: Int) -> i16 { clamp_i64(value, -32768, 32767) as i16 } }
+
+impl SaturatingFrom<Int> for i32 {
+    const fn saturating_from(value: Int) -> i32 { clamp_i64(value, -2147483648, 2147483647) as i32 }
+}
+
+impl SaturatingFrom<Int> for i64 {
+    const fn saturating_from(value: Int) -> i64 { clamp_i64(value, -9223372036854775807 - 1, 9223372036854775807) }
+}
+
+impl SaturatingFrom<Int> for isize {
+    const fn saturating_from(value: Int) -> isize {
+        clamp_i64(value, -9223372036854775807 - 1, 9223372036854775807) as isize
+    }
+}
+
+impl SaturatingFrom<Int> for u8 { const fn saturating_from(value: Int) -> u8 { clamp_u64(value, 255u64) as u8 } }
+
+impl SaturatingFrom<Int> for u16 { const fn saturating_from(value: Int) -> u16 { clamp_u64(value, 65535u64) as u16 } }
+
+impl SaturatingFrom<Int> for u32 { const fn saturating_from(value: Int) -> u32 { clamp_u64(value, 0xFFFF_FFFFu64) as u32 } }
+
+impl SaturatingFrom<Int> for u64 {
+    const fn saturating_from(value: Int) -> u64 { clamp_u64(value, 0xFFFF_FFFF_FFFF_FFFFu64) }
+}
+
+impl SaturatingFrom<Int> for usize {
+    const fn saturating_from(value: Int) -> usize { clamp_u64(value, 0xFFFF_FFFF_FFFF_FFFFu64) as usize }
+}
+
+// `wrapping_into` / `as`: the low bits of the two's complement form.
+impl WrappingFrom<Int> for i8 { const fn wrapping_from(value: Int) -> i8 { low_bits(value) as i8 } }
+
+impl WrappingFrom<Int> for i16 { const fn wrapping_from(value: Int) -> i16 { low_bits(value) as i16 } }
+
+impl WrappingFrom<Int> for i32 { const fn wrapping_from(value: Int) -> i32 { low_bits(value) as i32 } }
+
+impl WrappingFrom<Int> for i64 { const fn wrapping_from(value: Int) -> i64 { low_bits(value) as i64 } }
+
+impl WrappingFrom<Int> for isize { const fn wrapping_from(value: Int) -> isize { low_bits(value) as isize } }
+
+impl WrappingFrom<Int> for u8 { const fn wrapping_from(value: Int) -> u8 { low_bits(value) as u8 } }
+
+impl WrappingFrom<Int> for u16 { const fn wrapping_from(value: Int) -> u16 { low_bits(value) as u16 } }
+
+impl WrappingFrom<Int> for u32 { const fn wrapping_from(value: Int) -> u32 { low_bits(value) as u32 } }
+
+impl WrappingFrom<Int> for u64 { const fn wrapping_from(value: Int) -> u64 { low_bits(value) } }
+
+impl WrappingFrom<Int> for usize { const fn wrapping_from(value: Int) -> usize { low_bits(value) as usize } }

@@ -1,0 +1,77 @@
+// needs: threads
+// expect-exit: 0
+// expect-stdout:
+// from outside: 42
+// block_on returned 1, later task done: true
+// locals across awaits: 0+1+2+3+4 = 10
+// timer woke while workers busy: true
+// 20000 tasks: 199990000
+
+// Injected tasks run, locals survive migration, busy workers still fire timers.
+use core::sync::{LoadOrdering, StoreOrdering};
+use std::thread;
+
+async fn steps() -> str {
+    let acc = 0;
+    let shown = "0";
+    for i in 0..5 {
+        acc += i;
+        if i > 0 { shown = f"{shown}+{i}"; }
+        await task::yield_now();
+    }
+    f"{shown} = {acc}"
+}
+
+fn main() -> i32 {
+    let outside = thread::spawn(|| task::block_on(async { await task::spawn(async { 6 * 7 }) }));
+    println(f"from outside: {try! outside.join()}");
+
+    let later = Atomic::new(0);
+    let r = task::block_on(async {
+        task::spawn(async {
+            await task::sleep(Duration::ms(5));
+            later.store(1, StoreOrdering::SeqCst);
+        });
+        1
+    });
+    let waited = 0;
+    while later.load(LoadOrdering::SeqCst) == 0 && waited < 5000 {
+        thread::sleep(Duration::ms(1));
+        waited += 1;
+    }
+    println(f"block_on returned {r}, later task done: {later.load(LoadOrdering::SeqCst) == 1}");
+
+    println(f"locals across awaits: {task::block_on(async { await task::spawn(steps()) })}");
+
+    let woke = Atomic::new(0);
+    let busy = task::worker_count() * 2;
+    let ok = task::block_on(async {
+        let ts: List<Task<i32>> = [];
+        for _ in 0..busy {
+            ts.push(task::spawn(async {
+                let n = 0;
+                // Bounded: a starved timer ends this after ~10 s anyway.
+                while woke.load(LoadOrdering::SeqCst) == 0 && n < 2_000_000 {
+                    n += 1;
+                    await task::yield_now();
+                }
+                n
+            }));
+        }
+        await task::sleep(Duration::ms(10));
+        woke.store(1, StoreOrdering::SeqCst);
+        await task::join(ts);
+        true
+    });
+    println(f"timer woke while workers busy: {ok && woke.load(LoadOrdering::SeqCst) == 1}");
+
+    let total = task::block_on(async {
+        let ts: List<Task<i64>> = [];
+        for i in 0..20000 { ts.push(task::spawn(async { i as i64 })); }
+        let s = 0i64;
+        for v in await task::join(ts) { s += v; }
+        s
+    });
+    println(f"20000 tasks: {total}");
+    return 0;
+}

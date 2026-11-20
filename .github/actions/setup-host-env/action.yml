@@ -1,0 +1,44 @@
+# The build environment of a host. Windows: exports the MSVC environment
+# for later steps (targets/build.sh, dist/native.sh), for the runner's
+# architecture unless `arch` names one. A self-hosted runner:
+# CARGO_TARGET_DIR under NABI_CI_HOME, its persistent directory.
+name: Set up host environment
+description: Set up the MSVC environment on Windows and the target directory on a self-hosted runner.
+
+inputs:
+  arch:
+    description: "Windows: the MSVC tools, x64 or arm64 (default: the runner's)"
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # VCINSTALLDIR / VSINSTALLDIR stay unset so rustc finds MSVC link.exe,
+    # not Git's.
+    - name: Export the MSVC environment (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        ARCH: ${{ inputs.arch || (runner.arch == 'ARM64' && 'arm64' || 'x64') }}
+      run: |
+        $c, $bat = switch ($env:ARCH) {
+          'x64' { 'x86.x64', 'vcvars64.bat' }
+          'arm64' { 'ARM64', 'vcvarsarm64.bat' }
+          default { throw "host-env: arch is x64 or arm64, not $env:ARCH" }
+        }
+        $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+          -requires "Microsoft.VisualStudio.Component.VC.Tools.$c" -property installationPath
+        if (-not $vs) { throw "no Visual Studio with the MSVC $env:ARCH tools" }
+        cmd /c "`"$vs\VC\Auxiliary\Build\$bat`" >nul && set" | ForEach-Object {
+          if ($_ -match '^([^=]+)=(.*)$' -and $Matches[1] -notin 'VCINSTALLDIR', 'VSINSTALLDIR' -and
+              [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
+            "$($Matches[1])=$($Matches[2])"
+          }
+        } | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+    - name: Set CARGO_TARGET_DIR (self-hosted)
+      if: runner.environment == 'self-hosted'
+      shell: bash
+      run: |
+        home=${NABI_CI_HOME:?the self-hosted runner sets NABI_CI_HOME, its persistent directory (docs/ci.md)}
+        echo "CARGO_TARGET_DIR=$home/target/$RUNNER_NAME" >>"$GITHUB_ENV"

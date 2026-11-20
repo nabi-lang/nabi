@@ -1,0 +1,8 @@
+// expect-error: integer literal `99999999999999999999999` out of range for `i64`
+// Range is checked against the slot (an `int` slot
+// takes any size).
+fn main() {
+    let ok: int = 99999999999999999999999;
+    let x: i64 = 99999999999999999999999;
+}
+

@@ -1,0 +1,13 @@
+// expect-exit: 0
+// expect-stdout:
+// 5
+
+// `#[niche(0)]` on a user newtype.
+#[niche(0)]
+struct NonZero(i32);
+
+fn main() -> i32 {
+    let n = NonZero(5);
+    println(f"{n.0}");
+    return 0;
+}

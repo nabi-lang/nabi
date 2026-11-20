@@ -1,0 +1,16 @@
+// expect-error: 12:15: `\u{D800}` is not a Unicode scalar value
+// expect-error: help: U+D800 is a surrogate, half of a UTF-16 pair, not a character
+// expect-error: 13:15: `\u{110000}` is not a Unicode scalar value
+// expect-error: help: code points end at `\u{10FFFF}`
+// expect-error: 14:16: unknown escape sequence `\q`
+// expect-error: help: the escapes are `\n` `\r` `\t` `\0` `\\` `\'` `\"` `\xHH` `\u{..}`; for a backslash write `\\q`
+// expect-error: 15:15: `\x80` is out of range (max `\x7F`)
+// expect-error: help: `\xHH` is ASCII here; write `\u{80}` for the character U+0080
+
+// Escape errors point at the escape and say what to write.
+fn main() {
+    let a = "a\u{D800}";
+    let b = "b\u{110000}";
+    let c = "cc\qd";
+    let d = 'x\x80';
+}

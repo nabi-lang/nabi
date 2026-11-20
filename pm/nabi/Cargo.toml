@@ -1,0 +1,45 @@
+[package]
+name = "nabi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# `nabi`: the package manager / toolchain front (nabi.nabion, nabi.lock,
+# environments, toolchains); it runs `nabic` for the compiler commands and
+# the tools (run, repl, lsp, doc, fmt, ..) itself, with the compiler linked.
+[[bin]]
+name = "nabi"
+path = "src/main.rs"
+
+[dependencies]
+nabi_manifest = { workspace = true }
+nabi_resolve = { workspace = true }
+nabi_toolchain = { workspace = true }
+nabic = { workspace = true }
+nabic_core = { workspace = true }
+nabic_diagnostic = { workspace = true }
+nabic_harness = { workspace = true }
+nabic_interface = { workspace = true }
+nabic_lexer = { workspace = true }
+nabic_nabion = { workspace = true }
+nabic_target = { workspace = true }
+nabic_tools = { workspace = true }
+nabicc_bindgen = { workspace = true }
+nabils = { workspace = true }
+nabirepl = { workspace = true }
+nabirepl_jupyter = { workspace = true }
+
+# src/child.rs; tests/main/install.rs runs install.sh on a pseudo-terminal.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+# tests/main/system.rs: whether the host links shared libraries.
+[dev-dependencies]
+nabild = { workspace = true }
+# tests/main/toolchain.rs signs its fake releases (sign::testing).
+nabi_toolchain = { workspace = true, features = ["test-sign"] }
+
+[lints]
+workspace = true

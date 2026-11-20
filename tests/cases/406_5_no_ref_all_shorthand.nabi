@@ -1,0 +1,6 @@
+// expect-error: 6:9: expected expression, found keyword `ref`
+
+// There is no shorthand that `ref`-captures everything;
+// only an explicit `[ref x]` list does.
+let a = 1;
+let f = ref || { a = 2; };

@@ -1,0 +1,31 @@
+// expect-exit: 0
+// expect-stdout:
+// abs true false rel false true root true false
+// /etc/hosts.bak
+// a/b/c
+// canonical root: /
+// fs probes: true true false
+
+// `is_absolute` / `is_relative` / `has_root`, `with_file_name`,
+// `from_components`, `canonicalize` (realpath), and the filesystem
+// queries `exists` / `is_dir` / `is_file` on `Path`.
+use std::path::Path;
+
+// A directory under the root: Android has no /usr.
+#[cfg(not(target_os = "android"))]
+const UNDER_ROOT: str = "/usr/..";
+#[cfg(target_os = "android")]
+const UNDER_ROOT: str = "/system/..";
+
+fn main() {
+    let a = Path::new("/etc/x");
+    let r = Path::new("etc/x");
+    println(f"abs {a.is_absolute()} {r.is_absolute()} rel {a.is_relative()} {r.is_relative()} root {a.has_root()} {r.has_root()}");
+    println(Path::new("/etc/passwd").with_file_name("hosts.bak").as_str());
+    println(Path::from_components(["a", "b", "c"]).as_str());
+    let c = try Path::new(UNDER_ROOT).canonicalize() catch _ { Path::new("?") };
+    println(f"canonical root: {c.as_str()}");
+    let root = Path::new("/");
+    println(f"fs probes: {root.exists()} {root.is_dir()} {root.is_file()}");
+}
+// only-os: macos linux

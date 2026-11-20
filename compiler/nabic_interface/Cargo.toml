@@ -1,0 +1,18 @@
+[package]
+name = "nabic_interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+nabic_ast = { workspace = true }
+nabic_core = { workspace = true }
+nabic_diagnostic = { workspace = true }
+nabic_driver = { workspace = true }
+nabic_nabion = { workspace = true }
+nabic_target = { workspace = true }
+
+[lints]
+workspace = true

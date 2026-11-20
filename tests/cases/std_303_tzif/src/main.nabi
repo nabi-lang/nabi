@@ -1,0 +1,110 @@
+// expect-exit: 0
+// expect-stdout:
+// America/New_York 1883-11-18T00:00:00 -> 1883-11-18T00:00:00-04:56:02 LMT dst false unix -2717694238
+// America/New_York 1918-03-31T02:30:00 -> 1918-03-31T03:30:00-04:00 EDT dst true unix -1633278600
+// America/New_York 1918-10-27T01:30:00 -> 1918-10-27T01:30:00-04:00 EDT dst true unix -1615141800
+// America/New_York 1945-08-14T12:00:00 -> 1945-08-14T12:00:00-04:00 EWT dst true unix -769420800
+// America/New_York 1974-01-06T02:30:00 -> 1974-01-06T03:30:00-04:00 EDT dst true unix 126689400
+// America/New_York 2006-04-02T02:30:00 -> 2006-04-02T03:30:00-04:00 EDT dst true unix 1143963000
+// America/New_York 2007-03-11T02:30:00 -> 2007-03-11T03:30:00-04:00 EDT dst true unix 1173598200
+// America/New_York 2024-07-04T12:00:00 -> 2024-07-04T12:00:00-04:00 EDT dst true unix 1720108800
+// America/New_York 2037-11-01T01:30:00 -> 2037-11-01T01:30:00-04:00 EDT dst true unix 2140666200
+// America/New_York 2038-03-14T02:30:00 -> 2038-03-14T03:30:00-04:00 EDT dst true unix 2152164600
+// America/New_York 2100-07-01T12:00:00 -> 2100-07-01T12:00:00-04:00 EDT dst true unix 4118140800
+// America/New_York 2500-11-07T01:30:00 -> 2500-11-07T01:30:00-04:00 EDT dst true unix 16752029400
+// footer gap 2038-03-14T01:30:00-05:00 2038-03-14T03:30:00-04:00
+// lmt -04:56:02 LMT
+// Australia/Lord_Howe 2024-01-15T12:00:00 -> 2024-01-15T12:00:00+11:00 +11 dst true unix 1705280400
+// Australia/Lord_Howe 2024-07-15T12:00:00 -> 2024-07-15T12:00:00+10:30 +1030 dst false unix 1721007000
+// Australia/Lord_Howe 2024-10-06T02:15:00 -> 2024-10-06T02:45:00+11:00 +11 dst true unix 1728143100
+// Australia/Lord_Howe 2024-04-07T01:45:00 -> 2024-04-07T01:45:00+11:00 +11 dst true unix 1712414700
+// Australia/Lord_Howe 2060-01-01T00:00:00 -> 2060-01-01T00:00:00+11:00 +11 dst true unix 2840101200
+// error: 2024-04-07T01:45:00 happens twice in Australia/Lord_Howe (at +11:00 and at +10:30); pass Disambiguation::Earlier or Disambiguation::Later
+// Test/V1 1999-12-31T22:59:59 -> 1999-12-31T22:59:59+01:00 XST dst false unix 946677599
+// Test/V1 1999-12-31T23:30:00 -> 1999-12-31T23:30:00+01:00 XST dst false unix 946679400
+// Test/V1 2000-01-01T01:00:00 -> 2000-01-01T02:00:00+02:00 YST dst false unix 946684800
+// Test/V1 2400-01-01T00:00:00 -> 2400-01-01T00:00:00+02:00 YST dst false unix 13569458400
+// error: not a valid TZif file: it ends early
+// error: not a valid TZif file: it ends early
+// error: not a valid TZif file: it ends early
+// error: not a valid TZif file: no `TZif` magic
+// error: not a valid TZif file: a transition names a missing type
+// error: not a valid TZif file: footer: bad TZ rule "EST5EDT,M3.2.0,M11.1x0" at byte 20: expected `.` after the week
+
+// TZif files (RFC 8536) from fixtures, so no tz database is needed:
+// local mean time before the first transition, the 1918 and 2007 US
+// rule changes, the POSIX footer past the table, Lord Howe's 30-minute
+// DST, a version 1 file built here, and broken files.
+use std::time::{DateTime, Disambiguation, SystemTime, TimeZone};
+
+const NEW_YORK: [u8; 3552] = include_bytes!("zoneinfo/America/New_York");
+const LORD_HOWE: [u8; 1846] = include_bytes!("zoneinfo/Australia/Lord_Howe");
+
+fn show(r: str) { println(r); }
+
+fn at(tz: TimeZone, s: str) throws {
+    let dt = try s.parse::<DateTime>();
+    let z = dt.in_zone(tz);
+    println(f"{tz.name()} {dt} -> {z} {z.abbreviation()} dst {z.is_dst()} unix {z.unix_secs()}");
+}
+
+fn be32(out: List<u8>, v: i64) {
+    for k in [24, 16, 8, 0] { out.push(((v >> k) & 255) as u8); }
+}
+
+/// A version 1 TZif file: `XST` +01:00 until 2000-01-01, then `YST` +02:00.
+fn v1() -> List<u8> {
+    let b: List<u8> = List::new();
+    for c in "TZif".bytes() { b.push(c); }
+    b.push(0u8);
+    for _ in 0..15 { b.push(0u8); }
+    for n in [0, 0, 0, 1, 2, 8] { be32(b, n); }
+    be32(b, 946684800);
+    b.push(1u8);
+    be32(b, 3600);
+    b.push(0u8);
+    b.push(0u8);
+    be32(b, 7200);
+    b.push(0u8);
+    b.push(4u8);
+    for c in "XST\0YST\0".bytes() { b.push(c); }
+    b
+}
+
+fn main() throws {
+    let ny = try TimeZone::from_tzif("America/New_York", NEW_YORK);
+    for s in ["1883-11-18T00:00:00", "1918-03-31T02:30:00", "1918-10-27T01:30:00", "1945-08-14T12:00:00",
+            "1974-01-06T02:30:00", "2006-04-02T02:30:00", "2007-03-11T02:30:00", "2024-07-04T12:00:00",
+            "2037-11-01T01:30:00", "2038-03-14T02:30:00", "2100-07-01T12:00:00", "2500-11-07T01:30:00"] {
+        try at(ny, s);
+    }
+    let gap = try "2038-03-14T02:30:00".parse::<DateTime>();
+    println(f"footer gap {try gap.in_zone_with(ny, Disambiguation::Earlier)} {try gap.in_zone_with(ny, Disambiguation::Later)}");
+    let t = SystemTime::from_unix(-2717700000, 0);
+    println(f"lmt {ny.offset_at(t)} {ny.abbreviation_at(t)}");
+
+    let lh = try TimeZone::from_tzif("Australia/Lord_Howe", LORD_HOWE);
+    for s in ["2024-01-15T12:00:00", "2024-07-15T12:00:00", "2024-10-06T02:15:00", "2024-04-07T01:45:00", "2060-01-01T00:00:00"] {
+        try at(lh, s);
+    }
+    try { show(f"{try (try "2024-04-07T01:45:00".parse::<DateTime>()).in_zone_with(lh, Disambiguation::Reject)}"); } catch e { show(f"error: {e}"); }
+
+    let x = try TimeZone::from_tzif("Test/V1", v1());
+    for s in ["1999-12-31T22:59:59", "1999-12-31T23:30:00", "2000-01-01T01:00:00", "2400-01-01T00:00:00"] {
+        try at(x, s);
+    }
+
+    let bad: List<List<u8>> = [List::new(), [84u8, 90u8, 105u8, 102u8], v1()[0:40].to_list()];
+    let wrong = v1();
+    wrong[0] = 88u8;
+    bad.push(wrong);
+    let missing = v1();
+    missing[48] = 9u8;
+    bad.push(missing);
+    for b in bad {
+        try { show(f"{try TimeZone::from_tzif("Bad", b)}"); } catch e { show(f"error: {e}"); }
+    }
+    let foot = NEW_YORK.to_list();
+    foot[foot.len() - 3] = 120u8;
+    try { show(f"{try TimeZone::from_tzif("Bad", foot)}"); } catch e { show(f"error: {e}"); }
+}

@@ -1,0 +1,10 @@
+// expect-error: `pkg` cannot name a module
+
+// `pkg` / `sup` are path roots: no module or type takes the name.
+mod pkg {
+    pub fn f() -> i32 { 1 }
+}
+
+fn main() -> i32 {
+    return 0;
+}

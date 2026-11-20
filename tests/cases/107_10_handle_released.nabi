@@ -1,0 +1,18 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked:
+// expect-stderr: handle already released (or not a handle): call `release` once per `Handle::new` and `retain`, and not `get` after the last one
+// expect-stdout:
+// 7
+
+// A handle used after its last `release` panics instead of reading
+// whatever took its slot.
+use bare::ffi::Handle;
+
+fn main() {
+    let h = Handle::new(7);
+    println(f"{h.get()}");
+    h.release();
+    let again = Handle::new(8);
+    println(f"{h.get()}");
+    again.release();
+}

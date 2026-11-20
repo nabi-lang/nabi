@@ -1,0 +1,56 @@
+// `is_close` for the binary floats: Python's `math.isclose` rule.
+
+/// `a == b`, or both finite and `|a - b| <= max(rel * max(|a|, |b|),
+/// abs)`; NaN only when `equal_nan` and both are NaN.
+/// The default relative tolerance: 1e-9, or eight units in the last
+/// place for a type too narrow for it (`f32`: 2^-20).
+pub(pkg) const fn default_rel<T: FloatingPoint>() -> T {
+    let e = T::EPSILON * T::from_f64(8.0);
+    let r = T::from_f64(1e-9);
+    if e > r { e } else { r }
+}
+
+pub(pkg) const fn close<T: FloatingPoint>(a: T, b: T, rel: T, abs: T, equal_nan: bool) -> bool {
+    if a == b {
+        return true;
+    }
+    if a.is_nan() || b.is_nan() {
+        return equal_nan && a.is_nan() && b.is_nan();
+    }
+    if !a.is_finite() || !b.is_finite() {
+        return false;
+    }
+    let d = (a - b).abs();
+    let m = a.abs().max(b.abs());
+    d <= rel * m || d <= abs
+}
+
+impl f64 {
+    /// Whether `self` and `other` are equal or within a relative
+    /// tolerance `rel` of the larger magnitude, or within `abs`:
+    /// symmetric, Python's `math.isclose`. The default `rel` (1e-9)
+    /// asks for about nine equal digits; near zero only `abs` helps,
+    /// so pass it when comparing with 0. Infinities are close only to
+    /// themselves, NaN to nothing (unless `equal_nan`).
+    ///
+    /// ```nabi
+    /// assert((0.1 + 0.2).is_close(0.3));
+    /// assert(!1e-12.is_close(0.0) && 1e-12.is_close(0.0, abs: 1e-9));
+    /// assert(100.0.is_close(101.0, rel: 0.01));
+    /// ```
+    pub const fn is_close(self, other: f64, rel: f64 = 1e-9, abs: f64 = 0.0, equal_nan: bool = false) -> bool {
+        close(self, other, rel, abs, equal_nan)
+    }
+}
+
+impl f32 {
+    /// `f64::is_close` for `f32`; the default `rel` is 2^-20 (eight
+    /// units in the last place), as 1e-9 is below `f32`'s precision.
+    ///
+    /// ```nabi
+    /// assert((0.1f32 + 0.2f32).is_close(0.3f32));
+    /// ```
+    pub const fn is_close(self, other: f32, rel: f32 = 9.5367431640625e-7, abs: f32 = 0.0, equal_nan: bool = false) -> bool {
+        close(self, other, rel, abs, equal_nan)
+    }
+}

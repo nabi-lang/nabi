@@ -1,0 +1,42 @@
+// needs: threads
+// expect-exit: 0
+// expect-stdout:
+// collections: true
+// yielder: 1000000 x-999
+// native: 300000
+
+// Threads calling `nabi_runtime_yield` or C keep roots across stop-the-world.
+use std::thread;
+
+extern "C" {
+    fn nabi_runtime_yield();
+    fn nabi_gc_collect();
+    fn nabi_gc_stats_collections() -> u64;
+    fn llabs(x: i64) -> i64;
+}
+
+fn long_loop() -> str {
+    let last = "x";
+    let n = 0;
+    for i in 0..1_000_000 {
+        n += 1;
+        if i % 1000 == 0 { unsafe { nabi_runtime_yield(); } }
+        if i % 1000 == 999 { last = f"x-{i % 1000}"; }
+    }
+    f"{n} {last}"
+}
+
+fn main() -> i32 {
+    let a = thread::spawn(|| long_loop());
+    let b = thread::spawn(|| {
+        let t = 0i64;
+        for i in 0..300_000 { t += unsafe { llabs(-1i64) }; }
+        t
+    });
+    let before = unsafe { nabi_gc_stats_collections() };
+    for _ in 0..5 { unsafe { nabi_gc_collect(); } }
+    println(f"collections: {unsafe { nabi_gc_stats_collections() } >= before + 5u64}");
+    println(f"yielder: {try! a.join()}");
+    println(f"native: {try! b.join()}");
+    return 0;
+}

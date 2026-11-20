@@ -1,0 +1,8 @@
+// expect-error: 5:19: expected `)`, found `!`
+
+// A cfg predicate is only the fixed key / value forms and their
+// combinators; a macro call is not one.
+#[cfg(custom_macro!())]
+fn f() {}
+
+fn main() {}

@@ -1,0 +1,12 @@
+// expect-exit: 0
+// expect-stdout:
+// [0, 3] [0, 0, 0, 0] [[1.0, 1.0], [1.0, 1.0]]
+
+// `Matrix::zeros(..)` through `type Matrix<T> = Array<T, 2>`: a typed
+// slot that agrees with the alias's fixed argument gives the rest.
+use core::array::{Matrix, Vector};
+
+let e: Matrix<f64> = Matrix::zeros([0, 3]);
+let v: Vector<i64> = Vector::zeros([4]);
+let o: Matrix<f64> = Matrix::ones([2, 2]);
+println(f"{e.shape():?} {v:?} {o:?}");

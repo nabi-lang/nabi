@@ -1,0 +1,45 @@
+// expect-exit: 0
+// needs: fs
+// run-env: TZ=Asia/Tokyo
+// expect-stdout:
+// new york ok
+// utc names ok
+// local ok
+
+// The system tz database, where the target has one: `TimeZone::get`
+// must agree with the fixture, and `local()` must give `$TZ`'s zone (or
+// UTC with no database, as on Windows). The output is the same either
+// way.
+use std::time::{DateTime, SystemTime, TimeZone};
+
+const NEW_YORK: [u8; 3552] = include_bytes!("std_303_tzif/src/zoneinfo/America/New_York");
+
+fn main() throws {
+    let fixture = try TimeZone::from_tzif("America/New_York", NEW_YORK);
+    let ok = true;
+    if let db = try? TimeZone::get("America/New_York") {
+        for s in [-2717700000, -1633280000, 0, 1173596400, 1720000000, 2147483647, 4000000000] {
+            let t = SystemTime::from_unix(s, 0);
+            if db.offset_at(t) != fixture.offset_at(t) || db.abbreviation_at(t) != fixture.abbreviation_at(t) {
+                println(f"differs at {s}: {db.offset_at(t)} {fixture.offset_at(t)}");
+                ok = false;
+            }
+        }
+        let dt = try DateTime::new(2024, 3, 10, 2, 30, 0);
+        if dt.in_zone(db) != dt.in_zone(fixture) { ok = false; }
+    }
+    println(if ok { "new york ok" } else { "new york differs" });
+
+    let names = ["UTC", "Etc/UTC", "GMT"];
+    let utc_ok = true;
+    for n in names {
+        let z = try TimeZone::get(n);
+        if !z.offset_at(SystemTime::from_unix(1720000000, 0)).is_utc() { utc_ok = false; }
+    }
+    println(if utc_ok { "utc names ok" } else { "utc names differ" });
+
+    let local = TimeZone::local();
+    let off = local.offset_at(SystemTime::from_unix(1720000000, 0)).secs();
+    let good = (local.name() == "Asia/Tokyo" && off == 32400) || (local.name() == "UTC" && off == 0);
+    println(if good { "local ok" } else { f"local {local:?} {off}" });
+}

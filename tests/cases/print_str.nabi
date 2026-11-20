@@ -1,0 +1,11 @@
+// expect-exit: 0
+// expect-stdout:
+// hello, nabi!
+// goodbye
+
+// `println` is in the core prelude: no extern block needed.
+fn main() -> i32 {
+    println("hello, nabi!");
+    println("goodbye");
+    return 0;
+}

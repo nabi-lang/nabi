@@ -1,0 +1,15 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked:
+// expect-stderr: this handle holds `List<str>`, not `Dict<str, i64>`: write `Handle::<List<str>>::from_ptr(p)`
+// expect-stdout:
+
+// `from_ptr` with another type than the handle was made with is caught
+// at `get`.
+use bare::ffi::Handle;
+
+fn main() {
+    let rows: List<str> = [];
+    let h = Handle::new(rows);
+    let wrong = unsafe { Handle::<Dict<str, i64>>::from_ptr(h.as_ptr()) };
+    println(f"{wrong.get().len()}");
+}

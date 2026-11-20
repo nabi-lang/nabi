@@ -1,0 +1,17 @@
+[package]
+name = "nabirepl_jupyter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# The Jupyter kernel over the REPL; `nabi jupyter` hosts it.
+[dependencies]
+nabic_core = { workspace = true }
+nabic_diagnostic = { workspace = true }
+nabic_interface = { workspace = true }
+nabirepl = { workspace = true }
+
+[lints]
+workspace = true

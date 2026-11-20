@@ -1,0 +1,31 @@
+// A checked map whose element overflows panics at that element, every
+// element before it stored, also when its loop is vectorized (`-O2`):
+// the vector loop stops before the vector holding it.
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/cg_vector_map_overflow.nabi:13:17:
+// expect-stderr: attempt to add with overflow
+// expect-stdout:
+// 4 -32768 4 0
+// 10 0
+
+fn twice(ys: List<i16>, xs: List<i16>, n: usize) {
+    for i in 0..n {
+        ys[i] = xs[i] + xs[i];
+    }
+}
+
+fn main() -> i32 {
+    let xs: List<i16> = List::filled(40, 2i16);
+    let ys: List<i16> = List::filled(40, 0i16);
+    xs[21] = -16384;
+    twice(ys, xs, 21);
+    twice(ys, xs, 22);
+    println(f"{ys[0]} {ys[21]} {ys[20]} {ys[22]}");
+    let us: List<i16> = List::filled(3000, 5i16);
+    let vs: List<i16> = List::filled(3000, 0i16);
+    us[2100] = 16384;
+    twice(vs, us, 2100);
+    println(f"{vs[2099]} {vs[2100]}");
+    twice(vs, us, 3000);
+    return 0;
+}

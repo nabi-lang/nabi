@@ -1,0 +1,31 @@
+// expect-exit: 0
+// expect-stdout:
+// 82
+// 3
+// 2
+
+// A flag (regional-indicator pair) may start a name;
+// labels are NFC-normalized like identifiers; `union` is a contextual
+// keyword (an item only as `union Name`).
+union Bits { i: i32; f: f32; }
+
+struct S { v: i32; }
+
+impl ops::Union for S {
+    type Output = S;
+    fn union(self, rhs: S) -> S { return S { v: self.v | rhs.v }; }
+}
+
+fn main() -> i32 {
+    let 🇰🇷 = 82;
+    println(f"{🇰🇷}");
+    let union = S { v: 1 } ∪ S { v: 2 };
+    println(f"{union.v}");
+    let mut_n = 0;
+    'café: loop {
+        loop { break 'café; }
+    }
+    println(f"{S { v: 2 }.union(S { v: 0 }).v}");
+    return mut_n;
+}
+

@@ -1,0 +1,6 @@
+// expect-error: unknown numeric literal suffix `q`
+// A suffix needs a `#[literal(number "q")]` handler.
+fn main() -> i32 {
+    let x = 2q;
+    return 0;
+}

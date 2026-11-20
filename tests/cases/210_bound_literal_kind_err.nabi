@@ -1,0 +1,10 @@
+// expect-error: integer literals cannot fill `T: FloatingPoint`
+// expect-error: write float literals: `lerp(0.0, 10.0, 1.0)`
+
+// A bound no integer type has, filled by integer literals alone.
+
+fn lerp<T: core::num::FloatingPoint>(a: T, b: T, t: T) -> T { a + (b - a) * t }
+
+fn main() {
+    println(f"{lerp(0, 10, 1)}");
+}

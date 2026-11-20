@@ -1,0 +1,41 @@
+// needs: objc
+// expect-exit: 0
+// expect-stdout:
+// 200000 strings, 1 kept
+// kept 7
+
+// An autorelease pool releases what Objective-C autoreleased inside it;
+// an `Id` keeps its own retain past it.
+use bare::ffi::objc;
+use bare::ffi::objc::{Id, NSString, ns};
+
+#[link(name = "Foundation", kind = "framework")]
+#[objc::category(NSString)]
+extern "objc" {
+    fn stringByAppendingString(self, s: Id<NSString>) -> Id<NSString>;
+    fn length(self) -> usize;
+}
+
+fn main() {
+    let base = ns("abc");
+    let total = 0;
+    let kept = objc::autoreleasepool([ref total] || {
+        let last = base;
+        for i in 0..1000 {
+            objc::autoreleasepool([ref total, ref last] || {
+                for j in 0..200 {
+                    let t = base.stringByAppendingString(ns("defg"));
+                    total += 1;
+                    if i == 999 && j == 199 {
+                        last = t;
+                    } else {
+                        t.release_now();
+                    }
+                }
+            });
+        }
+        last
+    });
+    println(f"{total} strings, 1 kept");
+    println(f"kept {kept.length()}");
+}

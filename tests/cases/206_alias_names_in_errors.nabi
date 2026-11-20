@@ -1,0 +1,14 @@
+// expect-error: argument `x` of `get` expects `Vel`, found `Len`
+
+// A type an alias named prints as that alias in a diagnostic, not as its
+// expansion.
+pub struct Q<V, const L: i32, const T: i32> { v: V; }
+pub type Vel<V = f64> = Q<V, 1, -1>;
+pub type Len<V = f64> = Q<V, 1, 0>;
+
+fn get(x: Vel) -> f64 { x.v }
+
+fn main() {
+    let q: Len = Q { v: 2.0 };
+    println(get(q));
+}

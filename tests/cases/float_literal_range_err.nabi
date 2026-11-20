@@ -1,0 +1,8 @@
+// expect-error: float literal out of range for `f64`
+// An unsuffixed literal takes the slot's type; past
+// `f64` it is an error there (a `float` slot holds it).
+fn main() {
+    let ok: float = 1e400;
+    let f: f64 = 1e400;
+}
+

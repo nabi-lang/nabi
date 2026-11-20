@@ -1,0 +1,6 @@
+// Unbounded monomorphization is an error, not a hang.
+// expect-error: recursed past the limit
+
+fn r<T>(x: T, n: i32) -> i32 { if n == 0 { return 0; } return r((x, x), n - 1); }
+
+fn main() -> i32 { return r(1, 3); }

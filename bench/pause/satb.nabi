@@ -1,0 +1,62 @@
+// Mutator stalls from the snapshot barrier: an old heap past the
+// concurrent threshold whose biggest object is one large `List` buffer;
+// the mutator churns and stores into that list. During a concurrent
+// mark the first store into the old buffer logs every reference it
+// holds. Prints the time of the first store into the list after each
+// collection, and of each batch of 1000 steps.
+//
+//     satb <elements in Mi> <churn MiB>
+//
+// Every 4th step stores, so old garbage builds up and full (concurrent)
+// collections run while the loop does.
+use std::env;
+use core::time::Instant;
+
+extern "nabi" {
+    fn nabi_gc_stats_collections() -> u64;
+}
+
+trait Weigh { fn w(self) -> i64; }
+struct Blob { a: i64; b: i64; c: i64; d: i64; }
+impl Weigh for Blob { fn w(self) -> i64 { return self.a + self.d; } }
+
+fn make(i: i64) -> any Weigh { return Blob { a: i, b: i, c: i, d: 1 }; }
+
+fn main() -> i32 {
+    let args = env::args();
+    let n = (try! args[1].parse::<i64>()) * 1048576;
+    let steps = (try! args[2].parse::<i64>()) * 1048576 / 48;
+    let keep: List<any Weigh> = List::with_capacity(n as usize);
+    let i: i64 = 0;
+    while i < n { keep.push(make(i)); i += 1; }
+    let times: List<i64> = [];
+    let firsts: List<i64> = [];
+    let seen = unsafe { nabi_gc_stats_collections() };
+    let total: i64 = 0;
+    i = 0;
+    let t0 = Instant::now();
+    while i < steps {
+        let x = make(i);
+        total += x.w();
+        if i & 3 == 0 {
+            let c = unsafe { nabi_gc_stats_collections() };
+            if c != seen {
+                seen = c;
+                let s0 = Instant::now();
+                keep[((i * 7919) % n) as usize] = x;
+                firsts.push(s0.elapsed().as_ns());
+            } else {
+                keep[((i * 7919) % n) as usize] = x;
+            }
+        }
+        i += 1;
+        if i % 1000 == 0 {
+            times.push(t0.elapsed().as_ns());
+            t0 = Instant::now();
+        }
+    }
+    println(f"sum {total + keep[3].w()}");
+    for t in firsts { println(f"first {t}"); }
+    for t in times { println(f"batch {t}"); }
+    return 0;
+}

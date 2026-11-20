@@ -1,0 +1,10 @@
+// expect-error: is private to module `inner`
+
+// A module item without `pub` is not visible outside.
+mod inner {
+    fn private_helper() -> i32 { return 1; }
+}
+
+fn main() -> i32 {
+    return inner::private_helper();    // ERROR: private
+}

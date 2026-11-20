@@ -1,0 +1,40 @@
+// expect-exit: 0
+// expect-stdout:
+// 5
+// 2
+// 5
+// 3
+// 5
+// 7
+// 8
+
+// Generic impls: one impl used at two type args, a method with its
+// own type param, `Self`, associated fns and path-form calls, and a
+// generic method on a non-generic impl.
+struct Box<T> { v: T; }
+struct Pair<A, B> { a: A; b: B; }
+impl<T> Box<T> {
+    fn new(v: T) -> Self { return Box { v: v }; }
+    fn get(self) -> T { return self.v; }
+    fn pair<U>(self, u: U) -> Pair<T, U> { return Pair { a: self.v, b: u }; }
+    fn again(self) -> Self { let s: Self = self; return s; }
+    fn twice(self) -> T { return self.again().get(); }
+}
+struct Plain { n: i32; }
+impl Plain {
+    fn with<U>(self, u: U) -> U { return u; }
+}
+
+let b: Box<i32> = Box { v: 5 };
+let c: Box<bool> = Box { v: true };
+println(f"{b.get()}");
+if c.get() { println(f"{2}"); }
+let p = b.pair(c);
+println(f"{p.a}");
+if p.b.get() { println(f"{3}"); }
+println(f"{Box::get(b)}");
+let n = Box::new(7);
+println(f"{n.twice()}");
+let pl = Plain { n: 1 };
+println(f"{pl.with(8)}");
+

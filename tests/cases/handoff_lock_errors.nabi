@@ -1,0 +1,60 @@
+// expect-error: error[E0105]: `xs` was moved into the `Mutex` at line 20
+// expect-error: handoff_lock_errors.nabi:21:5: `xs` was moved into the `Mutex` at line 20
+// expect-error: help: it belongs to the `Mutex` now; use it through the lock: `using g = m.lock() { g.get().push(3) }`, or hand over `xs.clone()` to keep a separate copy
+// expect-error: handoff_lock_errors.nabi:27:5: `ys` was moved into the `RwLock` at line 26
+// expect-error: handoff_lock_errors.nabi:35:5: `xs` was moved into the `Mutex` at line 33
+// expect-error: handoff_lock_errors.nabi:42:29: `xs` was already moved into the `Mutex` by this call, on an earlier pass of the loop
+// expect-error: handoff_lock_errors.nabi:51:19: `xs` was moved into the `Mutex` at line 50
+// expect-error: handoff_lock_errors.nabi:59:5: `xs` was moved into the `Mutex` at line 58
+
+// Using a value after `Mutex::new` took it is an error on any path.
+
+fn main() {
+    println(f"{after()} {rw([1])} {one_branch(true)} {allowed()}");
+    each_iteration();
+    beside_par();
+}
+
+fn after() -> i64 {
+    let xs: List<i32> = [1, 2];
+    let m = Mutex::new(xs);
+    xs.push(3);
+    using g = m.lock() { g.get().len() as i64 }
+}
+
+fn rw(ys: List<i32>) -> i64 {
+    let l = RwLock::new(ys);
+    ys.len() as i64
+}
+
+fn one_branch(c: bool) -> i64 {
+    let xs: List<i32> = [1];
+    if c {
+        let _m = Mutex::new(xs);
+    }
+    xs.len() as i64
+}
+
+fn each_iteration() {
+    let xs: List<i32> = [1];
+    let i = 0;
+    while i < 2 {
+        let _m = Mutex::new(xs);
+        i += 1;
+    }
+}
+
+fn beside_par() {
+    let xs: List<i32> = [];
+    for i in 0..100 { xs.push(i); }
+    let m = Mutex::new(xs);
+    par::for_each(xs, |x| { using g = m.lock() { g.get().push(x); } });
+}
+
+// An error, not a lint: `#[allow]` does not reach it.
+#[allow(use_after_handoff)]
+fn allowed() -> i64 {
+    let xs: List<i32> = [1];
+    let _m = Mutex::new(xs);
+    xs.len() as i64
+}

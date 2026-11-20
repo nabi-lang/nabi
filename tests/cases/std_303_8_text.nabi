@@ -1,0 +1,139 @@
+// needs: os
+// expect-exit: 0
+// expect-stdout:
+// system 2023-11-14T22:13:20Z 2023-11-14T22:13:20Z 2023-11-14T22:13:20.000001Z 1969-12-31T23:59:59.999Z 1970-01-01T00:00:00Z
+// system parse true 1700000000000000001
+// error: cannot parse "3000-01-01T00:00:00Z": out of the SystemTime range (years 1678..2262)
+// zoned 2023-11-15T07:13:20.123456789+09:00 2023-11-15T07:13:20.123456789+09:00[+09:00] 2023-11-14T22:13:20.123456789Z 1970-01-01T00:00:00Z[UTC]
+// weekday Wednesday P0D P2Y-3D
+// 2023|20|23|11|15|15|319|Wed|Wednesday|Nov|Nov|November|3|3|2023|23|46|46|46|07| 7|07| 7|13|20|123456789|123|123456|AM|am|+0900|+09:00|+09:00|1700000000|%
+// 2023-11-15 07:13:20|11/15/23|07:13|07:13:20 AM|Wed Nov 15 07:13:20 2023|11/15/23|07:13:20|tab	newline
+// end
+// 5/3  5| 3|65  5|05|2024-W10
+// -0044 -1 56|12345
+// 12:07 AM 12am 00 0
+// 2020 53 01 00 7 0 003
+// 2024-03-05 2024-03-05 2024-03-05
+// 2024-03-05 1970-01-02 2068-01-02
+// 00:00:00 12:30:00 07:00:00 23:59:58.500
+// 2024-03-05T10:11:00 2023-11-14T22:13:20
+// 2024-03-05T10:11:12+05:30 2024-03-05T10:11:00Z 2023-11-14T22:13:20.250Z
+// 2024-03-05T10:11:12Z -> 2024-03-05T10:11:12Z[UTC] 1709633472
+// 2024-03-05t10:11:12.5z -> 2024-03-05T10:11:12.500Z[UTC] 1709633472
+// 2024-03-05 10:11:12-00:30 -> 2024-03-05T10:11:12-00:30[-00:30] 1709635272
+// 2024-03-05T10:11:12+0530 -> 2024-03-05T10:11:12+05:30[+05:30] 1709613672
+// 2024-03-05T10:11:12[UTC] -> 2024-03-05T10:11:12Z[UTC] 1709633472
+// 2024-03-05T10:11:12+09:00[+09:00] -> 2024-03-05T10:11:12+09:00[+09:00] 1709601072
+// +012024-03-05T10:11:12Z -> +012024-03-05T10:11:12Z[UTC] 317279153472
+// -000001-12-31T23:59:59Z -> -000001-12-31T23:59:59Z[UTC] -62167219201
+// 2822 2024-03-05T10:11:12+09:00 Tue, 05 Mar 2024 10:11:12 +0900
+// 2822 2024-03-05T10:11:00Z Tue, 05 Mar 2024 10:11:00 +0000
+// 2822 2024-03-05T10:11:12-07:00 Tue, 05 Mar 2024 10:11:12 -0700
+// 2822 2024-03-05T10:11:12-01:30 Tue, 05 Mar 2024 10:11:12 -0130
+// 2822 2024-03-05T10:11:12Z Tue, 05 Mar 2024 10:11:12 +0000
+// http 1994-11-06T08:49:37Z Sun, 06 Nov 1994 08:49:37 GMT
+// http 1994-11-06T08:49:37Z Sun, 06 Nov 1994 08:49:37 GMT
+// http 1994-11-06T08:49:37Z Sun, 06 Nov 1994 08:49:37 GMT
+// error: cannot parse "2024-3-05": expected a two-digit month (`01`..`12`) at byte 6, found `-` [6]
+// error: cannot parse "24-03-05": expected a four-digit year (`2024`) at byte 2, found `-` [2]
+// error: cannot parse "2024-03-05x": expected the end of the text at byte 10, found `x` [10]
+// error: cannot parse "-000000-01-01": year -000000 is not allowed at byte 0; write `+000000` or `0000` [0]
+// error: cannot parse "2024-02-30": day 30 is out of range for 2024-02 (1..=29) at byte 8 [8]
+// error: cannot parse "+1234-01-01": expected a six-digit year after the sign (`+012345`) at byte 5, found `-` [5]
+// error: cannot parse "": expected a four-digit year (`2024`) at byte 0, found the end of the text [0]
+// error: cannot parse "2024-03-05T10:11:12": expected an offset (`Z`, `+09:00` or `-05:00`) at byte 19, found the end of the text
+// 2024-03-05T10:11:12+24:00
+// error: cannot parse "2024-03-05T10:11:12+09:60": offset out of range (+/-25:59:59 at most) at byte 19
+// error: cannot parse "2024-03-05T10:11:12Zjunk": expected the end of the text or a zone in brackets (`[Europe/Paris]`) at byte 20, found `j`
+// error: cannot parse "2024-03-05T10:11:12Z[UTC": expected a zone name and `]` at byte 21, found `U`
+// error: cannot parse "2024-03-05T10:11:12+09:00[UTC]": offset +09:00 does not match UTC at that time (+00:00); fix the offset or drop it
+// error: cannot parse "2024-03-05T10:11:12+26:00": offset out of range (+/-25:59:59 at most) at byte 19
+// error: cannot parse "2024-03-05T10:11:12[Not a zone]": bad time zone name `Not a zone` at byte 20; use a tz database name such as `Europe/Paris`
+// error: cannot parse "5 Mar": the pattern has no year (`%Y` or `%y`)
+// error: cannot parse "2024 5": the pattern has no day (`%d` or `%j`)
+// error: cannot parse "Mon 2024-03-05": 2024-03-05 is a Tuesday, not a Monday
+// error: cannot parse "2024/03/05": expected `-` (from the pattern) at byte 4, found `/`
+// error: cannot parse "2024-03-05 extra": expected the end of the text at byte 10, found ` `
+// error: cannot parse "13:00 PM": hour 13 is out of range (01..=12 for `%I`) at byte 0
+// error: cannot parse "1 PM": `%p` needs a 12-hour clock hour (`%I`)
+// error: cannot parse "2024-03-05 10:11": the pattern has no offset (`%z`) or zone (`%Z`); parse a DateTime and call `in_zone`
+// error: cannot parse "2024-03-05 10:11 KST": zone abbreviation `KST` is ambiguous at byte 17; parse a numeric offset with `%z`, or a zone name such as `Asia/Seoul`
+// error: cannot parse "Mon, 5 Mar 2024 10:11:12 +0900": 2024-03-05 is a Tuesday, not a Monday
+// error: cannot parse "5 Mar 2024 10:11:12 XYZ": expected a zone (`+0900`, `GMT`) at byte 20, found `X`
+// error: cannot parse "Sun, 06 Nov 1994 08:49:37 UTC": expected `G` (from the pattern) at byte 26, found `U`
+
+// The text forms: RFC 3339 `Display` / `FromStr` of every type,
+// strftime-style `format` with each directive and flag, `parse_with`,
+// RFC 2822 and HTTP dates, `SystemTime` as RFC 3339, and parse errors
+// that name the byte and what belongs there.
+use std::time::{Date, DateTime, Offset, Period, SystemTime, Time, TimeZone, Weekday, Zoned};
+
+fn show(r: str) { println(r); }
+
+fn main() throws {
+    let t = SystemTime::from_unix(1700000000, 0);
+    println(f"system {t} {t:?} {SystemTime::from_unix(1700000000, 1000)} {SystemTime::from_unix(-1, 999000000)} {UNIX}");
+    println(f"system parse {try "2023-11-14T22:13:20Z".parse::<SystemTime>() == t} {(try "2023-11-15T07:13:20.000000001+09:00".parse::<SystemTime>()).unix_nanos()}");
+    try { show(f"{try "3000-01-01T00:00:00Z".parse::<SystemTime>()}"); } catch e { show(f"error: {e}"); }
+
+    let k = TimeZone::fixed(try Offset::new(9, 0));
+    let z = Zoned::from_system_time(SystemTime::from_unix(1700000000, 123456789), k);
+    println(f"zoned {z} {z:?} {z.to_utc()} {Zoned::from_unix(0, 0u32, TimeZone::utc()):?}");
+    println(f"weekday {Weekday::Wednesday} {Period::new(0, 0, 0)} {Period::new(2, 0, -3)}");
+
+    let all = "%Y|%C|%y|%m|%d|%e|%j|%a|%A|%b|%h|%B|%u|%w|%G|%g|%V|%U|%W|%H|%k|%I|%l|%M|%S|%f|%3f|%6f|%p|%P|%z|%:z|%Z|%s|%%";
+    println(z.format(all));
+    println(z.format("%F %T|%D|%R|%r|%c|%x|%X|tab%tnewline%nend"));
+    let d = try Date::new(2024, 3, 5);
+    println(d.format("%-d/%-m %_d|%_m|%-j %e|%0e|%Y-W%V"));
+    println((try Date::new(-44, 3, 15)).format("%Y %C %y|") + (try Date::new(12345, 1, 1)).format("%Y"));
+    println((try Time::new(0, 7, 9)).format("%I:%M %p %l%P %H%k"));
+    println((try DateTime::new(2021, 1, 3, 12, 0, 0)).format("%G %V %U %W %u %w %j"));
+
+    // `parse_with`
+    println(f"{try Date::parse_with("5 March 2024", "%d %B %Y")} {try Date::parse_with("Tue, 5 mar 24", "%a, %e %b %y")} {try Date::parse_with("2024-065", "%Y-%j")}");
+    println(f"{try Date::parse_with("20240305", "%Y%m%d")} {try Date::parse_with("1/2/70", "%m/%d/%y")} {try Date::parse_with("1/2/68", "%D")}");
+    println(f"{try Time::parse_with("12:00 am", "%I:%M %p")} {try Time::parse_with("12:30 PM", "%I:%M %p")} {try Time::parse_with("7", "%H")} {try Time::parse_with("23:59:58.5", "%T.%f")}");
+    println(f"{try DateTime::parse_with("2024-03-05   10:11", "%F %R")} {try DateTime::parse_with("1700000000", "%s")}");
+    println(f"{try Zoned::parse_with("2024-03-05 10:11:12 +0530", "%F %T %z")} {try Zoned::parse_with("2024-03-05 10:11 UTC", "%F %R %Z")} {try Zoned::parse_with("1700000000.25", "%s.%f")}");
+
+    // RFC 3339 forms
+    for s in ["2024-03-05T10:11:12Z", "2024-03-05t10:11:12.5z", "2024-03-05 10:11:12-00:30", "2024-03-05T10:11:12+0530", "2024-03-05T10:11:12[UTC]", "2024-03-05T10:11:12+09:00[+09:00]", "+012024-03-05T10:11:12Z", "-000001-12-31T23:59:59Z"] {
+        let p = try s.parse::<Zoned>();
+        println(f"{s} -> {p:?} {p.unix_secs()}");
+    }
+
+    // RFC 2822 and HTTP
+    for s in ["Tue, 5 Mar 2024 10:11:12 +0900", "5 Mar 2024 10:11 GMT", "Tue, 05 Mar 24 10:11:12 PDT", "  Tue ,  5   Mar 2024 10:11:12 -0130  ", "05 Mar 2024 10:11:12 A"] {
+        let p = try Zoned::parse_rfc2822(s);
+        println(f"2822 {p} {p.to_rfc2822()}");
+    }
+    for s in ["Sun, 06 Nov 1994 08:49:37 GMT", "Sunday, 06-Nov-94 08:49:37 GMT", "Sun Nov  6 08:49:37 1994"] {
+        let p = try SystemTime::parse_http_date(s);
+        println(f"http {p} {p.to_http_date()}");
+    }
+
+    // Errors
+    let bad_dates = ["2024-3-05", "24-03-05", "2024-03-05x", "-000000-01-01", "2024-02-30", "+1234-01-01", ""];
+    for s in bad_dates {
+        try { show(f"{try s.parse::<Date>()}"); } catch e { show(f"error: {e} [{e.position()}]"); }
+    }
+    let bad_zoned = ["2024-03-05T10:11:12", "2024-03-05T10:11:12+24", "2024-03-05T10:11:12+09:60", "2024-03-05T10:11:12Zjunk", "2024-03-05T10:11:12Z[UTC", "2024-03-05T10:11:12+09:00[UTC]", "2024-03-05T10:11:12+26:00", "2024-03-05T10:11:12[Not a zone]"];
+    for s in bad_zoned {
+        try { show(f"{try s.parse::<Zoned>()}"); } catch e { show(f"error: {e}"); }
+    }
+    try { show(f"{try Date::parse_with("5 Mar", "%d %b")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try Date::parse_with("2024 5", "%Y %m")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try Date::parse_with("Mon 2024-03-05", "%a %F")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try Date::parse_with("2024/03/05", "%Y-%m-%d")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try Date::parse_with("2024-03-05 extra", "%F")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try Time::parse_with("13:00 PM", "%I:%M %p")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try Time::parse_with("1 PM", "%H %p")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try Zoned::parse_with("2024-03-05 10:11", "%F %R")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try Zoned::parse_with("2024-03-05 10:11 KST", "%F %R %Z")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try Zoned::parse_rfc2822("Mon, 5 Mar 2024 10:11:12 +0900")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try Zoned::parse_rfc2822("5 Mar 2024 10:11:12 XYZ")}"); } catch e { show(f"error: {e}"); }
+    try { show(f"{try SystemTime::parse_http_date("Sun, 06 Nov 1994 08:49:37 UTC")}"); } catch e { show(f"error: {e}"); }
+}
+
+const UNIX: SystemTime = std::time::UNIX_EPOCH;

@@ -1,0 +1,12 @@
+// expect-error: captures don't meet
+
+// A closure in a `fn() + Send` slot must capture only
+// `Send` values.
+struct Tok { v: i32; }
+impl !Send for Tok {}
+
+fn main() -> i32 {
+    let t = Tok { v: 1 };
+    let f: fn() -> i32 + Send = || t.v;
+    return f();
+}

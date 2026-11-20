@@ -1,0 +1,14 @@
+// expect-error: invalid `#[literal]`: a number suffix is a name glued to the number (`95pct`, `2i`), and `%` is an operator: `95%` reads as the number then `%`; write `#[literal(number "pct")]` and `95pct`
+// expect-error: `%` is a fixed token with no postfix form: the language reads only `a % b`
+// expect-error: help: for a percentage, register a number suffix: `#[literal(number "pct")]` makes `95pct` call it
+
+// `%` is the remainder operator: neither a number suffix nor a postfix.
+#[literal(number "%")]
+pub const fn percent(n: f64) -> f64 { n / 100.0 }
+
+pub trait Percent {
+    #[postfix("%", like = "?")]
+    fn percent(self) -> f64;
+}
+
+fn main() {}

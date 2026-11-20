@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout:
+// done
+
+// `union` (untagged, struct-kind bit reinterpretation).
+union BitsAndFloat {
+    bits: u32;
+    f: f32;
+}
+
+fn main() -> i32 {
+    let u = BitsAndFloat { bits: 0u32 };
+    println("done");
+    return 0;
+}

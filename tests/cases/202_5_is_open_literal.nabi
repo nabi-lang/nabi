@@ -1,0 +1,33 @@
+// expect-exit: 0
+// expect-stdout:
+// let: true false true false
+// bare: true true false
+// nested: true true
+// generic: true true
+// match: 4 3.5
+
+// An unsuffixed literal not fixed by an earlier use has its default type
+// (`i64` / `f64`) when `is` or a type pattern tests it.
+fn local_lits<T>(_x: T) -> bool {
+    let v = 3;
+    let f = 1.5;
+    v is i64 && f is f64 && !(f is f32)
+}
+
+fn main() {
+    let v = 3;
+    let w = 2.5;
+    let u: i32 = 3;
+    let n = 7;
+    println(f"let: {v is i64} {v is i32} {w is f64} {u is i64}");
+    println(f"bare: {3 is i64} {2.0 is f64} {-1 is u64}");
+    let t = (1, 2.0);
+    let xs = List::new();
+    xs.push(3);
+    println(f"nested: {t is (i64, f64)} {xs is List<i64>}");
+    println(f"generic: {local_lits("s")} {local_lits(1u8)}");
+    let k = match n { m: i64 => m - 3 };
+    let g = 2.5;
+    let h = match g { y: f64 => y + 1.0 };
+    println(f"match: {k} {h}");
+}

@@ -1,0 +1,33 @@
+// only-os: windows
+// expect-exit: 0
+// expect-stdout:
+// set: true
+// get: 4 true
+// cwd: true
+
+// Windows `W` APIs take `WideCString::as_ptr` and fill a `c_wchar`
+// buffer that `str::from_utf16` reads back.
+use bare::ffi::WideCString;
+use bare::gc::pin;
+use bare::ptr::{ConstPtr, Ptr};
+
+extern "system" {
+    fn SetEnvironmentVariableW(name: ConstPtr<u16>, value: ConstPtr<u16>) -> i32;
+    fn GetEnvironmentVariableW(name: ConstPtr<u16>, buf: Ptr<u16>, size: u32) -> u32;
+    fn GetCurrentDirectoryW(size: u32, buf: Ptr<u16>) -> u32;
+}
+
+fn main() {
+    let name = try! WideCString::new("NABI_WIDE_TEST");
+    let value = try! WideCString::new("h\u{E9}\u{1F600}");
+    println(f"set: {unsafe { SetEnvironmentVariableW(name.as_ptr(), value.as_ptr()) } != 0}");
+    let buf: List<u16> = [];
+    for _ in 0..1024 {
+        buf.push(0u16);
+    }
+    let held = pin(buf);
+    let n = unsafe { GetEnvironmentVariableW(name.as_ptr(), held.as_data_ptr(), 1024u32) };
+    println(f"get: {n} {(try! str::from_utf16(buf[0:n as usize])) == "h\u{E9}\u{1F600}"}");
+    let m = unsafe { GetCurrentDirectoryW(1024u32, held.as_data_ptr()) };
+    println(f"cwd: {str::from_utf16_lossy(buf[0:m as usize]).contains(":\\")}");
+}

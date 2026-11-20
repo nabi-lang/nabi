@@ -1,0 +1,197 @@
+// expect-exit: 0
+// expect-stdout:
+// 0 0 0 0 0 0
+
+// Division and remainder by constants (above -O0 a multiply by the
+// reciprocal) agree with division by the same values at run time.
+#[inline(never)]
+fn opq_u32(x: u32) -> u32 { x }
+#[inline(never)]
+fn opq_i32(x: i32) -> i32 { x }
+#[inline(never)]
+fn opq_u64(x: u64) -> u64 { x }
+#[inline(never)]
+fn opq_i64(x: i64) -> i64 { x }
+#[inline(never)]
+fn opq_u8(x: u8) -> u8 { x }
+#[inline(never)]
+fn opq_i16(x: i16) -> i16 { x }
+
+fn t_u32() -> i64 {
+    let bad: i64 = 0;
+    let xs: List<u32> = [0, 1, 2, 6, 7, 100, 2147483647, 2147483648, 4294967295, 4294967294, 123456789, 3000000000];
+    for x in xs {
+        if x / 3 != x / opq_u32(3) || x % 3 != x % opq_u32(3) { bad += 1; println(f"u32 {x} 3"); }
+        if x / 5 != x / opq_u32(5) || x % 5 != x % opq_u32(5) { bad += 1; println(f"u32 {x} 5"); }
+        if x / 6 != x / opq_u32(6) || x % 6 != x % opq_u32(6) { bad += 1; println(f"u32 {x} 6"); }
+        if x / 7 != x / opq_u32(7) || x % 7 != x % opq_u32(7) { bad += 1; println(f"u32 {x} 7"); }
+        if x / 9 != x / opq_u32(9) || x % 9 != x % opq_u32(9) { bad += 1; println(f"u32 {x} 9"); }
+        if x / 10 != x / opq_u32(10) || x % 10 != x % opq_u32(10) { bad += 1; println(f"u32 {x} 10"); }
+        if x / 11 != x / opq_u32(11) || x % 11 != x % opq_u32(11) { bad += 1; println(f"u32 {x} 11"); }
+        if x / 12 != x / opq_u32(12) || x % 12 != x % opq_u32(12) { bad += 1; println(f"u32 {x} 12"); }
+        if x / 13 != x / opq_u32(13) || x % 13 != x % opq_u32(13) { bad += 1; println(f"u32 {x} 13"); }
+        if x / 25 != x / opq_u32(25) || x % 25 != x % opq_u32(25) { bad += 1; println(f"u32 {x} 25"); }
+        if x / 100 != x / opq_u32(100) || x % 100 != x % opq_u32(100) { bad += 1; println(f"u32 {x} 100"); }
+        if x / 641 != x / opq_u32(641) || x % 641 != x % opq_u32(641) { bad += 1; println(f"u32 {x} 641"); }
+        if x / 1000 != x / opq_u32(1000) || x % 1000 != x % opq_u32(1000) { bad += 1; println(f"u32 {x} 1000"); }
+        if x / 1023 != x / opq_u32(1023) || x % 1023 != x % opq_u32(1023) { bad += 1; println(f"u32 {x} 1023"); }
+        if x / 1025 != x / opq_u32(1025) || x % 1025 != x % opq_u32(1025) { bad += 1; println(f"u32 {x} 1025"); }
+        if x / 10007 != x / opq_u32(10007) || x % 10007 != x % opq_u32(10007) { bad += 1; println(f"u32 {x} 10007"); }
+        if x / 65535 != x / opq_u32(65535) || x % 65535 != x % opq_u32(65535) { bad += 1; println(f"u32 {x} 65535"); }
+        if x / 65537 != x / opq_u32(65537) || x % 65537 != x % opq_u32(65537) { bad += 1; println(f"u32 {x} 65537"); }
+        if x / 1000000007 != x / opq_u32(1000000007) || x % 1000000007 != x % opq_u32(1000000007) { bad += 1; println(f"u32 {x} 1000000007"); }
+        if x / 2147483647 != x / opq_u32(2147483647) || x % 2147483647 != x % opq_u32(2147483647) { bad += 1; println(f"u32 {x} 2147483647"); }
+        if x / 2147483649 != x / opq_u32(2147483649) || x % 2147483649 != x % opq_u32(2147483649) { bad += 1; println(f"u32 {x} 2147483649"); }
+        if x / 4294967295 != x / opq_u32(4294967295) || x % 4294967295 != x % opq_u32(4294967295) { bad += 1; println(f"u32 {x} 4294967295"); }
+    }
+    bad
+}
+
+fn t_i32() -> i64 {
+    let bad: i64 = 0;
+    let xs: List<i32> = [0, 1, -1, 7, -7, 2147483647, -2147483648, -2147483647, 123456789, -123456789, -100, 99];
+    for x in xs {
+        if x / 3 != x / opq_i32(3) || x % 3 != x % opq_i32(3) { bad += 1; println(f"i32 {x} 3"); }
+        if x / 5 != x / opq_i32(5) || x % 5 != x % opq_i32(5) { bad += 1; println(f"i32 {x} 5"); }
+        if x / 6 != x / opq_i32(6) || x % 6 != x % opq_i32(6) { bad += 1; println(f"i32 {x} 6"); }
+        if x / 7 != x / opq_i32(7) || x % 7 != x % opq_i32(7) { bad += 1; println(f"i32 {x} 7"); }
+        if x / 9 != x / opq_i32(9) || x % 9 != x % opq_i32(9) { bad += 1; println(f"i32 {x} 9"); }
+        if x / 10 != x / opq_i32(10) || x % 10 != x % opq_i32(10) { bad += 1; println(f"i32 {x} 10"); }
+        if x / 11 != x / opq_i32(11) || x % 11 != x % opq_i32(11) { bad += 1; println(f"i32 {x} 11"); }
+        if x / 12 != x / opq_i32(12) || x % 12 != x % opq_i32(12) { bad += 1; println(f"i32 {x} 12"); }
+        if x / 13 != x / opq_i32(13) || x % 13 != x % opq_i32(13) { bad += 1; println(f"i32 {x} 13"); }
+        if x / 25 != x / opq_i32(25) || x % 25 != x % opq_i32(25) { bad += 1; println(f"i32 {x} 25"); }
+        if x / 100 != x / opq_i32(100) || x % 100 != x % opq_i32(100) { bad += 1; println(f"i32 {x} 100"); }
+        if x / 641 != x / opq_i32(641) || x % 641 != x % opq_i32(641) { bad += 1; println(f"i32 {x} 641"); }
+        if x / 1000 != x / opq_i32(1000) || x % 1000 != x % opq_i32(1000) { bad += 1; println(f"i32 {x} 1000"); }
+        if x / 1023 != x / opq_i32(1023) || x % 1023 != x % opq_i32(1023) { bad += 1; println(f"i32 {x} 1023"); }
+        if x / 1025 != x / opq_i32(1025) || x % 1025 != x % opq_i32(1025) { bad += 1; println(f"i32 {x} 1025"); }
+        if x / 10007 != x / opq_i32(10007) || x % 10007 != x % opq_i32(10007) { bad += 1; println(f"i32 {x} 10007"); }
+        if x / 65535 != x / opq_i32(65535) || x % 65535 != x % opq_i32(65535) { bad += 1; println(f"i32 {x} 65535"); }
+        if x / 65537 != x / opq_i32(65537) || x % 65537 != x % opq_i32(65537) { bad += 1; println(f"i32 {x} 65537"); }
+        if x / 1000000007 != x / opq_i32(1000000007) || x % 1000000007 != x % opq_i32(1000000007) { bad += 1; println(f"i32 {x} 1000000007"); }
+        if x / 2147483647 != x / opq_i32(2147483647) || x % 2147483647 != x % opq_i32(2147483647) { bad += 1; println(f"i32 {x} 2147483647"); }
+        if x / (-3) != x / opq_i32((-3)) || x % (-3) != x % opq_i32((-3)) { bad += 1; println(f"i32 {x} (-3)"); }
+        if x / (-5) != x / opq_i32((-5)) || x % (-5) != x % opq_i32((-5)) { bad += 1; println(f"i32 {x} (-5)"); }
+        if x / (-6) != x / opq_i32((-6)) || x % (-6) != x % opq_i32((-6)) { bad += 1; println(f"i32 {x} (-6)"); }
+        if x / (-7) != x / opq_i32((-7)) || x % (-7) != x % opq_i32((-7)) { bad += 1; println(f"i32 {x} (-7)"); }
+        if x / (-9) != x / opq_i32((-9)) || x % (-9) != x % opq_i32((-9)) { bad += 1; println(f"i32 {x} (-9)"); }
+        if x / (-10) != x / opq_i32((-10)) || x % (-10) != x % opq_i32((-10)) { bad += 1; println(f"i32 {x} (-10)"); }
+        if x / (-11) != x / opq_i32((-11)) || x % (-11) != x % opq_i32((-11)) { bad += 1; println(f"i32 {x} (-11)"); }
+        if x / (-12) != x / opq_i32((-12)) || x % (-12) != x % opq_i32((-12)) { bad += 1; println(f"i32 {x} (-12)"); }
+        if x / (-13) != x / opq_i32((-13)) || x % (-13) != x % opq_i32((-13)) { bad += 1; println(f"i32 {x} (-13)"); }
+        if x / (-25) != x / opq_i32((-25)) || x % (-25) != x % opq_i32((-25)) { bad += 1; println(f"i32 {x} (-25)"); }
+        if x / (-100) != x / opq_i32((-100)) || x % (-100) != x % opq_i32((-100)) { bad += 1; println(f"i32 {x} (-100)"); }
+        if x / (-641) != x / opq_i32((-641)) || x % (-641) != x % opq_i32((-641)) { bad += 1; println(f"i32 {x} (-641)"); }
+        if x / (-1000) != x / opq_i32((-1000)) || x % (-1000) != x % opq_i32((-1000)) { bad += 1; println(f"i32 {x} (-1000)"); }
+        if x / (-1023) != x / opq_i32((-1023)) || x % (-1023) != x % opq_i32((-1023)) { bad += 1; println(f"i32 {x} (-1023)"); }
+        if x / (-1025) != x / opq_i32((-1025)) || x % (-1025) != x % opq_i32((-1025)) { bad += 1; println(f"i32 {x} (-1025)"); }
+        if x / (-10007) != x / opq_i32((-10007)) || x % (-10007) != x % opq_i32((-10007)) { bad += 1; println(f"i32 {x} (-10007)"); }
+        if x / (-65535) != x / opq_i32((-65535)) || x % (-65535) != x % opq_i32((-65535)) { bad += 1; println(f"i32 {x} (-65535)"); }
+        if x / (-65537) != x / opq_i32((-65537)) || x % (-65537) != x % opq_i32((-65537)) { bad += 1; println(f"i32 {x} (-65537)"); }
+        if x / (-1000000007) != x / opq_i32((-1000000007)) || x % (-1000000007) != x % opq_i32((-1000000007)) { bad += 1; println(f"i32 {x} (-1000000007)"); }
+        if x / (-2147483647) != x / opq_i32((-2147483647)) || x % (-2147483647) != x % opq_i32((-2147483647)) { bad += 1; println(f"i32 {x} (-2147483647)"); }
+    }
+    bad
+}
+
+fn t_u64() -> i64 {
+    let bad: i64 = 0;
+    let xs: List<u64> = [0, 1, 7, 18446744073709551615, 18446744073709551614, 9223372036854775808, 9223372036854775807, 12345678901234567890, 1000000000000000000, 4294967296];
+    for x in xs {
+        if x / 3 != x / opq_u64(3) || x % 3 != x % opq_u64(3) { bad += 1; println(f"u64 {x} 3"); }
+        if x / 5 != x / opq_u64(5) || x % 5 != x % opq_u64(5) { bad += 1; println(f"u64 {x} 5"); }
+        if x / 6 != x / opq_u64(6) || x % 6 != x % opq_u64(6) { bad += 1; println(f"u64 {x} 6"); }
+        if x / 7 != x / opq_u64(7) || x % 7 != x % opq_u64(7) { bad += 1; println(f"u64 {x} 7"); }
+        if x / 9 != x / opq_u64(9) || x % 9 != x % opq_u64(9) { bad += 1; println(f"u64 {x} 9"); }
+        if x / 10 != x / opq_u64(10) || x % 10 != x % opq_u64(10) { bad += 1; println(f"u64 {x} 10"); }
+        if x / 11 != x / opq_u64(11) || x % 11 != x % opq_u64(11) { bad += 1; println(f"u64 {x} 11"); }
+        if x / 12 != x / opq_u64(12) || x % 12 != x % opq_u64(12) { bad += 1; println(f"u64 {x} 12"); }
+        if x / 13 != x / opq_u64(13) || x % 13 != x % opq_u64(13) { bad += 1; println(f"u64 {x} 13"); }
+        if x / 25 != x / opq_u64(25) || x % 25 != x % opq_u64(25) { bad += 1; println(f"u64 {x} 25"); }
+        if x / 100 != x / opq_u64(100) || x % 100 != x % opq_u64(100) { bad += 1; println(f"u64 {x} 100"); }
+        if x / 641 != x / opq_u64(641) || x % 641 != x % opq_u64(641) { bad += 1; println(f"u64 {x} 641"); }
+        if x / 1000 != x / opq_u64(1000) || x % 1000 != x % opq_u64(1000) { bad += 1; println(f"u64 {x} 1000"); }
+        if x / 1023 != x / opq_u64(1023) || x % 1023 != x % opq_u64(1023) { bad += 1; println(f"u64 {x} 1023"); }
+        if x / 1025 != x / opq_u64(1025) || x % 1025 != x % opq_u64(1025) { bad += 1; println(f"u64 {x} 1025"); }
+        if x / 10007 != x / opq_u64(10007) || x % 10007 != x % opq_u64(10007) { bad += 1; println(f"u64 {x} 10007"); }
+        if x / 65535 != x / opq_u64(65535) || x % 65535 != x % opq_u64(65535) { bad += 1; println(f"u64 {x} 65535"); }
+        if x / 65537 != x / opq_u64(65537) || x % 65537 != x % opq_u64(65537) { bad += 1; println(f"u64 {x} 65537"); }
+        if x / 1000000007 != x / opq_u64(1000000007) || x % 1000000007 != x % opq_u64(1000000007) { bad += 1; println(f"u64 {x} 1000000007"); }
+        if x / 2147483647 != x / opq_u64(2147483647) || x % 2147483647 != x % opq_u64(2147483647) { bad += 1; println(f"u64 {x} 2147483647"); }
+        if x / 2147483649 != x / opq_u64(2147483649) || x % 2147483649 != x % opq_u64(2147483649) { bad += 1; println(f"u64 {x} 2147483649"); }
+        if x / 4294967295 != x / opq_u64(4294967295) || x % 4294967295 != x % opq_u64(4294967295) { bad += 1; println(f"u64 {x} 4294967295"); }
+        if x / 6700417 != x / opq_u64(6700417) || x % 6700417 != x % opq_u64(6700417) { bad += 1; println(f"u64 {x} 6700417"); }
+        if x / 4294967297 != x / opq_u64(4294967297) || x % 4294967297 != x % opq_u64(4294967297) { bad += 1; println(f"u64 {x} 4294967297"); }
+        if x / 1000000000000 != x / opq_u64(1000000000000) || x % 1000000000000 != x % opq_u64(1000000000000) { bad += 1; println(f"u64 {x} 1000000000000"); }
+        if x / 9223372036854775807 != x / opq_u64(9223372036854775807) || x % 9223372036854775807 != x % opq_u64(9223372036854775807) { bad += 1; println(f"u64 {x} 9223372036854775807"); }
+        if x / 9223372036854775809 != x / opq_u64(9223372036854775809) || x % 9223372036854775809 != x % opq_u64(9223372036854775809) { bad += 1; println(f"u64 {x} 9223372036854775809"); }
+        if x / 18446744073709551615 != x / opq_u64(18446744073709551615) || x % 18446744073709551615 != x % opq_u64(18446744073709551615) { bad += 1; println(f"u64 {x} 18446744073709551615"); }
+        if x / 12345678901234567 != x / opq_u64(12345678901234567) || x % 12345678901234567 != x % opq_u64(12345678901234567) { bad += 1; println(f"u64 {x} 12345678901234567"); }
+    }
+    bad
+}
+
+fn t_i64() -> i64 {
+    let bad: i64 = 0;
+    let xs: List<i64> = [0, 1, -1, 9223372036854775807, -9223372036854775808, -9223372036854775807, -1234567890123456789, 1234567890123456789, -7, 4294967296];
+    for x in xs {
+        if x / 3 != x / opq_i64(3) || x % 3 != x % opq_i64(3) { bad += 1; println(f"i64 {x} 3"); }
+        if x / 7 != x / opq_i64(7) || x % 7 != x % opq_i64(7) { bad += 1; println(f"i64 {x} 7"); }
+        if x / 10 != x / opq_i64(10) || x % 10 != x % opq_i64(10) { bad += 1; println(f"i64 {x} 10"); }
+        if x / 100 != x / opq_i64(100) || x % 100 != x % opq_i64(100) { bad += 1; println(f"i64 {x} 100"); }
+        if x / 641 != x / opq_i64(641) || x % 641 != x % opq_i64(641) { bad += 1; println(f"i64 {x} 641"); }
+        if x / 1000000007 != x / opq_i64(1000000007) || x % 1000000007 != x % opq_i64(1000000007) { bad += 1; println(f"i64 {x} 1000000007"); }
+        if x / 6700417 != x / opq_i64(6700417) || x % 6700417 != x % opq_i64(6700417) { bad += 1; println(f"i64 {x} 6700417"); }
+        if x / 4294967297 != x / opq_i64(4294967297) || x % 4294967297 != x % opq_i64(4294967297) { bad += 1; println(f"i64 {x} 4294967297"); }
+        if x / 9223372036854775807 != x / opq_i64(9223372036854775807) || x % 9223372036854775807 != x % opq_i64(9223372036854775807) { bad += 1; println(f"i64 {x} 9223372036854775807"); }
+        if x / (-3) != x / opq_i64((-3)) || x % (-3) != x % opq_i64((-3)) { bad += 1; println(f"i64 {x} (-3)"); }
+        if x / (-7) != x / opq_i64((-7)) || x % (-7) != x % opq_i64((-7)) { bad += 1; println(f"i64 {x} (-7)"); }
+        if x / (-10) != x / opq_i64((-10)) || x % (-10) != x % opq_i64((-10)) { bad += 1; println(f"i64 {x} (-10)"); }
+        if x / (-100) != x / opq_i64((-100)) || x % (-100) != x % opq_i64((-100)) { bad += 1; println(f"i64 {x} (-100)"); }
+        if x / (-641) != x / opq_i64((-641)) || x % (-641) != x % opq_i64((-641)) { bad += 1; println(f"i64 {x} (-641)"); }
+        if x / (-1000000007) != x / opq_i64((-1000000007)) || x % (-1000000007) != x % opq_i64((-1000000007)) { bad += 1; println(f"i64 {x} (-1000000007)"); }
+        if x / (-6700417) != x / opq_i64((-6700417)) || x % (-6700417) != x % opq_i64((-6700417)) { bad += 1; println(f"i64 {x} (-6700417)"); }
+        if x / (-4294967297) != x / opq_i64((-4294967297)) || x % (-4294967297) != x % opq_i64((-4294967297)) { bad += 1; println(f"i64 {x} (-4294967297)"); }
+        if x / (-9223372036854775807) != x / opq_i64((-9223372036854775807)) || x % (-9223372036854775807) != x % opq_i64((-9223372036854775807)) { bad += 1; println(f"i64 {x} (-9223372036854775807)"); }
+    }
+    bad
+}
+
+fn t_u8() -> i64 {
+    let bad: i64 = 0;
+    let xs: List<u8> = [0, 1, 7, 128, 200, 254, 255];
+    for x in xs {
+        if x / 3 != x / opq_u8(3) || x % 3 != x % opq_u8(3) { bad += 1; println(f"u8 {x} 3"); }
+        if x / 5 != x / opq_u8(5) || x % 5 != x % opq_u8(5) { bad += 1; println(f"u8 {x} 5"); }
+        if x / 7 != x / opq_u8(7) || x % 7 != x % opq_u8(7) { bad += 1; println(f"u8 {x} 7"); }
+        if x / 10 != x / opq_u8(10) || x % 10 != x % opq_u8(10) { bad += 1; println(f"u8 {x} 10"); }
+        if x / 100 != x / opq_u8(100) || x % 100 != x % opq_u8(100) { bad += 1; println(f"u8 {x} 100"); }
+        if x / 129 != x / opq_u8(129) || x % 129 != x % opq_u8(129) { bad += 1; println(f"u8 {x} 129"); }
+        if x / 200 != x / opq_u8(200) || x % 200 != x % opq_u8(200) { bad += 1; println(f"u8 {x} 200"); }
+        if x / 255 != x / opq_u8(255) || x % 255 != x % opq_u8(255) { bad += 1; println(f"u8 {x} 255"); }
+    }
+    bad
+}
+
+fn t_i16() -> i64 {
+    let bad: i64 = 0;
+    let xs: List<i16> = [0, 1, -1, 32767, -32768, -32767, 1234, -1234];
+    for x in xs {
+        if x / 3 != x / opq_i16(3) || x % 3 != x % opq_i16(3) { bad += 1; println(f"i16 {x} 3"); }
+        if x / 7 != x / opq_i16(7) || x % 7 != x % opq_i16(7) { bad += 1; println(f"i16 {x} 7"); }
+        if x / 10 != x / opq_i16(10) || x % 10 != x % opq_i16(10) { bad += 1; println(f"i16 {x} 10"); }
+        if x / 100 != x / opq_i16(100) || x % 100 != x % opq_i16(100) { bad += 1; println(f"i16 {x} 100"); }
+        if x / 1000 != x / opq_i16(1000) || x % 1000 != x % opq_i16(1000) { bad += 1; println(f"i16 {x} 1000"); }
+        if x / 32767 != x / opq_i16(32767) || x % 32767 != x % opq_i16(32767) { bad += 1; println(f"i16 {x} 32767"); }
+        if x / (-3) != x / opq_i16((-3)) || x % (-3) != x % opq_i16((-3)) { bad += 1; println(f"i16 {x} (-3)"); }
+        if x / (-7) != x / opq_i16((-7)) || x % (-7) != x % opq_i16((-7)) { bad += 1; println(f"i16 {x} (-7)"); }
+        if x / (-1000) != x / opq_i16((-1000)) || x % (-1000) != x % opq_i16((-1000)) { bad += 1; println(f"i16 {x} (-1000)"); }
+        if x / (-32767) != x / opq_i16((-32767)) || x % (-32767) != x % opq_i16((-32767)) { bad += 1; println(f"i16 {x} (-32767)"); }
+    }
+    bad
+}
+
+fn main() {
+    println(f"{t_u32()} {t_i32()} {t_u64()} {t_i64()} {t_u8()} {t_i16()}");
+}

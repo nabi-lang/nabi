@@ -1,0 +1,24 @@
+[package]
+name = "nabils"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# The language server, which `nabi lsp` hosts. The `nabils` binary runs
+# `nabi lsp` beside it: dependencies are `nabi`'s to resolve.
+[dependencies]
+nabic_ast = { workspace = true }
+nabic_core = { workspace = true }
+nabic_diagnostic = { workspace = true }
+nabic_hir = { workspace = true }
+nabic_interface = { workspace = true }
+nabic_lexer = { workspace = true }
+nabic_nabion = { workspace = true }
+nabic_parser = { workspace = true }
+nabic_tools = { workspace = true }
+nabils_protocol = { workspace = true }
+
+[lints]
+workspace = true

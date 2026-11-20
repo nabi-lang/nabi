@@ -1,0 +1,204 @@
+// Vectorized checked products (`-O2`, lanes' high halves where the
+// target multiplies so): a vector holding an element whose product
+// overflows is left to the scalar loop, which panics at that element,
+// every element before it stored and none after; no panic when the
+// overflowing element is past the range. Every width, signed or not,
+// every length from 0 to 33 and every start of a slice.
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/cg_vector_checked_mul.nabi:29:17:
+// expect-stderr: attempt to multiply with overflow
+// expect-stdout:
+// i8 1684 u8 1684 i16 1684 u16 1684 i32 1684 u32 1684 i64 1684 u64 1684
+// pairs 1684 sums 595
+// 18 -12 7 0
+
+fn m8(ys: List<i8>, xs: List<i8>, k: i8, a: usize, n: usize) {
+    for i in a..n {
+        ys[i] = xs[i] * k;
+    }
+}
+
+fn mu8(ys: List<u8>, xs: List<u8>, k: u8, a: usize, n: usize) {
+    for i in a..n {
+        ys[i] = xs[i] * k;
+    }
+}
+
+fn m16(ys: List<i16>, xs: List<i16>, k: i16, a: usize, n: usize) {
+    for i in a..n {
+        ys[i] = xs[i] * k;
+    }
+}
+
+fn mu16(ys: List<u16>, xs: List<u16>, k: u16, a: usize, n: usize) {
+    for i in a..n {
+        ys[i] = k * xs[i];
+    }
+}
+
+fn m32(ys: List<i32>, xs: List<i32>, k: i32, a: usize, n: usize) {
+    for i in a..n {
+        ys[i] = xs[i] * k;
+    }
+}
+
+fn mu32(ys: List<u32>, xs: List<u32>, k: u32, a: usize, n: usize) {
+    for i in a..n {
+        ys[i] = xs[i] * k;
+    }
+}
+
+fn m64(ys: List<i64>, xs: List<i64>, k: i64, a: usize, n: usize) {
+    for i in a..n {
+        ys[i] = xs[i] * k;
+    }
+}
+
+fn mu64(ys: List<u64>, xs: List<u64>, k: u64, a: usize, n: usize) {
+    for i in a..n {
+        ys[i] = xs[i] * k;
+    }
+}
+
+fn pair16(ys: List<i16>, xs: List<i16>, zs: List<i16>) {
+    let n = ys.len().min(xs.len()).min(zs.len());
+    for i in 0..n {
+        ys[i] = xs[i] * zs[i];
+    }
+}
+
+fn dot16(xs: List<i16>, zs: List<i16>, a: usize) -> i16 {
+    let s: i16 = 0;
+    for (i, x) in xs[a:].iter().enumerate() {
+        s += x * zs[i + a];
+    }
+    s
+}
+
+fn next(s: u64) -> u64 {
+    s.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64)
+}
+
+fn main() -> i32 {
+    let seed: u64 = 99;
+    let (c8, cu8, c16, cu16, c32, cu32, c64, cu64) = (0, 0, 0, 0, 0, 0, 0, 0);
+    let (pairs, sums) = (0, 0);
+    for n in 0..34 {
+        for a in 0..3 {
+            if a > n {
+                continue;
+            }
+            for p in a..n + 1 {
+                // Products fit below `p`; at `p` (when in the list) they
+                // overflow, the range stopping short of it.
+                let len = n + 1;
+                let x8: List<i8> = List::filled(len, 0i8);
+                let xu8: List<u8> = List::filled(len, 0u8);
+                let x16: List<i16> = List::filled(len, 0i16);
+                let xu16: List<u16> = List::filled(len, 0u16);
+                let x32: List<i32> = List::filled(len, 0);
+                let xu32: List<u32> = List::filled(len, 0u32);
+                let x64: List<i64> = List::filled(len, 0i64);
+                let xu64: List<u64> = List::filled(len, 0u64);
+                for i in 0..len {
+                    seed = next(seed);
+                    let r = (seed >> 33) as i64;
+                    x8[i] = (r % 21 - 10) as i8;
+                    xu8[i] = (r % 22) as u8;
+                    x16[i] = (r % 2001 - 1000) as i16;
+                    xu16[i] = (r % 2001) as u16;
+                    x32[i] = (r % 200001 - 100000) as i32;
+                    xu32[i] = (r % 200001) as u32;
+                    x64[i] = r % 2000000001 - 1000000000;
+                    xu64[i] = (r % 2000000001) as u64;
+                }
+                if p < len {
+                    x8[p] = if p % 2 == 0 { 13i8 } else { -13i8 };
+                    xu8[p] = 30u8;
+                    x16[p] = if p % 2 == 0 { 3277i16 } else { -3278i16 };
+                    xu16[p] = 6554u16;
+                    x32[p] = if p % 2 == 0 { 214749 } else { -214749 };
+                    xu32[p] = 429497u32;
+                    x64[p] = if p % 2 == 0 { 922337203686478i64 } else { -922337203686478i64 };
+                    xu64[p] = 1844674407370956u64;
+                }
+                let y8: List<i8> = List::filled(len, 99i8);
+                let yu8: List<u8> = List::filled(len, 99u8);
+                let y16: List<i16> = List::filled(len, 99i16);
+                let yu16: List<u16> = List::filled(len, 99u16);
+                let y32: List<i32> = List::filled(len, 99);
+                let yu32: List<u32> = List::filled(len, 99u32);
+                let y64: List<i64> = List::filled(len, 99i64);
+                let yu64: List<u64> = List::filled(len, 99u64);
+                m8(y8, x8, 10i8, a, p);
+                mu8(yu8, xu8, 11u8, a, p);
+                m16(y16, x16, 10i16, a, p);
+                mu16(yu16, xu16, 10u16, a, p);
+                m32(y32, x32, 10000, a, p);
+                mu32(yu32, xu32, 10000u32, a, p);
+                m64(y64, x64, 10000i64, a, p);
+                mu64(yu64, xu64, 10000u64, a, p);
+                let good = true;
+                for i in 0..len {
+                    let want8 = if (i >= a && i < p) { x8[i].wrapping_mul(10i8) } else { 99i8 };
+                    let wantu8 = if (i >= a && i < p) { xu8[i].wrapping_mul(11u8) } else { 99u8 };
+                    good = good && y8[i] == want8 && yu8[i] == wantu8;
+                }
+                if good { c8 += 1; cu8 += 1; }
+                let g16 = true;
+                let g32 = true;
+                let g64 = true;
+                for i in 0..len {
+                    g16 = g16 && y16[i] == (if (i >= a && i < p) { x16[i].wrapping_mul(10i16) } else { 99i16 });
+                    g16 = g16 && yu16[i] == (if (i >= a && i < p) { xu16[i].wrapping_mul(10u16) } else { 99u16 });
+                    g32 = g32 && y32[i] == (if (i >= a && i < p) { x32[i].wrapping_mul(10000) } else { 99 });
+                    g32 = g32 && yu32[i] == (if (i >= a && i < p) { xu32[i].wrapping_mul(10000u32) } else { 99u32 });
+                    g64 = g64 && y64[i] == (if (i >= a && i < p) { x64[i].wrapping_mul(10000i64) } else { 99i64 });
+                    g64 = g64 && yu64[i] == (if (i >= a && i < p) { xu64[i].wrapping_mul(10000u64) } else { 99u64 });
+                }
+                if g16 { c16 += 1; cu16 += 1; }
+                if g32 { c32 += 1; cu32 += 1; }
+                if g64 { c64 += 1; cu64 += 1; }
+                // Two lists, whole: the products fit.
+                let h: List<i16> = List::filled(p, 0i16);
+                let z: List<i16> = List::filled(p, 0i16);
+                for i in 0..p {
+                    h[i] = x16[i] / 4;
+                    z[i] = x16[(i + 1) % len] / 32;
+                }
+                let w: List<i16> = List::filled(p, 7i16);
+                pair16(w, h, z);
+                let gp = true;
+                for i in 0..p {
+                    gp = gp && w[i] == h[i] * z[i];
+                }
+                if gp { pairs += 1; }
+                if n % 3 == 0 {
+                    let t: List<i16> = List::filled(p, 0i16);
+                    let u: List<i16> = List::filled(p, 0i16);
+                    let want: i16 = 0;
+                    for i in 0..p {
+                        t[i] = x16[i] % 20;
+                        u[i] = x16[(i + 2) % len] % 30;
+                        if i >= a {
+                            want = want.wrapping_add(t[i].wrapping_mul(u[i]));
+                        }
+                    }
+                    if p >= a && dot16(t, u, a) == want { sums += 1; }
+                }
+            }
+        }
+    }
+    println(f"i8 {c8} u8 {cu8} i16 {c16} u16 {cu16} i32 {c32} u32 {cu32} i64 {c64} u64 {cu64}");
+    println(f"pairs {pairs} sums {sums}");
+    let xs: List<i16> = List::filled(40, 2i16);
+    let ys: List<i16> = List::filled(40, 0i16);
+    xs[1] = -6i16;
+    xs[2] = 0i16;
+    xs[21] = 4000i16;
+    m16(ys, xs, 9i16, 0, 21);
+    m16(ys, xs, 9i16, 0, 20);
+    println(f"{ys[0]} {ys[1] / 4 - ys[2] - 1 + 2} {ys[20] / 2 - 2} {ys[21]}");
+    m16(ys, xs, 9i16, 0, 40);
+    return 0;
+}

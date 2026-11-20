@@ -1,0 +1,85 @@
+//! bare::ffi::handle - Nabi values C code holds as a `void*`.
+//!
+//! A C API that calls back takes a `void* user_data` and hands it to the
+//! callback. `Handle::new(v)` keeps `v` alive (a GC root) until
+//! `release`, and `h.as_ptr()` is the `void*` to pass. The callback turns
+//! it back with `Handle::<T>::from_ptr(p)` and reads the value with
+//! `get`. A `List`, `Dict` or other shared value comes back as the same
+//! object; a plain value is copied in.
+//!
+//! The pointer is a handle number, never null and never a real address.
+//! A closure is a value too: keep one in a handle and call it from a
+//! one-line `extern "C" fn`.
+
+use bare::ffi::types::c_void;
+use bare::mem::{GcBuf, buf_get, buf_new, buf_set, transmute_unchecked};
+use bare::ptr::CPtr;
+
+extern "nabi" {
+    fn nabi_handle_new(obj: GcBuf<u8>, name: str) -> usize;
+    fn nabi_handle_get(h: usize, name: str) -> GcBuf<u8>;
+    fn nabi_handle_retain(h: usize);
+    fn nabi_handle_release(h: usize);
+}
+
+#[intrinsic("nabi.type_name")]
+fn type_name<T>() -> str;
+
+/// A Nabi value of type `T` that C holds as a `void*`. Pointer-sized
+/// and `Copy`: it may be a field of a `#[repr(C)]` struct.
+#[repr(transparent)]
+pub struct Handle<T> {
+    p: CPtr<c_void>;
+}
+
+impl<T> Clone for Handle<T> {
+    const fn clone(self) -> Handle<T> { self }
+}
+
+impl<T> Copy for Handle<T> {}
+
+impl<T> Debug for Handle<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"Handle({self.p.addr():#x})") }
+}
+
+impl<T> Handle<T> {
+    /// A handle holding `value`, kept alive until `release`.
+    pub fn new(value: T) -> Handle<T> {
+        let b: GcBuf<T> = unsafe { buf_new(1) };
+        unsafe { buf_set(b, 0, value) };
+        let obj: GcBuf<u8> = unsafe { transmute_unchecked(b) };
+        let h = unsafe { nabi_handle_new(obj, type_name::<T>()) };
+        Handle { p: CPtr::from_addr(h) }
+    }
+
+    /// The handle C gave back as its `void*`. It must come from
+    /// `Handle::<T>::new(..).as_ptr()` with this `T`; `get` panics on
+    /// another type or a released handle.
+    pub unsafe fn from_ptr(p: CPtr<c_void>) -> Handle<T> { Handle { p } }
+
+    /// The `void*` to pass to C.
+    pub fn as_ptr(self) -> CPtr<c_void> { self.p }
+
+    /// The value: the same object for a `List`, `Dict` or other shared
+    /// value, a copy of a plain one. Panics after the last `release`.
+    pub fn get(self) -> T {
+        let obj = unsafe { nabi_handle_get(self.p.addr(), type_name::<T>()) };
+        let b: GcBuf<T> = unsafe { transmute_unchecked(obj) };
+        unsafe { buf_get(b, 0) }
+    }
+
+    /// Replace the value every copy of the handle sees.
+    pub fn set(self, value: T) {
+        let obj = unsafe { nabi_handle_get(self.p.addr(), type_name::<T>()) };
+        let b: GcBuf<T> = unsafe { transmute_unchecked(obj) };
+        unsafe { buf_set(b, 0, value) };
+    }
+
+    /// One more `release` before the value is let go: for C code that
+    /// keeps a second copy of the pointer.
+    pub fn retain(self) { unsafe { nabi_handle_retain(self.p.addr()) } }
+
+    /// Let the value go once C is done with the pointer (after as many
+    /// `release`s as `new` and `retain`s). A `get` afterwards panics.
+    pub fn release(self) { unsafe { nabi_handle_release(self.p.addr()) } }
+}

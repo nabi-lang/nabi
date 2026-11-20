@@ -1,0 +1,29 @@
+// Unicode normalization: NFC of 4 MB of mostly-ASCII text (already
+// NFC: the quick check returns it as is), NFD of it, and NFC of mixed
+// Latin, Hangul and decomposed text, with its grapheme count.
+fn main() -> i32 {
+    let ascii = StrBuf::new();
+    let mixed = StrBuf::new();
+    let x: u64 = 7;
+    for k in 0..200000 {
+        x = x.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
+        let r = (x >> 33) % 64u64;
+        ascii.push_str(if r == 0 { "caf\u{e9} " } else { "plain text " });
+        mixed.push_str(if r < 16 { "e\u{301}t\u{e9} " } else if r < 40 { "\u{1100}\u{1161}\u{11A8}\u{D55C} " } else { "word " });
+        if k % 16 == 15 {
+            ascii.push('\n');
+            mixed.push('\n');
+        }
+    }
+    let a = ascii.to_str();
+    let m = mixed.to_str();
+    let total: usize = 0;
+    for _ in 0..5 {
+        total += a.normalize(Nfc).len();
+        total += a.normalize(Nfd).len();
+        total += m.normalize(Nfc).len();
+        total += m.normalize(Nfd).len();
+    }
+    println(f"{a.len()} {m.len()} {total} {m.normalize(Nfc).grapheme_count()}");
+    return 0;
+}

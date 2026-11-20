@@ -1,0 +1,248 @@
+// std::time::posix: POSIX `TZ` rules (`EST5EDT,M3.2.0,M11.1.0`),
+// the footer of a TZif file and a `TZ` value with no database entry.
+// Hour fields of a rule time reach +/-167 (TZif version 3).
+
+use std::time::date::{civil_from_days, days_from_civil, days_in_month, fdiv, is_leap_year};
+
+/// A transition day: `Jn` (kind 0, n = 1..=365, no February 29), `n`
+/// (kind 1, n = 0..=365) or `Mm.w.d` (kind 2).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(pkg) struct RuleDay {
+    kind: i32;
+    n: i32;
+    month: i32;
+    week: i32;
+    wday: i32;
+}
+
+/// Standard time all year, or standard and daylight time between two
+/// yearly transitions. Offsets are seconds east of UTC.
+#[derive(Clone, PartialEq, Eq)]
+pub(pkg) struct Rule {
+    std_abbr: str;
+    std_off: i32;
+    has_dst: bool;
+    dst_abbr: str;
+    dst_off: i32;
+    start: RuleDay;
+    start_time: i32;
+    end: RuleDay;
+    end_time: i32;
+}
+
+/// One change of offset: at `at` (unix seconds), from `before` to
+/// `after`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(pkg) struct Change {
+    at: i64;
+    before: i32;
+    after: i32;
+}
+
+impl Change {
+    pub(pkg) const fn new(at: i64, before: i32, after: i32) -> Change { Change { at, before, after } }
+    pub(pkg) const fn at(self) -> i64 { self.at }
+    pub(pkg) const fn before(self) -> i32 { self.before }
+    pub(pkg) const fn after(self) -> i32 { self.after }
+}
+
+struct Cursor {
+    s: str;
+    i: usize;
+}
+
+impl Cursor {
+    const fn peek(self) -> u8 { if self.i < self.s.len() { self.s.byte(self.i) } else { 0u8 } }
+    const fn done(self) -> bool { self.i >= self.s.len() }
+}
+
+const fn fail(c: Cursor, what: str) -> ValueError {
+    ValueError::new(f"bad TZ rule \"{c.s}\" at byte {c.i}: expected {what}")
+}
+
+const fn is_alpha(b: u8) -> bool { (b >= b'a' && b <= b'z') || (b >= b'A' && b <= b'Z') }
+const fn is_digit(b: u8) -> bool { b >= b'0' && b <= b'9' }
+
+const fn name(ref c: Cursor) throws (ValueError) -> str {
+    let start = c.i;
+    if c.peek() == b'<' {
+        c.i += 1;
+        let from = c.i;
+        while !c.done() && c.peek() != b'>' {
+            let b = c.peek();
+            if !(is_alpha(b) || is_digit(b) || b == b'+' || b == b'-') { throw fail(c, "a letter, digit, `+` or `-` in a `<..>` name"); }
+            c.i += 1;
+        }
+        if c.done() { throw fail(c, "`>`"); }
+        let n = c.s[from:c.i];
+        c.i += 1;
+        if n.len() < 3 { throw fail(Cursor { s: c.s, i: start }, "a name of at least 3 characters"); }
+        return n;
+    }
+    while !c.done() && is_alpha(c.peek()) { c.i += 1; }
+    if c.i - start < 3 { throw fail(Cursor { s: c.s, i: start }, "a zone name of at least 3 letters"); }
+    c.s[start:c.i]
+}
+
+const fn digits(ref c: Cursor, max: usize, what: str) throws (ValueError) -> i32 {
+    let start = c.i;
+    let n = 0;
+    while !c.done() && is_digit(c.peek()) && c.i - start < max {
+        n = n * 10 + (c.peek() - b'0') as i32;
+        c.i += 1;
+    }
+    if c.i == start { throw fail(c, what); }
+    n
+}
+
+/// `[+-]h[:mm[:ss]]` in seconds, hours up to `max_h`.
+const fn hms(ref c: Cursor, max_h: i32) throws (ValueError) -> i32 {
+    let neg = false;
+    if c.peek() == b'+' || c.peek() == b'-' {
+        neg = c.peek() == b'-';
+        c.i += 1;
+    }
+    let at = c.i;
+    let h = try digits(ref c, 3, "hours");
+    if h > max_h { throw fail(Cursor { s: c.s, i: at }, f"hours of at most {max_h}"); }
+    let s = h * 3600;
+    if c.peek() == b':' {
+        c.i += 1;
+        let m = try digits(ref c, 2, "minutes");
+        if m > 59 { throw fail(c, "minutes 00..=59"); }
+        s += m * 60;
+        if c.peek() == b':' {
+            c.i += 1;
+            let sec = try digits(ref c, 2, "seconds");
+            if sec > 59 { throw fail(c, "seconds 00..=59"); }
+            s += sec;
+        }
+    }
+    if neg { -s } else { s }
+}
+
+const fn day(ref c: Cursor) throws (ValueError) -> RuleDay {
+    if c.peek() == b'J' {
+        c.i += 1;
+        let n = try digits(ref c, 3, "a day 1..=365 after `J`");
+        if n < 1 || n > 365 { throw fail(c, "a day 1..=365 after `J`"); }
+        return RuleDay { kind: 0, n, month: 0, week: 0, wday: 0 };
+    }
+    if c.peek() == b'M' {
+        c.i += 1;
+        let m = try digits(ref c, 2, "a month 1..=12 after `M`");
+        if m < 1 || m > 12 { throw fail(c, "a month 1..=12 after `M`"); }
+        if c.peek() != b'.' { throw fail(c, "`.` after the month"); }
+        c.i += 1;
+        let w = try digits(ref c, 1, "a week 1..=5");
+        if w < 1 || w > 5 { throw fail(c, "a week 1..=5"); }
+        if c.peek() != b'.' { throw fail(c, "`.` after the week"); }
+        c.i += 1;
+        let d = try digits(ref c, 1, "a weekday 0..=6 (0 is Sunday)");
+        if d > 6 { throw fail(c, "a weekday 0..=6 (0 is Sunday)"); }
+        return RuleDay { kind: 2, n: 0, month: m, week: w, wday: d };
+    }
+    let n = try digits(ref c, 3, "`J`, `M` or a day 0..=365");
+    if n > 365 { throw fail(c, "a day 0..=365"); }
+    RuleDay { kind: 1, n, month: 0, week: 0, wday: 0 }
+}
+
+const fn day_time(ref c: Cursor) throws (ValueError) -> (RuleDay, i32) {
+    let d = try day(ref c);
+    let t = 7200;
+    if c.peek() == b'/' {
+        c.i += 1;
+        t = try hms(ref c, 167);
+    }
+    (d, t)
+}
+
+// The US rules, which POSIX leaves to the system and glibc uses.
+const US_START: RuleDay = RuleDay { kind: 2, n: 0, month: 3, week: 2, wday: 0 };
+const US_END: RuleDay = RuleDay { kind: 2, n: 0, month: 11, week: 1, wday: 0 };
+
+/// Parse a POSIX `TZ` rule such as `JST-9` or `CET-1CEST,M3.5.0,M10.5.0/3`.
+pub(pkg) const fn parse_rule(s: str) throws (ValueError) -> Rule {
+    let c = Cursor { s, i: 0 };
+    let std_abbr = try name(ref c);
+    if c.done() { throw fail(c, "an offset after the zone name (`EST5`)"); }
+    let std_off = -(try hms(ref c, 24));
+    let r = Rule {
+        std_abbr, std_off, has_dst: false, dst_abbr: "", dst_off: std_off,
+        start: US_START, start_time: 7200, end: US_END, end_time: 7200,
+    };
+    if c.done() { return r; }
+    r.has_dst = true;
+    r.dst_abbr = try name(ref c);
+    r.dst_off = std_off + 3600;
+    if !c.done() && c.peek() != b',' { r.dst_off = -(try hms(ref c, 24)); }
+    if c.done() { return r; }
+    if c.peek() != b',' { throw fail(c, "`,` before the start rule"); }
+    c.i += 1;
+    let (sd, st) = try day_time(ref c);
+    if c.peek() != b',' { throw fail(c, "`,` before the end rule"); }
+    c.i += 1;
+    let (ed, et) = try day_time(ref c);
+    if !c.done() { throw fail(c, "the end of the rule"); }
+    r.start = sd;
+    r.start_time = st;
+    r.end = ed;
+    r.end_time = et;
+    r
+}
+
+/// Unix days of rule day `d` in `year`.
+const fn rule_day(d: RuleDay, year: i32) -> i64 {
+    let jan1 = days_from_civil(year, 1, 1);
+    if d.kind == 0 {
+        let extra = if is_leap_year(year) && d.n >= 60 { 1 } else { 0 };
+        return jan1 + (d.n as i64) - 1 + extra;
+    }
+    if d.kind == 1 { return jan1 + (d.n as i64); }
+    let first = days_from_civil(year, d.month, 1);
+    let wd1 = ((first + 4) %% 7) as i32;
+    let dom = 1 + (d.wday - wd1 + 7) % 7 + (d.week - 1) * 7;
+    let dim = days_in_month(year, d.month);
+    while dom > dim { dom -= 7; }
+    first + (dom as i64) - 1
+}
+
+impl Rule {
+    pub(pkg) const fn std_off(self) -> i32 { self.std_off }
+
+    /// DST start and end of `year` as unix seconds.
+    const fn bounds(self, year: i32) -> (i64, i64) {
+        let s = rule_day(self.start, year) * 86400 + (self.start_time as i64) - (self.std_off as i64);
+        let e = rule_day(self.end, year) * 86400 + (self.end_time as i64) - (self.dst_off as i64);
+        (s, e)
+    }
+
+    pub(pkg) const fn in_dst(self, t: i64) -> bool {
+        if !self.has_dst { return false; }
+        let y = civil_from_days(fdiv(t + (self.std_off as i64), 86400)).year();
+        let (s, e) = self.bounds(y);
+        if s < e { s <= t && t < e } else { !(e <= t && t < s) }
+    }
+
+    /// Offset and abbreviation at unix second `t`.
+    pub(pkg) const fn at(self, t: i64) -> (i32, str) {
+        if self.in_dst(t) { (self.dst_off, self.dst_abbr) } else { (self.std_off, self.std_abbr) }
+    }
+
+    /// The changes of years `y0..=y1`, in order.
+    pub(pkg) const fn changes(self, y0: i32, y1: i32) -> List<Change> {
+        let out: List<Change> = List::new();
+        if !self.has_dst || self.std_off == self.dst_off { return out; }
+        for y in y0..=y1 {
+            let (s, e) = self.bounds(y);
+            if s < e {
+                out.push(Change::new(s, self.std_off, self.dst_off));
+                out.push(Change::new(e, self.dst_off, self.std_off));
+            } else {
+                out.push(Change::new(e, self.dst_off, self.std_off));
+                out.push(Change::new(s, self.std_off, self.dst_off));
+            }
+        }
+        out
+    }
+}

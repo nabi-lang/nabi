@@ -1,0 +1,4 @@
+# `NABION` is a name (Nabi Object Notation), not code.
+doc-valid-idents = ["NABION", ".."]
+# `NabiDiagnostic` (128 bytes) is the error type throughout.
+large-error-threshold = 136

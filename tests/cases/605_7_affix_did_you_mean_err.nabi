@@ -1,0 +1,21 @@
+// expect-error: 17:15: unknown numeric literal suffix `Hz`
+// expect-error: help: did you mean `10hz`?
+// expect-error: 18:13: `95%` is not a percentage: `%` is the remainder operator (`a % b`), and a number suffix is a name
+// expect-error: help: write `95pct`
+// expect-error: 19:13: unknown string literal prefix `dat`: no `#[literal("dat" string)]` handler is in scope
+// expect-error: help: did you mean `date`?
+// expect-error: 20:14: `5°`: a number suffix is a name glued to the number, and `°` (U+00B0 DEGREE SIGN) is not a name character
+
+#[literal(number "hz")]
+const fn hz(n: f64) -> f64 { n }
+#[literal(number "pct")]
+const fn pct(n: f64) -> f64 { n / 100.0 }
+#[literal("date" string)]
+const fn date(s: str) -> str { s }
+
+fn main() {
+    let a = 10Hz;
+    let b = 95%;
+    let c = dat"2024-01-15";
+    let d = 5°;
+}

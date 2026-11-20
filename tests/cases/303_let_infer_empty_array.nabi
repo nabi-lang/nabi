@@ -1,0 +1,4 @@
+// expect-error: cannot infer the type of `xs`
+
+// An empty list literal (`[]` is a `List`) has no element type; annotate it.
+let xs = [];

@@ -1,0 +1,29 @@
+// expect-error: function `wake_io` is internal to the Nabi toolchain: only `bare`, `core` and `std` may use it
+// expect-error: = help: it is compiler-only: no public item replaces it, so remove the use
+// expect-error: function `hand_over` is internal to the Nabi toolchain
+// expect-error: function `host_enter` is internal to the Nabi toolchain
+// expect-error: function `host_run` is internal to the Nabi toolchain
+// expect-error: function `readable` is internal to the Nabi toolchain
+// expect-error: `#[internal]` on `helper`
+// forbid-error: deprecated
+
+// `#[internal]` items are shared by bare, core and std only: a call or a
+// function value from any other package is an error. Std's own uses,
+// in generic bodies this package instantiates (`thread::spawn`), are not.
+use core::marker::hand_over;
+use std::thread;
+
+#[internal]
+fn helper() {}
+
+fn main() {
+    task::wake_io(3);
+    let x = hand_over::<i32>(5);
+    let f = task::host_enter;
+    let _ = task::host_run;
+    let _ = task::readable;
+    f();
+    helper();
+    let t = thread::spawn(|| [x]);
+    println(f"{try! t.join():?}");
+}

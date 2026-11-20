@@ -1,0 +1,922 @@
+//! core::collections::list - `List<T>`, a growable array: one
+//! object holding the length, the capacity and the current element
+//! buffer, swapped for a bigger one on growth. The buffer has one slot
+//! past the capacity that is never written: a zero `T` that vacated
+//! slots are overwritten with, so the list keeps no removed value alive.
+
+mod edit;
+
+use core::marker::{Memo, Transfer, buf_is_null, copy_shared};
+
+/// A growable array; copies share one buffer.
+pub struct List<T> {
+    h: GcBuf<ListHead<T>>;
+}
+
+struct ListHead<T> {
+    len: usize;
+    cap: usize;
+    buf: GcBuf<T>;
+    /// Bumped by every resize: a `SliceMut` made before one is stale.
+    /// `VIEWED` is set once a `SliceMut` was made.
+    ver: usize;
+}
+
+/// The `ver` bit of a list that has had a `SliceMut`: its buffer may
+/// still be written through a stale view.
+const VIEWED: usize = !(usize::MAX >> 1);
+
+impl List<str> {
+    /// The items with `sep` between each two: `["a", "b"].join(", ")`.
+    pub const fn join(self, sep: str) -> str {
+        let b = StrBuf::new();
+        for (i, s) in self.iter().enumerate() {
+            if i > 0 {
+                b.push_str(sep);
+            }
+            b.push_str(s);
+        }
+        b.to_str()
+    }
+}
+
+// Copies of a collection handle share one mutable buffer with no lock,
+// so a collection cannot be shared between threads:
+// share it through `Mutex` / `RwLock` / a channel.
+impl<T> !Sync for List<T> {}
+
+impl<T> List<T> {
+    /// An empty list with room for 4 elements.
+    pub const fn new() -> List<T> {
+        List::with_capacity(4)
+    }
+
+    /// An empty list with room for `cap` elements.
+    #[track_caller]
+    pub const fn with_capacity(cap: usize) -> List<T> {
+        unsafe {
+            let h: GcBuf<ListHead<T>> = buf_new(1);
+            h[0] = ListHead { len: 0, cap, buf: buf_new(buf_len(cap_add(cap, 1), size_of::<T>())), ver: 0 };
+            List { h }
+        }
+    }
+
+    /// `n` copies of `x` (a read buffer: `List::filled(n, 0u8)`).
+    #[track_caller]
+    pub const fn filled(n: usize, x: T) -> List<T> {
+        let out: List<T> = List::with_capacity(n);
+        unsafe { out.set_len(n) };
+        out.fill(x);
+        out
+    }
+
+    /// `n` items, item `i` being `f(i)`.
+    pub const fn from_fn(n: usize, f: fn(usize) -> T) -> List<T> {
+        let out: List<T> = List::with_capacity(n);
+        unsafe { out.set_len(n) };
+        for i in 0..n {
+            out[i] = f(i);
+        }
+        out
+    }
+
+    /// The number of elements.
+    pub const fn len(self) -> usize {
+        unsafe {
+            self.h[0].len
+        }
+    }
+
+    /// `true` when the list has no element.
+    pub const fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    /// Elements the list holds before it grows.
+    pub const fn capacity(self) -> usize {
+        unsafe {
+            self.h[0].cap
+        }
+    }
+
+    /// The current element buffer (`Slice` views it).
+    pub(pkg) const fn buffer(self) -> GcBuf<T> {
+        unsafe {
+            self.h[0].buf
+        }
+    }
+
+    /// A list of the first `len` elements of `buf`, sharing it (an
+    /// array's, `Array::as_list`); `buf` holds `len + 1` slots at least,
+    /// as a list's own does.
+    pub(pkg) const unsafe fn share(buf: GcBuf<T>, len: usize) -> List<T> {
+        unsafe {
+            let h: GcBuf<ListHead<T>> = buf_new(1);
+            h[0] = ListHead { len, cap: len, buf, ver: 0 };
+            List { h }
+        }
+    }
+
+    /// The resize count `SliceMut` checks its views against.
+    pub(pkg) const fn version(self) -> usize {
+        unsafe {
+            self.h[0].ver
+        }
+    }
+
+    /// Note that a `SliceMut` of the list is made (before its version
+    /// is read for it).
+    pub(pkg) const fn mark_viewed(self) {
+        unsafe {
+            if self.h[0].ver & VIEWED == 0 {
+                self.h[0].ver = self.h[0].ver | VIEWED;
+            }
+        }
+    }
+
+    /// A new length `n`: a resize.
+    const fn resize_to(self, n: usize) {
+        unsafe {
+            self.h[0].len = n;
+            self.h[0].ver = self.h[0].ver.wrapping_add(1);
+        }
+    }
+
+    /// A new buffer: a resize, though the length stays.
+    const fn bump(self) {
+        unsafe {
+            self.h[0].ver = self.h[0].ver.wrapping_add(1);
+        }
+    }
+
+    /// Room for `additional` more elements (doubling).
+    #[track_caller]
+    pub const fn reserve(self, additional: usize) {
+        unsafe {
+            let n = self.len();
+            let cap = self.capacity();
+            let need = cap_add(n, additional);
+            if need <= cap {
+                return;
+            }
+            let new_cap = cap.saturating_mul(2).max(need);
+            let old = self.h[0].buf;
+            // C may hold the pinned buffer's address: it must stay.
+            if cap > 0 && nabi_gc_pinned(buf_erase(old)) != 0 {
+                panic("cannot grow a list while it is pinned (C may hold its address): call `xs.reserve(n)` before `gc::pin(xs)`");
+            }
+            let store: GcBuf<T> = buf_new(buf_len(cap_add(new_cap, 1), size_of::<T>()));
+            for i in 0..n {
+                store[i] = old[i];
+            }
+            self.h[0].buf = store;
+            self.bump();
+            self.h[0].cap = new_cap;
+        }
+    }
+
+    /// Capacity cut down to the length.
+    pub const fn shrink_to_fit(self) {
+        unsafe {
+            let n = self.len();
+            if n == self.capacity() {
+                return;
+            }
+            let old = self.h[0].buf;
+            let store: GcBuf<T> = buf_new(buf_len(cap_add(n, 1), size_of::<T>()));
+            for i in 0..n {
+                store[i] = old[i];
+            }
+            self.h[0].buf = store;
+            self.bump();
+            self.h[0].cap = n;
+        }
+    }
+
+    /// The elements in reverse order, in place.
+    pub const fn reverse(self) {
+        unsafe {
+            let store = self.h[0].buf;
+            let n = self.len();
+            for i in 0..n / 2 {
+                let x = store[i];
+                store[i] = store[n - 1 - i];
+                store[n - 1 - i] = x;
+            }
+        }
+    }
+
+    /// Push every item of `items`, in order.
+    pub const fn extend<I: IntoIterator<Item = T>>(self, items: I) {
+        for x in items {
+            self.push(x);
+        }
+    }
+
+    /// Append `x` at the end, growing the buffer as needed.
+    #[inline]
+    pub const fn push(self, x: T) {
+        unsafe {
+            let n = self.len();
+            if n == self.capacity() {
+                return self.push_grown(x);
+            }
+            self.h[0].buf[n] = x;
+            self.resize_to(n + 1);
+        }
+    }
+
+    /// `push` into a full list, out of line: a `push` that fits reaches
+    /// no safepoint, so it keeps no frame.
+    #[cold]
+    const fn push_grown(self, x: T) {
+        unsafe {
+            // One read of the length: the slot written and the new length
+            // agree, and `reserve` made room past it.
+            let n = self.len();
+            self.reserve(1);
+            self.h[0].buf[n] = x;
+            self.resize_to(n + 1);
+        }
+    }
+
+    /// Remove and return the last element; `none` when empty.
+    #[discardable]
+    pub const fn pop(self) -> T | none {
+        unsafe {
+            let n = self.len();
+            if n == 0 {
+                return none;
+            }
+            let store = self.h[0].buf;
+            let x = store[n - 1];
+            self.vacate(store, n - 1);
+            self.resize_to(n - 1);
+            x
+        }
+    }
+
+    /// Overwrite slot `i` of `store` (this list's buffer) with the zero
+    /// slot past the capacity.
+    const unsafe fn vacate(self, store: GcBuf<T>, i: usize) {
+        store[i] = store[self.capacity()];
+    }
+
+    /// Element `idx`, or `none` out of bounds.
+    pub const fn get(self, idx: usize) -> T | none {
+        unsafe {
+            if idx >= self.len() {
+                return none;
+            }
+            self.h[0].buf[idx]
+        }
+    }
+
+    /// The first element; `none` when empty.
+    pub const fn first(self) -> T | none {
+        self.get(0)
+    }
+
+    /// The last element; `none` when empty.
+    pub const fn last(self) -> T | none {
+        let n = self.len();
+        if n == 0 {
+            return none;
+        }
+        self.get(n - 1)
+    }
+
+    /// Insert `x` at `idx`, shifting the later elements right; panics when
+    /// `idx > len()`.
+    #[track_caller]
+    pub const fn insert(self, idx: usize, x: T) {
+        unsafe {
+            let n = self.len();
+            if idx > n {
+                index_oob("List::insert: index", idx, n);
+            }
+            self.reserve(1);
+            let store = self.h[0].buf;
+            let i = n;
+            while i > idx {
+                store[i] = store[i - 1];
+                i -= 1;
+            }
+            store[idx] = x;
+            self.resize_to(n + 1);
+        }
+    }
+
+    /// Remove and return the element at `idx`, shifting the later ones left;
+    /// panics when `idx >= len()`.
+    #[track_caller]
+    #[discardable]
+    pub const fn remove(self, idx: usize) -> T {
+        unsafe {
+            let n = self.len();
+            if idx >= n {
+                return index_oob("List::remove: index", idx, n);
+            }
+            let store = self.h[0].buf;
+            let x = store[idx];
+            for i in idx + 1..n {
+                store[i - 1] = store[i];
+            }
+            self.vacate(store, n - 1);
+            self.resize_to(n - 1);
+            x
+        }
+    }
+
+    /// Remove every element; the capacity stays.
+    pub const fn clear(self) {
+        unsafe {
+            let store = self.h[0].buf;
+            for i in 0..self.len() {
+                self.vacate(store, i);
+            }
+            self.resize_to(0);
+        }
+    }
+
+    /// Keep the first `len` elements (no change if there are fewer).
+    pub const fn truncate(self, len: usize) {
+        unsafe {
+            let n = self.len();
+            if len >= n {
+                return;
+            }
+            let store = self.h[0].buf;
+            for i in len..n {
+                self.vacate(store, i);
+            }
+            self.resize_to(len);
+        }
+    }
+
+    /// Remove the elements in `r` and return them, in order; the rest
+    /// close up. Panics if `r` is reversed or ends past the length.
+    #[track_caller]
+    #[discardable]
+    pub const fn drain(self, r: Range<usize>) -> List<T> {
+        unsafe {
+            let n = self.len();
+            if r.start > r.end || r.end > n {
+                panic(f"List::drain: range {r.start}..{r.end} out of bounds for length {n}");
+            }
+            let k = r.end - r.start;
+            let out: List<T> = List::with_capacity(k);
+            let store = self.h[0].buf;
+            for i in r.start..r.end {
+                out.push(store[i]);
+            }
+            for i in r.end..n {
+                store[i - k] = store[i];
+            }
+            for i in n - k..n {
+                self.vacate(store, i);
+            }
+            self.resize_to(n - k);
+            out
+        }
+    }
+
+    /// Set the length to `n` (at most the capacity) without writing
+    /// elements, for a buffer filled in place: elements past the old
+    /// length hold whatever the storage held (zero: vacated slots are
+    /// zeroed). Shrinking this way leaves the cut elements in place.
+    #[track_caller]
+    pub const unsafe fn set_len(self, n: usize) {
+        if n > self.capacity() {
+            panic("List::set_len: past the capacity");
+        }
+        self.resize_to(n);
+    }
+
+    /// The elements front to back.
+    pub const fn iter(self) -> ListIter<T> {
+        ListIter { list: self, front: 0, back: 0 }
+    }
+
+    /// Keep only the elements `keep` accepts, in order, in place; O(n).
+    pub const fn retain(self, keep: fn(T) -> bool) {
+        unsafe {
+            let store = self.h[0].buf;
+            let n = self.len();
+            let w: usize = 0;
+            for r in 0..n {
+                let x = store[r];
+                if keep(x) {
+                    store[w] = x;
+                    w += 1;
+                }
+            }
+            self.truncate(w);
+        }
+    }
+
+    /// Overwrite every element with `x`.
+    pub const fn fill(self, x: T) {
+        unsafe {
+            let store = self.h[0].buf;
+            for i in 0..self.len() {
+                store[i] = x;
+            }
+        }
+    }
+
+    /// Exchange elements `i` and `j`; panics out of bounds.
+    #[track_caller]
+    pub const fn swap(self, i: usize, j: usize) {
+        unsafe {
+            let n = self.len();
+            if i >= n {
+                index_oob("List::swap: index", i, n);
+            }
+            if j >= n {
+                index_oob("List::swap: index", j, n);
+            }
+            let store = self.h[0].buf;
+            let x = store[i];
+            store[i] = store[j];
+            store[j] = x;
+        }
+    }
+
+    /// Views of `[0, mid)` and `[mid, len)`; panics if `mid` is past the
+    /// length.
+    #[track_caller]
+    pub const fn split_at(self, mid: usize) -> (Slice<T>, Slice<T>) {
+        self[:].split_at(mid)
+    }
+
+    /// Views of `size` consecutive elements, sliding by one (`size` > 0).
+    #[track_caller]
+    pub const fn windows(self, size: usize) -> slice::Windows<T> {
+        self[:].windows(size)
+    }
+
+    /// Views of `size` elements in order, the last one shorter
+    /// (`size` > 0).
+    #[track_caller]
+    pub const fn chunks(self, size: usize) -> slice::Chunks<T> {
+        self[:].chunks(size)
+    }
+
+    /// Writable views of `[0, mid)` and `[mid, len)`; panics if `mid`
+    /// is past the length.
+    #[track_caller]
+    pub const fn split_at_mut(self, mid: usize) -> (SliceMut<T>, SliceMut<T>) {
+        slice::view_mut_of(self, 0..self.len()).split_at(mid)
+    }
+
+    /// Writable views of `size` elements in order, the last one shorter
+    /// (`size` > 0). They do not overlap, so `par::for_each` may give
+    /// each to its own worker: `par::for_each(xs.chunks_mut(n), |c| ..)`.
+    #[track_caller]
+    pub const fn chunks_mut(self, size: usize) -> slice::ChunksMut<T> {
+        slice::view_mut_of(self, 0..self.len()).chunks_mut(size)
+    }
+
+    /// The list's storage moved into a new list, `self` left empty
+    /// (and its views stale): `freeze` keeps what no handle reaches. A
+    /// list that had views gives a copy of its elements instead, O(n).
+    pub(pkg) const fn move_out(self) -> List<T> {
+        unsafe {
+            if buf_is_null(self.h) {
+                return List::with_capacity(0);
+            }
+            let h: GcBuf<ListHead<T>> = buf_new(1);
+            let s = self.h[0];
+            h[0] = ListHead { len: s.len, cap: s.cap, buf: s.buf, ver: 0 };
+            if s.ver & VIEWED != 0 {
+                // A stale view may still write the buffer: the new list
+                // gets a copy, and the old buffer stays the views' alone.
+                let buf: GcBuf<T> = buf_new(buf_len(cap_add(s.len, 1), size_of::<T>()));
+                for i in 0..s.len {
+                    buf[i] = s.buf[i];
+                }
+                h[0] = ListHead { len: s.len, cap: s.len, buf, ver: 0 };
+            }
+            self.h[0] = ListHead { len: 0, cap: 0, buf: buf_new(buf_len(1, size_of::<T>())), ver: s.ver.wrapping_add(1) };
+            List { h }
+        }
+    }
+}
+
+impl<T: Send + Sync> List<T> {
+    /// The list as a `FrozenList`, which threads share without a lock
+    /// or a copy. O(1): the frozen list takes the elements over, and
+    /// using `self` after is a compile error (`to_list()` gives a list
+    /// to change again; freeze a `clone()` to keep this one).
+    pub const fn freeze(self) -> FrozenList<T> {
+        FrozenList { xs: self.move_out() }
+    }
+}
+
+impl<T: PartialEq> List<T> {
+    /// `true` when an element equals `x`.
+    pub const fn contains(self, x: T) -> bool {
+        for y in self {
+            if y == x {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Drop each element equal to the one before it, in place: a sorted
+    /// list keeps one of each value.
+    pub const fn dedup(self) {
+        unsafe {
+            let n = self.len();
+            if n < 2 {
+                return;
+            }
+            let store = self.h[0].buf;
+            let w: usize = 1;
+            for r in 1..n {
+                let x = store[r];
+                if x != store[w - 1] {
+                    store[w] = x;
+                    w += 1;
+                }
+            }
+            self.truncate(w);
+        }
+    }
+}
+
+/// Runs this short are insertion-sorted before merging.
+const SORT_RUN: usize = 16;
+
+impl<T: Ord> List<T> {
+    /// Ascending, stable.
+    pub const fn sort(self) {
+        self.sort_by(|a: T, b: T| a.cmp(b));
+    }
+
+    /// The index of the first element equal to `x` in an ascending
+    /// list, or `none`; O(log n).
+    pub const fn binary_search(self, x: T) -> usize | none {
+        self[:].binary_search(x)
+    }
+}
+
+impl<T> List<T> {
+    /// The first index whose element fails `pred`, which must hold for a
+    /// prefix and fail for the rest; O(log n). The insertion point of `x`
+    /// in an ascending list is `xs.partition_point(|e| e < x)`.
+    pub const fn partition_point(self, pred: fn(T) -> bool) -> usize {
+        self[:].partition_point(pred)
+    }
+
+    /// Ascending by `key(x)`, stable; `key` runs twice per comparison.
+    pub const fn sort_by_key<K: Ord>(self, key: fn(T) -> K) {
+        self.sort_by(|a: T, b: T| key(a).cmp(key(b)));
+    }
+
+    /// Stable bottom-up merge sort by `cmp`: O(n log n), n extra slots.
+    pub const fn sort_by(self, cmp: fn(T, T) -> core::cmp::Ordering) {
+        unsafe {
+            sort_region(self.h[0].buf, 0, self.len(), cmp);
+        }
+    }
+}
+
+/// Sort `src[base..base + n]` by `cmp`, stable: insertion-sorted runs
+/// of `SORT_RUN`, then bottom-up merges through `n` extra slots. Shared
+/// by `List` and `SliceMut`.
+pub(pkg) const unsafe fn sort_region<T>(
+    src: GcBuf<T>,
+    base: usize,
+    n: usize,
+    cmp: fn(T, T) -> core::cmp::Ordering,
+) {
+    if n < 2 {
+        return;
+    }
+    let lo: usize = 0;
+    while lo < n {
+        let hi = (lo + SORT_RUN).min(n);
+        for i in lo + 1..hi {
+            let x = src[base + i];
+            let j = i;
+            while j > lo && cmp(src[base + j - 1], x).is_gt() {
+                src[base + j] = src[base + j - 1];
+                j -= 1;
+            }
+            src[base + j] = x;
+        }
+        lo = hi;
+    }
+    if n <= SORT_RUN {
+        return;
+    }
+    // `a` / `b` start at `ao` / `bo`: the region, or the extra slots.
+    let a = src;
+    let ao = base;
+    let b: GcBuf<T> = buf_new(n);
+    let bo: usize = 0;
+    let width = SORT_RUN;
+    while width < n {
+        let start: usize = 0;
+        while start < n {
+            let mid = (start + width).min(n);
+            let end = (start + 2 * width).min(n);
+            let i = start;
+            let j = mid;
+            let k = start;
+            while i < mid && j < end {
+                // Ties take the left run: stable.
+                if cmp(a[ao + j], a[ao + i]).is_lt() {
+                    b[bo + k] = a[ao + j];
+                    j += 1;
+                } else {
+                    b[bo + k] = a[ao + i];
+                    i += 1;
+                }
+                k += 1;
+            }
+            while i < mid {
+                b[bo + k] = a[ao + i];
+                i += 1;
+                k += 1;
+            }
+            while j < end {
+                b[bo + k] = a[ao + j];
+                j += 1;
+                k += 1;
+            }
+            start = end;
+        }
+        let t = a;
+        a = b;
+        b = t;
+        let to = ao;
+        ao = bo;
+        bo = to;
+        width *= 2;
+    }
+    if !buf_same(a, src) {
+        for i in 0..n {
+            src[base + i] = a[ao + i];
+        }
+    }
+}
+
+/// `xs.iter()` / `for x in xs`: walks a list front to back. Its state
+/// is its own (`next(ref self)`): a copy walks on its own.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct ListIter<T> {
+    list: List<T>;
+    /// The next index from the front.
+    front: usize;
+    /// Items taken from the back.
+    back: usize;
+}
+
+impl<T> Debug for ListIter<T> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("ListIter") }
+}
+
+impl<T> Iterator for ListIter<T> {
+    type Item = T;
+    const fn next(ref self) -> T | none {
+        let i = self.front;
+        if i + self.back >= self.list.len() {
+            return none;
+        }
+        self.front = i + 1;
+        self.list.get(i)
+    }
+
+    const fn exact_len(self) -> usize | none { self.len() }
+
+    /// `ExactSizeIterator`: O(1).
+    const fn count(self) -> usize { self.len() }
+}
+
+impl<T> DoubleEndedIterator for ListIter<T> {
+    const fn next_back(ref self) -> T | none {
+        let back = self.back;
+        if self.front + back >= self.list.len() {
+            return none;
+        }
+        self.back = back + 1;
+        self.list.get(self.list.len() - back - 1)
+    }
+}
+
+impl<T> ExactSizeIterator for ListIter<T> {
+    const fn len(self) -> usize {
+        self.list.len().saturating_sub(self.front + self.back)
+    }
+}
+
+/// What `xs.into_iter()` returns: the same walk as `iter`.
+pub type ListIntoIter<T> = ListIter<T>;
+
+impl<T> IntoIterator for List<T> {
+    type IntoIter = ListIntoIter<T>;
+    type Item = T;
+    const fn into_iter(self) -> ListIntoIter<T> {
+        self.iter()
+    }
+}
+
+impl<T> Default for List<T> {
+    const fn default() -> List<T> { List::new() }
+}
+
+/// A new list with every element cloned.
+impl<T: Clone> Clone for List<T> {
+    const fn clone(self) -> List<T> {
+        let r: List<T> = List::new();
+        for x in self {
+            r.push(x.clone());
+        }
+        r
+    }
+}
+
+/// `xs[i]`; panics out of bounds.
+impl<T> Index<usize> for List<T> {
+    type Output = T;
+    #[track_caller]
+    const fn index(self, idx: usize) -> T {
+        unsafe {
+            if idx >= self.len() {
+                return index_oob("index", idx, self.len());
+            }
+            self.h[0].buf[idx]
+        }
+    }
+}
+
+/// `xs[i] = v`; panics out of bounds.
+impl<T> IndexSet<usize, T> for List<T> {
+    #[track_caller]
+    const fn index_set(self, idx: usize, value: T) {
+        unsafe {
+            if idx >= self.len() {
+                index_oob("index", idx, self.len());
+            }
+            self.h[0].buf[idx] = value;
+        }
+    }
+}
+
+/// `it.collect()` into a list.
+impl<T> FromIterator<T> for List<T> {
+    const fn from_iter<I: IntoIterator<Item = T>>(it: I) -> List<T> {
+        let out: List<T> = List::new();
+        for x in it {
+            out.push(x);
+        }
+        out
+    }
+}
+
+/// Element-wise, in order.
+impl<T: PartialEq> PartialEq for List<T> {
+    const fn eq(self, rhs: List<T>) -> bool {
+        let n = self.len();
+        if n != rhs.len() { return false; }
+        for i in 0..n {
+            if self[i] != rhs[i] { return false; }
+        }
+        true
+    }
+    const fn ne(self, rhs: List<T>) -> bool { !self.eq(rhs) }
+}
+
+impl<T: Eq> Eq for List<T> {}
+
+/// Lexicographic: the first differing element decides,
+/// else the shorter list comes first.
+impl<T: PartialEq + PartialOrd> PartialOrd for List<T> {
+    const fn lt(self, rhs: List<T>) -> bool {
+        let n = self.len().min(rhs.len());
+        for i in 0..n {
+            if self[i] != rhs[i] { return self[i] < rhs[i]; }
+        }
+        self.len() < rhs.len()
+    }
+    const fn le(self, rhs: List<T>) -> bool {
+        let n = self.len().min(rhs.len());
+        for i in 0..n {
+            if self[i] != rhs[i] { return self[i] < rhs[i]; }
+        }
+        self.len() <= rhs.len()
+    }
+    const fn gt(self, rhs: List<T>) -> bool { rhs.lt(self) }
+    const fn ge(self, rhs: List<T>) -> bool { rhs.le(self) }
+}
+
+impl<T: Ord> Ord for List<T> {
+    const fn cmp(self, rhs: List<T>) -> core::cmp::Ordering {
+        let n = self.len().min(rhs.len());
+        for i in 0..n {
+            let c = self[i].cmp(rhs[i]);
+            if !c.is_eq() { return c; }
+        }
+        self.len().cmp(rhs.len())
+    }
+}
+
+/// The length, then the items in order.
+impl<T: Hash> Hash for List<T> {
+    const fn hash<H: Hasher>(self, ref h: H) {
+        h.write_length_prefix(self.len());
+        for x in self {
+            x.hash(ref h);
+        }
+    }
+}
+
+/// `[a, b, c]` with each element's `Debug`.
+impl<T: Debug> Debug for List<T> {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str("[");
+        let first = true;
+        for x in self {
+            try f.debug_entry("", x, first, false);
+            first = false;
+        }
+        try f.debug_close("]", first, false)
+    }
+}
+
+/// `[a, b, c]`: a `List` - a fixed array only in a
+/// `[T; N]` slot, which the compiler builds itself.
+#[literal("[" {expr} % "," * "]")]
+pub(pkg) const fn list_literal<T>(items: ...T) -> List<T> {
+    let l: List<T> = List::new();
+    for x in items {
+        l.push(x);
+    }
+    return l;
+}
+
+/// `xs += x`: push.
+impl<T> AddAssign<T> for List<T> {
+    const fn add_assign(ref self, rhs: T) {
+        self.push(rhs);
+    }
+}
+
+/// `xs += ys`: append every element of `ys`, in place.
+impl<T> AddAssign<List<T>> for List<T> {
+    const fn add_assign(ref self, rhs: List<T>) {
+        for x in rhs {
+            self.push(x);
+        }
+    }
+}
+
+/// A hand-off's copy: a new head and buffer; the
+/// elements go through `transfer` from the memo's queue.
+impl<T> Transfer for List<T> {
+    const fn transfer_copy(self, m: Memo) -> List<T> {
+        if buf_is_null(self.h) {
+            return self;
+        }
+        if let got: GcBuf<ListHead<T>> = m.find(self.h) {
+            return List { h: got };
+        }
+        unsafe {
+            let s = self.h[0];
+            let h: GcBuf<ListHead<T>> = buf_new(1);
+            m.note(self.h, h);
+            let buf = copy_shared(s.buf, s.len, cap_add(s.cap, 1), m);
+            h[0] = ListHead { len: s.len, cap: s.cap, buf, ver: s.ver };
+            List { h }
+        }
+    }
+
+    const fn transfer_keep(self, m: Memo) -> List<T> {
+        if !buf_is_null(self.h) {
+            m.keep(self.h);
+            unsafe { m.keep(self.h[0].buf) };
+        }
+        self
+    }
+
+    /// The buffer stands for the list (and every view of it); an empty
+    /// list without one, by its head.
+    const fn transfer_visit(self, m: Memo) -> List<T> {
+        if buf_is_null(self.h) {
+            return self;
+        }
+        unsafe {
+            let s = self.h[0];
+            if s.cap == 0 || buf_is_null(s.buf) {
+                let _ = m.visit(self.h);
+            } else if m.visit(s.buf) {
+                m.later_visit(s.buf, s.len);
+            }
+        }
+        self
+    }
+}

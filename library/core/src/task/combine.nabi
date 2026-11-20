@@ -1,0 +1,265 @@
+// core::task::combine: `spawn_local` and combining tasks: `join`,
+// `race`, `select`.
+
+use core::collections::raw::{GcBuf, buf_new, buf_same};
+use core::future::{Context, Future, Poll, Waker};
+use core::rt::{atomic_load, atomic_xchg};
+use core::sync::Mutex;
+use core::task::handle::{cancel_by, task_result};
+use core::task::parking::unpark_task;
+use core::task::{BY_RACE, DONE, Task, TaskRef, Worker, current_worker, is_done, join_later, make_task, poll_fn, pop_front, push, remove_timers, schedule};
+
+/// Where a `spawn_local` from `w` lives: `w`, unless `w` is a guest
+/// polling a task that is not its own. A guest leaves once its own tasks
+/// are done, so `block_on` would wait for that task's locals too (a
+/// connection's reader and writer: forever); they go to a pool worker,
+/// the same one for every local of that poll (they share its values).
+fn local_home(w: Worker) -> Worker {
+    if !w.guest || w.pool.solo || w.pool.workers() == 0 {
+        return w;
+    }
+    unsafe {
+        if let t: TaskRef = w.running[0] {
+            if let h: Worker = t.home[0] {
+                if buf_same(h.locals, w.locals) { return w; }
+            }
+            if w.lend[0] > 0 && w.lend[0] <= w.pool.workers() {
+                return w.pool.workers[w.lend[0] - 1];
+            }
+            let l = w.pool.home_for();
+            w.lend[0] = l.index + 1;
+            return l;
+        }
+    }
+    w
+}
+
+/// Start the locals `w` held while it polled a task it does not own.
+pub(pkg) fn release_lent(w: Worker) {
+    unsafe {
+        w.lend[0] = 0;
+        while let t: TaskRef = pop_front(w.lent) {
+            schedule(t);
+        }
+    }
+}
+
+/// Run `fut` as a new task on this worker only (it need not be `Send`).
+/// From a task a `block_on` thread happens to poll, that is one pool
+/// worker, and the task starts once that poll ends.
+pub fn spawn_local<F: Future>(fut: F) -> Task<F::Output> {
+    unsafe {
+        let w = current_worker();
+        let h = local_home(w);
+        let slot: GcBuf<F::Output> = buf_new(1);
+        let t = make_task(poll_fn(fut, slot), h);
+        if buf_same(h.locals, w.locals) {
+            schedule(t);
+        } else {
+            push(w.lent, t);
+        }
+        Task { task: t, slot: slot }
+    }
+}
+
+/// Every task's result, in order.
+pub async fn join<I: IntoIterator<Item = Task<T>>, T>(tasks: I) -> List<T> {
+    let out: List<T> = List::new();
+    for t in tasks {
+        out.push(await t);
+    }
+    out
+}
+
+/// The result of whichever task finishes first; ties go to the
+/// earlier one. The others are cancelled (by the time `race` returns
+/// they may still run their cleanups), and so are all of them when the
+/// awaiting task is. Panics on no tasks.
+pub async fn race<I: IntoIterator<Item = Task<T>>, T>(tasks: I) -> T {
+    let list: List<Task<T>> = List::new();
+    for t in tasks {
+        list.push(t);
+    }
+    if list.len() == 0 {
+        panic("task::race of no tasks");
+    }
+    let won: usize = list.len();
+    // The losers are cancelled however this ends, the awaiting task's
+    // cancellation included.
+    let _ = { won = await FirstDone { tasks: list }; } finally {
+        for i in 0..list.len() {
+            if i != won && !is_done(list[i].task) {
+                cancel_by(list[i].task, BY_RACE);
+            }
+        }
+    };
+    task_result(list[won])
+}
+
+/// The first of `futs` to complete, with its index: `let (i, v) = await
+/// task::select([a, b])`. Unlike `race` the futures are not spawned: they run inside
+/// the awaiting task, polled in list order (ties go to the lower index).
+/// The futures share one type: `async { .. }` blocks with the same
+/// output do (wrap differing outputs, `async { Msg::A(await a) }`).
+/// Once one completes, every other one that has started is polled once
+/// more as cancelled (its `await` leaves through `finally` / `using`, as
+/// for `Task::cancel`) and dropped; one whose cleanups await goes on as a
+/// task of its own until they end, and `select` does not wait for it.
+/// Panics on no futures.
+#[track_caller]
+pub const fn select<I: IntoIterator<Item = F>, F: Future>(iter: I) -> SelectFuture<F> {
+    unsafe {
+        let futs: List<F> = List::new();
+        for f in iter {
+            futs.push(f);
+        }
+        if futs.len() == 0 {
+            panic("task::select of no futures");
+        }
+        let started: GcBuf<bool> = buf_new(futs.len());
+        let proxy: GcBuf<TaskRef | none> = buf_new(1);
+        SelectFuture { futs: futs, started: started, proxy: proxy }
+    }
+}
+
+/// The future `select` returns: `(index, output)` of the first future to
+/// complete.
+#[must_use("future is never awaited, so its body never runs: write `await {}`")]
+pub struct SelectFuture<F> {
+    futs: List<F>;
+    started: GcBuf<bool>;
+    /// The children's waker (`proxy_task`), made at the first poll: what
+    /// they register (parking, timers) is dropped when `select` ends.
+    proxy: GcBuf<TaskRef | none>;
+}
+
+impl<F> Debug for SelectFuture<F> {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("SelectFuture") }
+}
+
+impl<F: Future> Future for SelectFuture<F> {
+    type Output = (usize, F::Output);
+    fn poll(ref self, ref ctx: Context) -> Poll<(usize, F::Output)> {
+        unsafe {
+            let p = match self.proxy[0] {
+                t: TaskRef => t,
+                none => {
+                    let t = proxy_task(ctx.waker);
+                    self.proxy[0] = t;
+                    t
+                }
+            };
+            let c = Context::from_waker(Waker { task: p });
+            let n = self.futs.len();
+            for i in 0..n {
+                let f = self.futs[i];
+                self.started[i] = true;
+                let r = f.poll(ref c);
+                self.futs[i] = f;
+                if let Poll::Ready(v) = r {
+                    self.cancel_others(i, p);
+                    return Poll::Ready((i, v));
+                }
+            }
+            Poll::Pending
+        }
+    }
+}
+
+impl<F: Future> SelectFuture<F> {
+    /// Finish the proxy (its wakes stop) as cancelled, poll the started
+    /// losers once with it (their cancellation path), then drop all it
+    /// registered. A loser still in its cleanups runs them to the end as
+    /// a cancelled local task.
+    fn cancel_others(self, winner: usize, p: TaskRef) {
+        unsafe {
+            atomic_xchg(p.state, 0, DONE, SeqCst);
+            atomic_xchg(p.state, 1, 1, SeqCst);
+            p.state[10] = 1;
+            let c = Context::from_waker(Waker { task: p });
+            for i in 0..self.futs.len() {
+                if i != winner && self.started[i] {
+                    let f = self.futs[i];
+                    p.state[7] = 0;
+                    if let Poll::Pending = f.poll(ref c) {
+                        if p.state[7] != 0 {
+                            spawn_cleanup(f);
+                        }
+                    }
+                }
+            }
+            finish_cancelled(p);
+        }
+    }
+}
+
+/// Run `fut`, a frame inside the cleanups of its cancel, to the end as a
+/// cancelled local task nobody joins.
+fn spawn_cleanup<F: Future>(fut: F) {
+    unsafe {
+        let w = current_worker();
+        let h = local_home(w);
+        let slot: GcBuf<F::Output> = buf_new(1);
+        let t = make_task(poll_fn(fut, slot), h);
+        t.state[1] = 1;
+        t.state[4] = 1;
+        t.state[9] = 1;
+        if buf_same(h.locals, w.locals) {
+            schedule(t);
+        } else {
+            push(w.lent, t);
+        }
+    }
+}
+
+/// A stand-in task for `select`'s children: never scheduled; its wakes
+/// go to `parent` until it is done.
+const fn proxy_task(parent: Waker) -> TaskRef {
+    unsafe {
+        let state: GcBuf<i32> = buf_new(11);
+        state[3] = 1;
+        state[5] = parent.task.state[5];
+        let p: GcBuf<fn(Context) -> bool> = buf_new(1);
+        p[0] = |ctx: Context| -> bool { true };
+        let up: GcBuf<Waker> = buf_new(1);
+        up[0] = parent;
+        TaskRef {
+            state: state,
+            poll: p,
+            joiners: unsafe { Mutex::new_unshared(List::<Waker>::new()) },
+            parked: List::new(),
+            home: parent.task.home,
+            id: 0,
+            up: up,
+        }
+    }
+}
+
+/// Drop a finished cancelled task's parking entries and timers.
+fn finish_cancelled(t: TaskRef) {
+    unpark_task(t);
+    if atomic_load(t.state, 2, SeqCst) != 0 {
+        remove_timers(t);
+    }
+}
+
+/// Index of the first task to finish (`buffer_unordered`).
+pub(pkg) const fn first_done<T>(tasks: List<Task<T>>) -> FirstDone<T> {
+    FirstDone { tasks: tasks }
+}
+
+pub(pkg) struct FirstDone<T> {
+    tasks: List<Task<T>>;
+}
+
+impl<T> Future for FirstDone<T> {
+    type Output = usize;
+    fn poll(ref self, ref ctx: Context) -> Poll<usize> {
+        for i in 0..self.tasks.len() {
+            if join_later(self.tasks[i].task, ctx.waker) {
+                return Poll::Ready(i);
+            }
+        }
+        Poll::Pending
+    }
+}

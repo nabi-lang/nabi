@@ -1,0 +1,28 @@
+// expect-error: 18:36: mismatched types: argument 2 of `map` expects `fn(usize) -> f32 + Send + Sync`, found `closure(usize) -> f32`
+// expect-error: 20:32: mismatched types: argument 2 of `for_each` expects `fn(usize) -> () + Send + Sync`
+// expect-error: 22:30: mismatched types: argument 2 of `for_each` expects `fn(usize) -> () + Send + Sync`
+// expect-error: 24:34: mismatched types: argument 2 of `spawn` expects `fn() -> usize + Send`
+// expect-error: 26:30: mismatched types: argument 2 of `for_each` expects `fn(usize) -> () + Send + Sync`
+// expect-error: note: the closure captures `table` (type `List<f32>`), which is not `Sync` (collections are not `Sync`: share one read-only with `.freeze()`, or through a `Mutex` to change it)
+// expect-error: help: share `table` read-only, with no copy: `let table = table.freeze();` before the closure; to write parts of it in parallel, give each worker its own part as an item: `par::for_each(table.chunks_mut(n), |part| ..)`
+// expect-error: help: share `pos` read-only, with no copy: `let pos = pos.freeze();` before the closure
+// expect-error: help: put `rows` in a `Mutex` and lock it inside the closure (its elements can change, so it cannot be frozen)
+// expect-error: help: move `names` into the closure, which then owns its own copy: `[move names] || ..`; to share it with no copy, freeze it first: `let names = names.freeze();`
+// expect-error: or keep a frozen one and replace it whole: `RwLock<FrozenDict<str, i32>>`
+
+// What to write when a closure that several threads run captures a
+// collection: freeze it to share it read-only, split a list into parts
+// with `chunks_mut`, or lock it.
+fn main() {
+    let table: List<f32> = List::filled(100, 1.0f32);
+    let out = par::map(0..10usize, |i| table[i] * 2.0f32);
+    let pos: List<f32> = List::filled(100, 0.0f32);
+    par::for_each(0..100usize, |i| { pos[i] = 1.0f32; });
+    let rows: List<List<i32>> = [[1]];
+    par::for_each(0..1usize, |i| { rows[i].push(2); });
+    let names: Dict<str, i32> = {"a": 1};
+    par::scope(|s| { _ = s.spawn(|| names.len()); });
+    let rw: RwLock<Dict<str, i32>> = RwLock::new({"a": 1});
+    par::for_each(0..1usize, |_| { _ = rw.read_with(|d| d.len()); });
+    println(f"{out:?}");
+}

@@ -1,0 +1,33 @@
+// expect-exit: 0
+// expect-stdout:
+// 2 3 0
+// 32 8
+// 4 1 5
+
+// `const { .. }` is evaluated once per instance: it reads const
+// parameters, associated consts and the size of a plain type, and a
+// passing `assert` costs nothing at run time.
+trait Bytes { const BYTES: usize; }
+impl Bytes for i32 { const BYTES: usize = 4; }
+impl Bytes for u8 { const BYTES: usize = 1; }
+
+fn half<const N: usize>(_xs: [i32; N]) -> usize {
+    const { assert(N > 0, "half needs at least one element") };
+    const { N / 2 }
+}
+
+fn outer<const M: usize>(xs: [i32; M]) -> usize { half(xs) + 1 }
+
+fn bits<T: Bytes>() -> usize {
+    const { assert(T::BYTES <= 8, "at most 64 bits") };
+    const { T::BYTES * 8 }
+}
+
+fn size<T>() -> usize { const { T::size() } }
+
+fn main() {
+    println(f"{half([1, 2, 3, 4])} {outer([1, 2, 3, 4])} {half([9])}");
+    println(f"{bits::<i32>()} {bits::<u8>()}");
+    let five = const { 2 + 3 };
+    println(f"{size::<i32>()} {size::<bool>()} {five}");
+}

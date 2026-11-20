@@ -1,0 +1,32 @@
+//! bare::ffi::errno - the C library's errno and Windows' `GetLastError`
+//! as the last `#[errno]` call left them.
+//!
+//! The thread may run runtime code between a C call's return and the next
+//! line (it may wait out a collection there), and that code may change
+//! errno. `#[errno]` on the declaration (or its `extern` block) saves both
+//! first; these read the saved values, so they are right whenever they
+//! run.
+
+use bare::ffi::types::c_int;
+
+extern "nabi" {
+    fn nabi_errno_get() -> i32;
+    fn nabi_errno_set(v: i32);
+    fn nabi_last_error_get() -> u32;
+    fn nabi_last_error_set(v: u32);
+}
+
+/// errno as the last `#[errno]` call on this thread left it.
+pub fn errno() -> c_int { unsafe { nabi_errno_get() } }
+
+/// Set errno, both the saved value and the C library's (for C functions
+/// that only report errors through it, such as `strtol`: set 0 first).
+pub fn set_errno(v: c_int) { unsafe { nabi_errno_set(v) } }
+
+/// Windows' `GetLastError` as the last `#[errno]` call on this thread
+/// left it; 0 elsewhere.
+pub fn last_error() -> u32 { unsafe { nabi_last_error_get() } }
+
+/// Set the saved `GetLastError` value and, on Windows, the thread's own
+/// (`SetLastError`).
+pub fn set_last_error(v: u32) { unsafe { nabi_last_error_set(v) } }

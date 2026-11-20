@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout: 2 3
+
+// A generic alias whose parameters all have defaults is written bare.
+pub struct Q<V, const L: i32, const T: i32> { v: V; }
+pub type Vel<V = f64> = Q<V, 1, -1>;
+
+fn get(x: Vel) -> f64 { x.v }
+fn geti(x: Vel<i64>) -> i64 { x.v }
+
+fn main() {
+    let q: Q<f64, 1, -1> = Q { v: 2.0 };
+    let r: Vel<i64> = Q { v: 3 };
+    println(f"{get(q)} {geti(r)}");
+}

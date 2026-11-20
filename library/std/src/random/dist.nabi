@@ -1,0 +1,163 @@
+// Variate generators behind `Rng`'s distribution methods. The normal is
+// the ziggurat of Marsaglia and Tsang (2000); one 64-bit draw gives the
+// layer (low 8 bits) and a signed uniform (top 53). Gamma is Marsaglia
+// and Tsang (2000), Poisson the PTRS method of Hormann (1993), as NumPy,
+// and the binomial the beta-splitting method of Devroye (1986, X.4.3).
+
+use std::random::Rng;
+use std::random::tables::{R, ZF, ZX};
+
+const TWO_M53: f64 = 1.1102230246251565e-16;
+const TWO_M52: f64 = 2.220446049250313e-16;
+
+/// A uniform value in (0, 1): never 0, so its log is finite.
+pub(pkg) const fn open01<G: Rng>(ref g: G) -> f64 { ((g.next_u64() >> 12) as f64 + 0.5) * TWO_M52 }
+
+/// A standard normal deviate; about 1.02 draws of 64 bits on average.
+pub(pkg) const fn normal<G: Rng>(ref g: G) -> f64 {
+    loop {
+        let bits = g.next_u64();
+        let i = (bits & 0xff) as usize;
+        let u = 2.0 * ((bits >> 11) as f64 * TWO_M53) - 1.0;
+        let x = u * ZX[i];
+        if x.abs() < ZX[i + 1] { return x; }
+        if i == 0 { return tail(ref g, u < 0.0); }
+        if ZF[i + 1] + (ZF[i] - ZF[i + 1]) * g.f64() < (-0.5 * x * x).exp() { return x; }
+    }
+}
+
+// The base layer's tail past r (Marsaglia 1964).
+const fn tail<G: Rng>(ref g: G, neg: bool) -> f64 {
+    loop {
+        let x = open01(ref g).ln() / R;
+        let y = open01(ref g).ln();
+        if -2.0 * y >= x * x { return if neg { x - R } else { R - x }; }
+    }
+}
+
+/// A Gamma(k, 1) deviate, `k > 0`; for `k < 1` the deviate of `k + 1`
+/// times `U^(1 / k)`.
+pub(pkg) const fn gamma<G: Rng>(ref g: G, k: f64) -> f64 {
+    if k < 1.0 {
+        let u = open01(ref g);
+        return gamma_ge1(ref g, k + 1.0) * u.pow(1.0 / k);
+    }
+    gamma_ge1(ref g, k)
+}
+
+const fn gamma_ge1<G: Rng>(ref g: G, k: f64) -> f64 {
+    let d = k - 1.0 / 3.0;
+    let c = 1.0 / (9.0 * d).sqrt();
+    loop {
+        let x = normal(ref g);
+        let t = 1.0 + c * x;
+        if t <= 0.0 { continue; }
+        let v = t * t * t;
+        let u = open01(ref g);
+        let x2 = x * x;
+        if u < 1.0 - 0.0331 * x2 * x2 { return d * v; }
+        if u.ln() < 0.5 * x2 + d * (1.0 - v + v.ln()) { return d * v; }
+    }
+}
+
+/// A Beta(a, b) deviate from two gamma deviates.
+pub(pkg) const fn beta<G: Rng>(ref g: G, a: f64, b: f64) -> f64 {
+    let x = gamma(ref g, a);
+    let y = gamma(ref g, b);
+    x / (x + y)
+}
+
+/// `ln(Gamma(x))` for `x > 0`: shifted up to 7, then Stirling's series
+/// (relative error below 1e-13, ample for PTRS's acceptance test).
+const fn ln_gamma(x: f64) -> f64 {
+    let acc = 0.0;
+    while x < 7.0 {
+        acc -= x.ln();
+        x += 1.0;
+    }
+    let z = 1.0 / (x * x);
+    let s = (1.0 / 12.0 - z * (1.0 / 360.0 - z * (1.0 / 1260.0 - z * (1.0 / 1680.0 - z / 1188.0)))) / x;
+    acc + (x - 0.5) * x.ln() - x + 0.9189385332046728 + s
+}
+
+/// A Poisson(lam) deviate: search from 0 below 10, PTRS above.
+pub(pkg) const fn poisson<G: Rng>(ref g: G, lam: f64) -> i64 {
+    if lam <= 0.0 { return 0; }
+    if lam < 10.0 {
+        let p = (-lam).exp();
+        let s = p;
+        let u = g.f64();
+        let k = 0i64;
+        while u > s && k < 1000 {
+            k += 1;
+            p *= lam / k as f64;
+            s += p;
+        }
+        return k;
+    }
+    let slam = lam.sqrt();
+    let loglam = lam.ln();
+    let b = 0.931 + 2.53 * slam;
+    let a = -0.059 + 0.02483 * b;
+    let inv_alpha = 1.1239 + 1.1328 / (b - 3.4);
+    let vr = 0.9277 - 3.6224 / (b - 2.0);
+    loop {
+        let u = g.f64() - 0.5;
+        let v = g.f64();
+        let us = 0.5 - u.abs();
+        let k = ((2.0 * a / us + b) * u + lam + 0.43).floor();
+        if us >= 0.07 && v <= vr { return k as i64; }
+        if k < 0.0 || (us < 0.013 && v > us) { continue; }
+        if v.ln() + inv_alpha.ln() - (a / (us * us) + b).ln() <= -lam + k * loglam - ln_gamma(k + 1.0) {
+            return k as i64;
+        }
+    }
+}
+
+/// A Binomial(n, p) deviate: split by beta-distributed order statistics
+/// while `n min(p, 1 - p) >= 30`, then invert the CDF by search
+/// (Kachitvichyanukul and Schmeiser 1988). O(log n + n p).
+pub(pkg) const fn binomial<G: Rng>(ref g: G, n: i64, p: f64) -> i64 {
+    if n == 0 || p <= 0.0 { return 0; }
+    if p >= 1.0 { return n; }
+    let count = 0i64;
+    let (m, q) = (n, p);
+    while m as f64 * q.min(1.0 - q) >= 30.0 {
+        let i = (m + 1) / 2;
+        let u = beta(ref g, i as f64, (m + 1 - i) as f64);
+        if u <= q {
+            count += i;
+            m -= i;
+            q = (q - u) / (1.0 - u);
+        } else {
+            m = i - 1;
+            q = q / u;
+        }
+    }
+    count + invert_binomial(ref g, m, q)
+}
+
+const fn invert_binomial<G: Rng>(ref g: G, n: i64, p: f64) -> i64 {
+    if n == 0 { return 0; }
+    let flip = p > 0.5;
+    let pp = if flip { 1.0 - p } else { p };
+    let q = 1.0 - pp;
+    let s = pp / q;
+    let a = (n + 1) as f64 * s;
+    loop {
+        let r = (n as f64 * q.ln()).exp();
+        let u = g.f64();
+        let k = 0i64;
+        let ok = true;
+        while u > r {
+            u -= r;
+            k += 1;
+            if k > n {
+                ok = false;
+                break;
+            }
+            r *= a / k as f64 - s;
+        }
+        if ok { return if flip { n - k } else { k }; }
+    }
+}

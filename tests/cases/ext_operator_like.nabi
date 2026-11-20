@@ -1,0 +1,32 @@
+// expect-exit: 0
+// expect-stdout:
+// 11
+// 7
+
+// A registered extension token lexes and takes the
+// level of its `like` token (`⊕` like `+`, below `*`).
+trait XorAdd {
+    #[infix("⊕", like = "+")]
+    fn xor_add(self, rhs: Self) -> Self;
+}
+
+struct N { v: i32; }
+
+impl XorAdd for N {
+    fn xor_add(self, rhs: N) -> N { return N { v: self.v ^ rhs.v }; }
+}
+
+impl ops::Mul for N {
+    type Output = N;
+    fn mul(self, rhs: N) -> N { return N { v: self.v * rhs.v }; }
+}
+
+fn main() -> i32 {
+    // 1 ⊕ (2 * 5) = 1 ^ 10 = 11
+    let r = N { v: 1 } ⊕ N { v: 2 } * N { v: 5 };
+    println(f"{r.v}");
+    // left-assoc: (4 ⊕ 2) ⊕ 1 = 7
+    let s = N { v: 4 } ⊕ N { v: 2 } ⊕ N { v: 1 };
+    println(f"{s.v}");
+    return 0;
+}

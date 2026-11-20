@@ -1,0 +1,40 @@
+// needs: posix-fs
+// expect-exit: 0
+// expect-stdout:
+// File Dir true false
+// entry: File true
+// modified: true
+// accessed: true
+// status_changed: true
+// created: true
+
+// `file_type`, `changed` and `created` replace the raw Unix times.
+use std::fs;
+use std::fs::{File, FileType};
+use core::io::{IoError, IoErrorKind};
+use std::env;
+
+fn main() throws (IoError) {
+    let dir = env::temp_dir() / "nabi_fs_file_type";
+    try fs::remove_dir_all(dir) catch _ {};
+    try fs::create_dir(dir);
+    let path = dir / "f.txt";
+    try fs::write(path, "abc");
+    let m = try fs::metadata(path);
+    let d = try fs::metadata(dir);
+    println(f"{m.file_type():?} {d.file_type():?} {m.file_type() == FileType::File} {m.file_type().is_dir()}");
+    try for e in fs::read_dir(dir) {
+        println(f"entry: {e.file_type():?} {e.file_type() == e.metadata().file_type()}");
+    }
+    let t = try m.modified();
+    println(f"modified: {t.unix_secs() > 0}");
+    println(f"accessed: {(try m.accessed()).unix_secs() > 0}");
+    println(f"status_changed: {(try m.status_changed()).unix_secs() > 0}");
+    // Some file systems keep no creation time.
+    let born = try m.created() catch e {
+        if e.kind() != IoErrorKind::Unsupported { throw e; }
+        t
+    };
+    println(f"created: {born.unix_secs() > 0}");
+    try fs::remove_dir_all(dir);
+}

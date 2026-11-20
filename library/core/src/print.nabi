@@ -1,0 +1,86 @@
+//! core::print - `print` / `println` / `eprint` / `eprintln`,
+//! `dbg` and `display` (the prelude names them, so they need no `use`).
+//!
+//! A direct call takes any number of values, written with `Display` (with
+//! `Debug` for a type that has no `Display`), joined by `sep:` (default
+//! " ") and followed by `end:` (default "\n" for the `ln` forms, else
+//! nothing): `println("total:", n, xs)`. The functions below are what a
+//! call through a function value (`xs.for_each(println)`) runs: one
+//! `Display` value. A direct `dbg(e)` also shows `e`'s source text.
+//!
+//! They share the runtime's stream writers with `io::stdout()` /
+//! `io::stderr()`; one call writes its line whole, so lines from
+//! different threads never interleave. Write errors are dropped.
+
+use core::collections::raw::{GcBuf, buf_new};
+
+/// Writes `v` to stdout.
+pub fn print<T: Display>(v: T = "")    { unsafe { nabi_stdio_write(1, f"{v}", 0) }; }
+/// Writes `v` and a newline to stdout.
+pub fn println<T: Display>(v: T = "")  { unsafe { nabi_stdio_write(1, f"{v}", 1) }; }
+/// Writes `v` to stderr.
+pub fn eprint<T: Display>(v: T = "")   { unsafe { nabi_stdio_write(2, f"{v}", 0) }; }
+/// Writes `v` and a newline to stderr.
+pub fn eprintln<T: Display>(v: T = "") { unsafe { nabi_stdio_write(2, f"{v}", 1) }; }
+/// Shows `x` by its `RichDisplay` renderings now: in a `nabi jupyter`
+/// notebook as the cell's output at this point (`display_data`), elsewhere
+/// as its `text/plain` line (nothing without one).
+pub fn display<T: RichDisplay>(x: T) {
+    let b = x.mime_bundle();
+    if !in_kernel() {
+        if let t: str = b.get("text/plain") {
+            unsafe { nabi_stdio_write(1, t, 1) };
+        }
+        return;
+    }
+    // A frame on stdout the kernel takes out of the cell's text:
+    // `SHOW`, the payload's length in 8 hex digits, the payload.
+    let body = StrBuf::new();
+    body.push('{');
+    let first = true;
+    for (k, v) in b.iter() {
+        if !first { body.push(','); }
+        first = false;
+        json_str(body, k);
+        body.push(':');
+        json_str(body, v);
+    }
+    body.push('}');
+    let payload = body.to_str();
+    unsafe { nabi_stdio_write(1, f"{SHOW}{payload.len():08x}{payload}", 0) };
+}
+
+/// Opens a `display` frame (the kernel's marks are all this long).
+const SHOW: str = "\x00@@nabi-kernel-show@@\x00";
+
+/// Under `nabi jupyter`, which sets `NABI_JUPYTER` for the cells it runs.
+fn in_kernel() -> bool {
+    unsafe {
+        let buf: GcBuf<u8> = buf_new(1);
+        nabi_os_getenv("NABI_JUPYTER", buf, 0, 1) >= 0
+    }
+}
+
+/// `s` as a JSON string.
+fn json_str(out: StrBuf, s: str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(f"\\u{c as u32:04x}"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// Writes `value`'s `Debug` form to stderr and returns `value` (Rust
+/// `dbg!`). A direct call writes `[file:line:col] <source> = <value>`.
+pub fn dbg<T: Debug>(value: T) -> T {
+    unsafe { nabi_stdio_write(2, f"{value:?}", 1) };
+    value
+}

@@ -1,0 +1,6 @@
+pub struct D { pub x: i8; pub y: i8; }
+
+impl D {
+    pub const fn of(e: [i8; 2]) -> D { D { x: e[0], y: e[1] } }
+    pub const ONE: D = D::of([1, 2]);
+}

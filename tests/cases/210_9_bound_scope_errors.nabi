@@ -1,0 +1,57 @@
+// expect-error: no method `area` on type parameter `B::Elem`: it has no bounds
+// expect-error: operator `+` cannot be applied to `i64` and `I::Item`
+// expect-error: mismatched types: the return value expects `T`, found `T::Output`
+// expect-error: no method `title` on type parameter `Self`: its bounds (`Greet`) do not declare it
+// expect-error: no method `clone` on type parameter `B`: it has no bounds
+// expect-error: operator `*` on `T` needs the bound `T: Mul`
+// expect-error: type `T` does not satisfy trait bound `Ord` required by `List::sort`
+// expect-error: type `T` does not satisfy trait bound `Send` required by `task::spawn`
+// expect-error: mismatched types: the body of `resize` expects `[T; M]`, found `[T; N]`
+// expect-error: mismatched types: the right operand of `<` expects `T`, found `U`
+// expect-error: no method `len` on type parameter `T`: it has no bounds
+// forbid-error: found `usize`
+// forbid-error: no method `title` found for type `Plain`
+
+// A generic body sees only what its declaration and bounds give it.
+
+use core::ops::Add;
+
+trait Shape { fn area(self) -> f64; }
+trait Bag {
+    type Elem;
+    fn first(self) -> Elem;
+}
+
+fn elem_area<B: Bag>(b: B) -> f64 { b.first().area() }
+fn sum_items<I: Iterator>(it: I) -> i64 {
+    let s = 0i64;
+    for x in it { s = s + x; }
+    s
+}
+fn add_out<T: Add>(a: T, b: T) -> T { return a + b; }
+
+trait Greet {
+    fn name(self) -> str;
+    fn greet(self) -> str { self.name() + self.title() }
+}
+struct Plain;
+impl Greet for Plain { fn name(self) -> str { "p" } }
+
+struct Pair<A, B> { a: A; b: B; }
+impl<A: Clone, B> Pair<A, B> {
+    fn left(self) -> A { self.a.clone() }
+    fn right(self) -> B { self.b.clone() }
+}
+
+fn scaled<T>(xs: List<T>, k: T) -> List<T> { xs.iter().map(|x| x * k).collect() }
+fn sorted<T>(xs: List<T>) { xs.sort(); }
+async fn sent<T>(x: T) -> T { await task::spawn(async { x }) }
+fn resize<T, const N: usize, const M: usize>(a: [T; N]) -> [T; M] { a }
+fn mixed<T: Ord, U: Ord>(a: T, b: U) -> bool { a < b }
+
+fn bad<T>(x: T) -> i32 { x.len() }
+
+println(f"{bad("s")} {Plain.greet()}");
+// expect-error-extra: allow
+// (`sent` also reports `AsyncFuture<T>` not `Send`, from the same
+// missing `T: Send`)

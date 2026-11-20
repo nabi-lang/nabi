@@ -1,0 +1,8 @@
+// expect-error: 5:1: `#[inspect]` cannot be attached to a struct; it goes on a field
+
+// `#[inspect(skip)]` hides one field from reflection.
+#[derive(Inspect)]
+#[inspect(skip)]
+struct Enemy { hp: i32; }
+
+fn main() {}

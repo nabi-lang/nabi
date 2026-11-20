@@ -1,0 +1,7 @@
+// expect-error: does not satisfy trait bound `Copy`
+
+// `Cell::get` needs `T: Copy`.
+fn main() {
+    let c: Cell<List<i32>> = Cell::new(List::new());
+    let xs = c.get();
+}

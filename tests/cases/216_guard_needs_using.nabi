@@ -1,0 +1,29 @@
+// expect-error: 19:5: `g` holds a `MutexGuard` that is never released
+// expect-error: 20:5: `w` holds a `RwLockWriteGuard` that is never released
+// expect-error: 22:9: `r` holds a `RwLockReadGuard` that is never released
+// expect-error: 24:5: this `MutexGuard` is discarded without being released
+// expect-error: 25:12: `t` holds a `MutexGuard` that is never released
+// expect-error: 26:26: `u` holds a `MutexGuard` that is never released
+
+// A guard is released only by `using`; one bound with a
+// plain `let`, bound by a pattern, or discarded would hold its lock
+// forever. Guards that pass through `using` (directly, from a `try_lock`
+// match arm or `if let`, or destructured by `using`) are fine.
+static M: Mutex<i32> = Mutex::new(0);
+static L: RwLock<i32> = RwLock::new(0);
+
+fn main() -> i32 {
+    using g = M.lock() { g.set(1); }
+    match M.try_lock() { v: sync::MutexGuard<i32> => using g = v { g.set(2); }, none => {} }
+    if let v: sync::MutexGuard<i32> = M.try_lock() { using g = v { g.set(3); } }
+    let g = M.lock();
+    let w: sync::RwLockWriteGuard<i32> = L.write();
+    if true {
+        let r = L.read();
+    }
+    M.lock();
+    if let t: sync::MutexGuard<i32> = M.try_lock() { t.set(4); }
+    match M.try_lock() { u: sync::MutexGuard<i32> => u.set(5), none => {} }
+    using (a, b) = (L.read(), L.read()) { println(f"{a.get() + b.get()}"); }
+    return 0;
+}

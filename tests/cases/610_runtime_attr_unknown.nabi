@@ -1,0 +1,12 @@
+// expect-error: 9:5: no attribute `rnage`; did you mean `range` (`Range`)?
+
+// A misspelled runtime attribute names the declared one.
+#[runtime_attribute(range)]
+pub struct Range { pub min: f64; pub max: f64; }
+
+#[derive(Inspect)]
+struct Enemy {
+    #[rnage(0, 10)] hp: i32;
+}
+
+fn main() {}

@@ -1,0 +1,27 @@
+// expect-exit: 0
+// expect-stdout: 3 6 1
+
+// An impl over a const parameter meets a bound with a written constant
+// (`Dim<3>` from `impl<const N: usize> Dim<N> for L<N>`), and a `fn` type
+// impl over one takes a `fn` value of an instance.
+struct L<const N: usize> { v: f64; }
+
+trait Dim<const D: usize> { fn dim(self) -> usize; }
+impl<const N: usize> Dim<N> for L<N> {
+    fn dim(self) -> usize { N }
+}
+
+trait Run { fn run(self) -> f64; }
+impl<const N: usize> Run for fn(L<N>) -> f64 {
+    fn run(self) -> f64 { self(L { v: 3.0 }) * (N as f64) }
+}
+
+fn three<X: Dim<3>>(x: X) -> usize { x.dim() }
+fn go<R: Run>(r: R) -> f64 { r.run() }
+fn half(x: L<2>) -> f64 { x.v }
+fn one(x: L<1>) -> f64 { x.v / 3.0 }
+
+fn main() {
+    let a: L<3> = L { v: 2.0 };
+    println(f"{three(a)} {go(half)} {go(one)}");
+}

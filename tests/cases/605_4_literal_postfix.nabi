@@ -1,0 +1,33 @@
+// expect-exit: 0
+// expect-stdout:
+// 10 4 3 true 2
+// 6 3
+
+// A literal handler's value and a macro call are primaries: method
+// calls, fields, indexing, `?` and postfix operators follow them.
+struct Date { days: i64; }
+
+impl Date {
+    fn plus(self, n: i64) -> Date { Date { days: self.days + n } }
+}
+
+#[literal("date" string)]
+fn date_literal(s: str) -> Date { Date { days: s.len() as i64 } }
+
+#[impl_macro(trio)] @macro {
+    ( @a: expr ) => { [@a, @a + 1, @a + 2] }
+}
+
+#[impl_macro(head)] @macro {
+    ( @a: expr ) => { (@a).get(0) }
+}
+
+fn first(xs: List<i64>) -> i64? { head!(xs)? + 1 }
+
+fn main() {
+    let n = date"2024-01-01".days;
+    let m = date"2024".plus(0).days;
+    println(f"{n} {m} {trio!(1).len()} {trio!(1)[2] == 3} {trio!(2)[0]}");
+    let k = trio!{ 3 }.len();
+    println(f"{first(trio!(5)) ?? 0} {k}");
+}

@@ -1,0 +1,21 @@
+// needs: process
+// expect-exit: 3
+// expect-stdout:
+// set: 1 2
+// unset: true
+
+// `set_var` / `remove_var` are `unsafe fn`s that throw.
+use std::env;
+use core::io::IoError;
+use std::process;
+
+fn main() throws (IoError) {
+    unsafe { try env::set_var("NABI_S2_A", "1"); }
+    unsafe { try env::set_var("NABI_S2_B", "x"); }
+    unsafe { try env::set_var("NABI_S2_B", "2"); }
+    println(f"set: {try! env::var("NABI_S2_A")} {try! env::var("NABI_S2_B")}");
+    unsafe { try env::remove_var("NABI_S2_A"); }
+    unsafe { try env::remove_var("NABI_S2_B"); }
+    println(f"unset: {env::var_os("NABI_S2_A") is none}");
+    process::exit(3);
+}

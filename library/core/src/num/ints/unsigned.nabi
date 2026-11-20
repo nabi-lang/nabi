@@ -1,0 +1,1399 @@
+// core::num::ints::unsigned: the fixed-width unsigned integers: u8,
+// u16, u32 and u64.
+
+use core::num::ints::BIG_ENDIAN;
+
+// u8
+
+impl u8 {
+    /// The smallest value.
+    pub const MIN: u8 = 0;
+    /// The largest value.
+    pub const MAX: u8 = 255;
+    /// The width in bits.
+    pub const BITS: u32 = 8;
+
+    /// `self + rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_add.u8")]
+    #[must_use]
+    pub const fn wrapping_add(self, rhs: u8) -> u8 { self.wrapping_add(rhs) }
+    /// `self - rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_sub.u8")]
+    #[must_use]
+    pub const fn wrapping_sub(self, rhs: u8) -> u8 { self.wrapping_sub(rhs) }
+    /// `self * rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_mul.u8")]
+    #[must_use]
+    pub const fn wrapping_mul(self, rhs: u8) -> u8 { self.wrapping_mul(rhs) }
+    #[intrinsic("nabi.ctpop.u8")]
+    const fn ctpop(self) -> u8 { self.ctpop() }
+    #[intrinsic("nabi.ctlz.u8")]
+    const fn ctlz(self) -> u8 { self.ctlz() }
+    #[intrinsic("nabi.cttz.u8")]
+    const fn cttz(self) -> u8 { self.cttz() }
+
+    /// The number of one bits.
+    #[must_use]
+    pub const fn count_ones(self) -> u32 { self.ctpop() as u32 }
+    /// The number of zero bits.
+    #[must_use]
+    pub const fn count_zeros(self) -> u32 { (~self).ctpop() as u32 }
+    /// The number of zero bits above the highest one bit.
+    #[must_use]
+    pub const fn leading_zeros(self) -> u32 { self.ctlz() as u32 }
+    /// The number of zero bits below the lowest one bit.
+    #[must_use]
+    pub const fn trailing_zeros(self) -> u32 { self.cttz() as u32 }
+    /// The number of one bits above the highest zero bit.
+    #[must_use]
+    pub const fn leading_ones(self) -> u32 { (~self).ctlz() as u32 }
+    /// The number of one bits below the lowest zero bit.
+    #[must_use]
+    pub const fn trailing_ones(self) -> u32 { (~self).cttz() as u32 }
+
+    /// The bits shifted left by `n`, those shifted out coming back on the right.
+    #[must_use]
+    pub const fn rotate_left(self, n: u32) -> u8 {
+        let k = n % 8;
+        if k == 0 { return self; }
+        self << (k as u8) | self >> ((8 - k) as u8)
+    }
+    /// The bits shifted right by `n`, those shifted out coming back on the left.
+    #[must_use]
+    pub const fn rotate_right(self, n: u32) -> u8 { self.rotate_left(8 - n % 8) }
+    /// The bytes in reverse order.
+    #[must_use]
+    pub const fn swap_bytes(self) -> u8 { self }
+
+    /// `self` in big-endian byte order (unchanged on a big-endian target).
+    #[must_use]
+    pub const fn to_be(self) -> u8 { if BIG_ENDIAN { self } else { self.swap_bytes() } }
+    /// `self` in little-endian byte order (unchanged on a little-endian target).
+    #[must_use]
+    pub const fn to_le(self) -> u8 { if BIG_ENDIAN { self.swap_bytes() } else { self } }
+    /// The number whose big-endian bytes are `x`.
+    #[must_use]
+    pub const fn from_be(x: u8) -> u8 { x.to_be() }
+    /// The number whose little-endian bytes are `x`.
+    #[must_use]
+    pub const fn from_le(x: u8) -> u8 { x.to_le() }
+    /// The bytes, least significant first.
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 1] { [self as u8] }
+    /// The bytes, most significant first.
+    #[must_use]
+    pub const fn to_be_bytes(self) -> [u8; 1] { [self as u8] }
+    /// The bytes in the target's byte order.
+    #[must_use]
+    pub const fn to_ne_bytes(self) -> [u8; 1] { if BIG_ENDIAN { self.to_be_bytes() } else { self.to_le_bytes() } }
+    /// The number of `bytes`, least significant first.
+    #[must_use]
+    pub const fn from_le_bytes(bytes: [u8; 1]) -> u8 { bytes[0] as u8 }
+    /// The number of `bytes`, most significant first.
+    #[must_use]
+    pub const fn from_be_bytes(bytes: [u8; 1]) -> u8 { bytes[0] as u8 }
+    /// The number of `bytes`, in the target's byte order.
+    #[must_use]
+    pub const fn from_ne_bytes(bytes: [u8; 1]) -> u8 { if BIG_ENDIAN { u8::from_be_bytes(bytes) } else { u8::from_le_bytes(bytes) } }
+
+    /// `self + rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_add(self, rhs: u8) -> u8 | none {
+        let r = self.wrapping_add(rhs);
+        if r < self { return none; }
+        r
+    }
+    /// `self - rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_sub(self, rhs: u8) -> u8 | none {
+        let r = self.wrapping_sub(rhs);
+        if self < rhs { return none; }
+        r
+    }
+    /// `self * rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_mul(self, rhs: u8) -> u8 | none {
+        let r = self.wrapping_mul(rhs);
+        if self != 0 && r / self != rhs { return none; }
+        r
+    }
+    /// `self / rhs`, or `none` when `rhs` is 0.
+    #[must_use]
+    pub const fn checked_div(self, rhs: u8) -> u8 | none {
+        if rhs == 0 { return none; }
+        self / rhs
+    }
+    /// `self % rhs`, or `none` when `rhs` is 0.
+    #[must_use]
+    pub const fn checked_rem(self, rhs: u8) -> u8 | none {
+        if rhs == 0 { return none; }
+        self % rhs
+    }
+    /// `-self`: `0` for 0, `none` for any other value.
+    #[must_use]
+    pub const fn checked_neg(self) -> u8 | none {
+        if self != 0 { return none; }
+        self
+    }
+    /// `self << n`, or `none` when `n` is at least `BITS`.
+    #[must_use]
+    pub const fn checked_shl(self, n: u32) -> u8 | none {
+        if n >= 8 { return none; }
+        self << (n as u8)
+    }
+    /// `self >> n`, or `none` when `n` is at least `BITS`.
+    #[must_use]
+    pub const fn checked_shr(self, n: u32) -> u8 | none {
+        if n >= 8 { return none; }
+        self >> (n as u8)
+    }
+    /// `self` to the `exp`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_pow(self, exp: u32) -> u8 | none {
+        if exp == 0 { return 1; }
+        let base = self;
+        let acc: u8 = 1;
+        let e = exp;
+        while e > 1 {
+            if e & 1 == 1 { acc = acc.checked_mul(base)?; }
+            e = e >> 1;
+            base = base.checked_mul(base)?;
+        }
+        acc.checked_mul(base)
+    }
+
+    /// `self / rhs` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn wrapping_div(self, rhs: u8) -> u8 {
+        self / rhs
+    }
+    /// `self % rhs` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn wrapping_rem(self, rhs: u8) -> u8 {
+        self % rhs
+    }
+    /// `0 - self`, wrapping around.
+    #[must_use]
+    pub const fn wrapping_neg(self) -> u8 { u8::wrapping_sub(0, self) }
+    /// `self << (n % BITS)`.
+    #[must_use]
+    pub const fn wrapping_shl(self, n: u32) -> u8 { self << ((n % 8) as u8) }
+    /// `self >> (n % BITS)`.
+    #[must_use]
+    pub const fn wrapping_shr(self, n: u32) -> u8 { self >> ((n % 8) as u8) }
+    /// `self` to the `exp`, wrapping around at the bounds.
+    #[must_use]
+    pub const fn wrapping_pow(self, exp: u32) -> u8 {
+        let base = self;
+        let acc: u8 = 1;
+        let e = exp;
+        while e > 0 {
+            if e & 1 == 1 { acc = acc.wrapping_mul(base); }
+            e = e >> 1;
+            base = base.wrapping_mul(base);
+        }
+        acc
+    }
+
+    /// `self + rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_add(self, rhs: u8) -> u8 { self.checked_add(rhs) ?? u8::MAX }
+    /// `self - rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_sub(self, rhs: u8) -> u8 { self.checked_sub(rhs) ?? 0 }
+    /// `self * rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_mul(self, rhs: u8) -> u8 { self.checked_mul(rhs) ?? u8::MAX }
+    /// `self` to the `exp`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_pow(self, exp: u32) -> u8 { self.checked_pow(exp) ?? u8::MAX }
+
+    /// `self + rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_add(self, rhs: u8) -> (u8, bool) {
+        (self.wrapping_add(rhs), self.checked_add(rhs) is none)
+    }
+    /// `self - rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_sub(self, rhs: u8) -> (u8, bool) {
+        (self.wrapping_sub(rhs), self.checked_sub(rhs) is none)
+    }
+    /// `self * rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_mul(self, rhs: u8) -> (u8, bool) {
+        (self.wrapping_mul(rhs), self.checked_mul(rhs) is none)
+    }
+    /// `self / rhs` and `false` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn overflowing_div(self, rhs: u8) -> (u8, bool) { (self / rhs, false) }
+    /// `self % rhs` and `false` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn overflowing_rem(self, rhs: u8) -> (u8, bool) { (self % rhs, false) }
+    /// `0 - self` wrapped, and whether it overflowed (any value but 0).
+    #[must_use]
+    pub const fn overflowing_neg(self) -> (u8, bool) { (self.wrapping_neg(), self != 0) }
+    /// `self << (n % BITS)`, and whether `n` was at least `BITS`.
+    #[must_use]
+    pub const fn overflowing_shl(self, n: u32) -> (u8, bool) { (self.wrapping_shl(n), n >= 8) }
+    /// `self >> (n % BITS)`, and whether `n` was at least `BITS`.
+    #[must_use]
+    pub const fn overflowing_shr(self, n: u32) -> (u8, bool) { (self.wrapping_shr(n), n >= 8) }
+    /// `self` to the `exp` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_pow(self, exp: u32) -> (u8, bool) {
+        (self.wrapping_pow(exp), self.checked_pow(exp) is none)
+    }
+
+    /// `self` to the `exp`; overflow is the arithmetic's (a panic;
+    /// a wrap with overflow checks off).
+    #[must_use]
+    pub const fn pow(self, exp: u32) -> u8 {
+        if exp == 0 { return 1; }
+        let base = self;
+        let acc: u8 = 1;
+        let e = exp;
+        while e > 1 {
+            if e & 1 == 1 { acc = acc * base; }
+            e = e >> 1;
+            base = base * base;
+        }
+        acc * base
+    }
+    /// `|self - rhs|`, as the unsigned type of the same width; never overflows.
+    #[must_use]
+    pub const fn abs_diff(self, rhs: u8) -> u8 { if self < rhs { rhs - self } else { self - rhs } }
+    /// Quotient rounded toward negative infinity: `/` for an unsigned
+    /// type (Python's `//`).
+    #[must_use]
+    #[track_caller]
+    pub const fn div_floor(self, rhs: u8) -> u8 { self / rhs }
+    /// The remainder with the divisor's sign: `%` for an unsigned type
+    /// (Python's `%`).
+    #[must_use]
+    #[track_caller]
+    pub const fn rem_floor(self, rhs: u8) -> u8 { self % rhs }
+    /// `self / rhs` (the same as `/` for unsigned numbers). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn div_euclid(self, rhs: u8) -> u8 { self / rhs }
+    /// `self % rhs` (the same as `%` for unsigned numbers). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn rem_euclid(self, rhs: u8) -> u8 { self % rhs }
+    /// Integer square root (rounded down).
+    #[track_caller]
+    #[must_use]
+    pub const fn isqrt(self) -> u8 {
+        if self < 2 { return self; }
+        // A float estimate, then exact fix-up (division keeps it from
+        // overflowing).
+        let x = (self as f64).sqrt() as u8;
+        while x > self / x { x -= 1; }
+        while x + 1 <= self / (x + 1) { x += 1; }
+        x
+    }
+    /// `true` when exactly one bit is set.
+    #[must_use]
+    pub const fn is_power_of_two(self) -> bool { self != 0 && self & (self - 1) == 0 }
+    /// The smallest power of two `>= self`; panics past `MAX`.
+    #[track_caller]
+    #[must_use]
+    pub const fn next_power_of_two(self) -> u8 {
+        self.checked_next_power_of_two() ?? panic("u8::next_power_of_two: the result overflows; use `checked_next_power_of_two` to get `none` instead")
+    }
+    /// The smallest power of two `>= self`, or `none` past `MAX`.
+    #[must_use]
+    pub const fn checked_next_power_of_two(self) -> u8 | none {
+        if self <= 1 { return 1; }
+        let p = 8 - (self - 1).leading_zeros();
+        if p >= 8 { return none; }
+        let one: u8 = 1;
+        one << (p as u8)
+    }
+    /// `floor(log2(self))`; panics unless `self > 0`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog2(self) -> u32 { self.checked_ilog2() ?? panic("u8::ilog2: the number is not positive; use `checked_ilog2` to get `none` instead") }
+    /// `floor(log10(self))`; panics unless `self > 0`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog10(self) -> u32 { self.checked_ilog10() ?? panic("u8::ilog10: the number is not positive; use `checked_ilog10` to get `none` instead") }
+    /// `floor(log(self, base))`; panics unless `self > 0` and `base >= 2`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog(self, base: u8) -> u32 {
+        self.checked_ilog(base) ?? panic("u8::ilog: the number is not positive or the base is below 2; use `checked_ilog` to get `none` instead")
+    }
+    /// `floor(log2(self))`, or `none` unless `self > 0`.
+    #[must_use]
+    pub const fn checked_ilog2(self) -> u32 | none {
+        if self <= 0 { return none; }
+        7 - self.leading_zeros()
+    }
+    /// `floor(log10(self))`, or `none` unless `self > 0`.
+    #[must_use]
+    pub const fn checked_ilog10(self) -> u32 | none { self.checked_ilog(10) }
+    /// `floor(log(self, base))`, or `none` unless `self > 0` and `base >= 2`.
+    #[must_use]
+    pub const fn checked_ilog(self, base: u8) -> u32 | none {
+        if self <= 0 || base < 2 { return none; }
+        let n: u32 = 0;
+        let x = self;
+        while x >= base {
+            x = x / base;
+            n += 1;
+        }
+        n
+    }
+}
+
+// u16
+
+impl u16 {
+    /// The smallest value.
+    pub const MIN: u16 = 0;
+    /// The largest value.
+    pub const MAX: u16 = 65535;
+    /// The width in bits.
+    pub const BITS: u32 = 16;
+
+    /// `self + rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_add.u16")]
+    #[must_use]
+    pub const fn wrapping_add(self, rhs: u16) -> u16 { self.wrapping_add(rhs) }
+    /// `self - rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_sub.u16")]
+    #[must_use]
+    pub const fn wrapping_sub(self, rhs: u16) -> u16 { self.wrapping_sub(rhs) }
+    /// `self * rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_mul.u16")]
+    #[must_use]
+    pub const fn wrapping_mul(self, rhs: u16) -> u16 { self.wrapping_mul(rhs) }
+    #[intrinsic("nabi.ctpop.u16")]
+    const fn ctpop(self) -> u16 { self.ctpop() }
+    #[intrinsic("nabi.ctlz.u16")]
+    const fn ctlz(self) -> u16 { self.ctlz() }
+    #[intrinsic("nabi.cttz.u16")]
+    const fn cttz(self) -> u16 { self.cttz() }
+
+    /// The number of one bits.
+    #[must_use]
+    pub const fn count_ones(self) -> u32 { self.ctpop() as u32 }
+    /// The number of zero bits.
+    #[must_use]
+    pub const fn count_zeros(self) -> u32 { (~self).ctpop() as u32 }
+    /// The number of zero bits above the highest one bit.
+    #[must_use]
+    pub const fn leading_zeros(self) -> u32 { self.ctlz() as u32 }
+    /// The number of zero bits below the lowest one bit.
+    #[must_use]
+    pub const fn trailing_zeros(self) -> u32 { self.cttz() as u32 }
+    /// The number of one bits above the highest zero bit.
+    #[must_use]
+    pub const fn leading_ones(self) -> u32 { (~self).ctlz() as u32 }
+    /// The number of one bits below the lowest zero bit.
+    #[must_use]
+    pub const fn trailing_ones(self) -> u32 { (~self).cttz() as u32 }
+
+    /// The bits shifted left by `n`, those shifted out coming back on the right.
+    #[must_use]
+    pub const fn rotate_left(self, n: u32) -> u16 {
+        let k = n % 16;
+        if k == 0 { return self; }
+        self << (k as u16) | self >> ((16 - k) as u16)
+    }
+    /// The bits shifted right by `n`, those shifted out coming back on the left.
+    #[must_use]
+    pub const fn rotate_right(self, n: u32) -> u16 { self.rotate_left(16 - n % 16) }
+    /// The bytes in reverse order.
+    #[intrinsic("nabi.bswap.u16")]
+    #[must_use]
+    pub const fn swap_bytes(self) -> u16 { self.swap_bytes() }
+
+    /// `self` in big-endian byte order (unchanged on a big-endian target).
+    #[must_use]
+    pub const fn to_be(self) -> u16 { if BIG_ENDIAN { self } else { self.swap_bytes() } }
+    /// `self` in little-endian byte order (unchanged on a little-endian target).
+    #[must_use]
+    pub const fn to_le(self) -> u16 { if BIG_ENDIAN { self.swap_bytes() } else { self } }
+    /// The number whose big-endian bytes are `x`.
+    #[must_use]
+    pub const fn from_be(x: u16) -> u16 { x.to_be() }
+    /// The number whose little-endian bytes are `x`.
+    #[must_use]
+    pub const fn from_le(x: u16) -> u16 { x.to_le() }
+    /// The bytes, least significant first.
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 2] { [self as u8, (self >> 8) as u8] }
+    /// The bytes, most significant first.
+    #[must_use]
+    pub const fn to_be_bytes(self) -> [u8; 2] { [(self >> 8) as u8, self as u8] }
+    /// The bytes in the target's byte order.
+    #[must_use]
+    pub const fn to_ne_bytes(self) -> [u8; 2] { if BIG_ENDIAN { self.to_be_bytes() } else { self.to_le_bytes() } }
+    /// The number of `bytes`, least significant first.
+    #[must_use]
+    pub const fn from_le_bytes(bytes: [u8; 2]) -> u16 {
+        let x: u16 = 0;
+        for i in 0..2 { x = x | (bytes[i] as u16) << (8 * i as u16); }
+        x
+    }
+    /// The number of `bytes`, most significant first.
+    #[must_use]
+    pub const fn from_be_bytes(bytes: [u8; 2]) -> u16 {
+        let x: u16 = 0;
+        for i in 0..2 { x = x << 8 | bytes[i] as u16; }
+        x
+    }
+    /// The number of `bytes`, in the target's byte order.
+    #[must_use]
+    pub const fn from_ne_bytes(bytes: [u8; 2]) -> u16 { if BIG_ENDIAN { u16::from_be_bytes(bytes) } else { u16::from_le_bytes(bytes) } }
+
+    /// `self + rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_add(self, rhs: u16) -> u16 | none {
+        let r = self.wrapping_add(rhs);
+        if r < self { return none; }
+        r
+    }
+    /// `self - rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_sub(self, rhs: u16) -> u16 | none {
+        let r = self.wrapping_sub(rhs);
+        if self < rhs { return none; }
+        r
+    }
+    /// `self * rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_mul(self, rhs: u16) -> u16 | none {
+        let r = self.wrapping_mul(rhs);
+        if self != 0 && r / self != rhs { return none; }
+        r
+    }
+    /// `self / rhs`, or `none` when `rhs` is 0.
+    #[must_use]
+    pub const fn checked_div(self, rhs: u16) -> u16 | none {
+        if rhs == 0 { return none; }
+        self / rhs
+    }
+    /// `self % rhs`, or `none` when `rhs` is 0.
+    #[must_use]
+    pub const fn checked_rem(self, rhs: u16) -> u16 | none {
+        if rhs == 0 { return none; }
+        self % rhs
+    }
+    /// `-self`: `0` for 0, `none` for any other value.
+    #[must_use]
+    pub const fn checked_neg(self) -> u16 | none {
+        if self != 0 { return none; }
+        self
+    }
+    /// `self << n`, or `none` when `n` is at least `BITS`.
+    #[must_use]
+    pub const fn checked_shl(self, n: u32) -> u16 | none {
+        if n >= 16 { return none; }
+        self << (n as u16)
+    }
+    /// `self >> n`, or `none` when `n` is at least `BITS`.
+    #[must_use]
+    pub const fn checked_shr(self, n: u32) -> u16 | none {
+        if n >= 16 { return none; }
+        self >> (n as u16)
+    }
+    /// `self` to the `exp`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_pow(self, exp: u32) -> u16 | none {
+        if exp == 0 { return 1; }
+        let base = self;
+        let acc: u16 = 1;
+        let e = exp;
+        while e > 1 {
+            if e & 1 == 1 { acc = acc.checked_mul(base)?; }
+            e = e >> 1;
+            base = base.checked_mul(base)?;
+        }
+        acc.checked_mul(base)
+    }
+
+    /// `self / rhs` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn wrapping_div(self, rhs: u16) -> u16 {
+        self / rhs
+    }
+    /// `self % rhs` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn wrapping_rem(self, rhs: u16) -> u16 {
+        self % rhs
+    }
+    /// `0 - self`, wrapping around.
+    #[must_use]
+    pub const fn wrapping_neg(self) -> u16 { u16::wrapping_sub(0, self) }
+    /// `self << (n % BITS)`.
+    #[must_use]
+    pub const fn wrapping_shl(self, n: u32) -> u16 { self << ((n % 16) as u16) }
+    /// `self >> (n % BITS)`.
+    #[must_use]
+    pub const fn wrapping_shr(self, n: u32) -> u16 { self >> ((n % 16) as u16) }
+    /// `self` to the `exp`, wrapping around at the bounds.
+    #[must_use]
+    pub const fn wrapping_pow(self, exp: u32) -> u16 {
+        let base = self;
+        let acc: u16 = 1;
+        let e = exp;
+        while e > 0 {
+            if e & 1 == 1 { acc = acc.wrapping_mul(base); }
+            e = e >> 1;
+            base = base.wrapping_mul(base);
+        }
+        acc
+    }
+
+    /// `self + rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_add(self, rhs: u16) -> u16 { self.checked_add(rhs) ?? u16::MAX }
+    /// `self - rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_sub(self, rhs: u16) -> u16 { self.checked_sub(rhs) ?? 0 }
+    /// `self * rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_mul(self, rhs: u16) -> u16 { self.checked_mul(rhs) ?? u16::MAX }
+    /// `self` to the `exp`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_pow(self, exp: u32) -> u16 { self.checked_pow(exp) ?? u16::MAX }
+
+    /// `self + rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_add(self, rhs: u16) -> (u16, bool) {
+        (self.wrapping_add(rhs), self.checked_add(rhs) is none)
+    }
+    /// `self - rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_sub(self, rhs: u16) -> (u16, bool) {
+        (self.wrapping_sub(rhs), self.checked_sub(rhs) is none)
+    }
+    /// `self * rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_mul(self, rhs: u16) -> (u16, bool) {
+        (self.wrapping_mul(rhs), self.checked_mul(rhs) is none)
+    }
+    /// `self / rhs` and `false` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn overflowing_div(self, rhs: u16) -> (u16, bool) { (self / rhs, false) }
+    /// `self % rhs` and `false` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn overflowing_rem(self, rhs: u16) -> (u16, bool) { (self % rhs, false) }
+    /// `0 - self` wrapped, and whether it overflowed (any value but 0).
+    #[must_use]
+    pub const fn overflowing_neg(self) -> (u16, bool) { (self.wrapping_neg(), self != 0) }
+    /// `self << (n % BITS)`, and whether `n` was at least `BITS`.
+    #[must_use]
+    pub const fn overflowing_shl(self, n: u32) -> (u16, bool) { (self.wrapping_shl(n), n >= 16) }
+    /// `self >> (n % BITS)`, and whether `n` was at least `BITS`.
+    #[must_use]
+    pub const fn overflowing_shr(self, n: u32) -> (u16, bool) { (self.wrapping_shr(n), n >= 16) }
+    /// `self` to the `exp` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_pow(self, exp: u32) -> (u16, bool) {
+        (self.wrapping_pow(exp), self.checked_pow(exp) is none)
+    }
+
+    /// `self` to the `exp`; overflow is the arithmetic's (a panic;
+    /// a wrap with overflow checks off).
+    #[must_use]
+    pub const fn pow(self, exp: u32) -> u16 {
+        if exp == 0 { return 1; }
+        let base = self;
+        let acc: u16 = 1;
+        let e = exp;
+        while e > 1 {
+            if e & 1 == 1 { acc = acc * base; }
+            e = e >> 1;
+            base = base * base;
+        }
+        acc * base
+    }
+    /// `|self - rhs|`, as the unsigned type of the same width; never overflows.
+    #[must_use]
+    pub const fn abs_diff(self, rhs: u16) -> u16 { if self < rhs { rhs - self } else { self - rhs } }
+    /// Quotient rounded toward negative infinity: `/` for an unsigned
+    /// type (Python's `//`).
+    #[must_use]
+    #[track_caller]
+    pub const fn div_floor(self, rhs: u16) -> u16 { self / rhs }
+    /// The remainder with the divisor's sign: `%` for an unsigned type
+    /// (Python's `%`).
+    #[must_use]
+    #[track_caller]
+    pub const fn rem_floor(self, rhs: u16) -> u16 { self % rhs }
+    /// `self / rhs` (the same as `/` for unsigned numbers). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn div_euclid(self, rhs: u16) -> u16 { self / rhs }
+    /// `self % rhs` (the same as `%` for unsigned numbers). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn rem_euclid(self, rhs: u16) -> u16 { self % rhs }
+    /// Integer square root (rounded down).
+    #[track_caller]
+    #[must_use]
+    pub const fn isqrt(self) -> u16 {
+        if self < 2 { return self; }
+        // A float estimate, then exact fix-up (division keeps it from
+        // overflowing).
+        let x = (self as f64).sqrt() as u16;
+        while x > self / x { x -= 1; }
+        while x + 1 <= self / (x + 1) { x += 1; }
+        x
+    }
+    /// `true` when exactly one bit is set.
+    #[must_use]
+    pub const fn is_power_of_two(self) -> bool { self != 0 && self & (self - 1) == 0 }
+    /// The smallest power of two `>= self`; panics past `MAX`.
+    #[track_caller]
+    #[must_use]
+    pub const fn next_power_of_two(self) -> u16 {
+        self.checked_next_power_of_two() ?? panic("u16::next_power_of_two: the result overflows; use `checked_next_power_of_two` to get `none` instead")
+    }
+    /// The smallest power of two `>= self`, or `none` past `MAX`.
+    #[must_use]
+    pub const fn checked_next_power_of_two(self) -> u16 | none {
+        if self <= 1 { return 1; }
+        let p = 16 - (self - 1).leading_zeros();
+        if p >= 16 { return none; }
+        let one: u16 = 1;
+        one << (p as u16)
+    }
+    /// `floor(log2(self))`; panics unless `self > 0`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog2(self) -> u32 { self.checked_ilog2() ?? panic("u16::ilog2: the number is not positive; use `checked_ilog2` to get `none` instead") }
+    /// `floor(log10(self))`; panics unless `self > 0`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog10(self) -> u32 { self.checked_ilog10() ?? panic("u16::ilog10: the number is not positive; use `checked_ilog10` to get `none` instead") }
+    /// `floor(log(self, base))`; panics unless `self > 0` and `base >= 2`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog(self, base: u16) -> u32 {
+        self.checked_ilog(base) ?? panic("u16::ilog: the number is not positive or the base is below 2; use `checked_ilog` to get `none` instead")
+    }
+    /// `floor(log2(self))`, or `none` unless `self > 0`.
+    #[must_use]
+    pub const fn checked_ilog2(self) -> u32 | none {
+        if self <= 0 { return none; }
+        15 - self.leading_zeros()
+    }
+    /// `floor(log10(self))`, or `none` unless `self > 0`.
+    #[must_use]
+    pub const fn checked_ilog10(self) -> u32 | none { self.checked_ilog(10) }
+    /// `floor(log(self, base))`, or `none` unless `self > 0` and `base >= 2`.
+    #[must_use]
+    pub const fn checked_ilog(self, base: u16) -> u32 | none {
+        if self <= 0 || base < 2 { return none; }
+        let n: u32 = 0;
+        let x = self;
+        while x >= base {
+            x = x / base;
+            n += 1;
+        }
+        n
+    }
+}
+
+// u32
+
+impl u32 {
+    /// The smallest value.
+    pub const MIN: u32 = 0;
+    /// The largest value.
+    pub const MAX: u32 = 4294967295;
+    /// The width in bits.
+    pub const BITS: u32 = 32;
+
+    /// `self + rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_add.u32")]
+    #[must_use]
+    pub const fn wrapping_add(self, rhs: u32) -> u32 { self.wrapping_add(rhs) }
+    /// `self - rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_sub.u32")]
+    #[must_use]
+    pub const fn wrapping_sub(self, rhs: u32) -> u32 { self.wrapping_sub(rhs) }
+    /// `self * rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_mul.u32")]
+    #[must_use]
+    pub const fn wrapping_mul(self, rhs: u32) -> u32 { self.wrapping_mul(rhs) }
+    #[intrinsic("nabi.ctpop.u32")]
+    const fn ctpop(self) -> u32 { self.ctpop() }
+    #[intrinsic("nabi.ctlz.u32")]
+    const fn ctlz(self) -> u32 { self.ctlz() }
+    #[intrinsic("nabi.cttz.u32")]
+    const fn cttz(self) -> u32 { self.cttz() }
+
+    /// The number of one bits.
+    #[must_use]
+    pub const fn count_ones(self) -> u32 { self.ctpop() as u32 }
+    /// The number of zero bits.
+    #[must_use]
+    pub const fn count_zeros(self) -> u32 { (~self).ctpop() as u32 }
+    /// The number of zero bits above the highest one bit.
+    #[must_use]
+    pub const fn leading_zeros(self) -> u32 { self.ctlz() as u32 }
+    /// The number of zero bits below the lowest one bit.
+    #[must_use]
+    pub const fn trailing_zeros(self) -> u32 { self.cttz() as u32 }
+    /// The number of one bits above the highest zero bit.
+    #[must_use]
+    pub const fn leading_ones(self) -> u32 { (~self).ctlz() as u32 }
+    /// The number of one bits below the lowest zero bit.
+    #[must_use]
+    pub const fn trailing_ones(self) -> u32 { (~self).cttz() as u32 }
+
+    /// The bits shifted left by `n`, those shifted out coming back on the right.
+    #[must_use]
+    pub const fn rotate_left(self, n: u32) -> u32 {
+        let k = n % 32;
+        if k == 0 { return self; }
+        self << k | self >> (32 - k)
+    }
+    /// The bits shifted right by `n`, those shifted out coming back on the left.
+    #[must_use]
+    pub const fn rotate_right(self, n: u32) -> u32 { self.rotate_left(32 - n % 32) }
+    /// The bytes in reverse order.
+    #[intrinsic("nabi.bswap.u32")]
+    #[must_use]
+    pub const fn swap_bytes(self) -> u32 { self.swap_bytes() }
+
+    /// `self` in big-endian byte order (unchanged on a big-endian target).
+    #[must_use]
+    pub const fn to_be(self) -> u32 { if BIG_ENDIAN { self } else { self.swap_bytes() } }
+    /// `self` in little-endian byte order (unchanged on a little-endian target).
+    #[must_use]
+    pub const fn to_le(self) -> u32 { if BIG_ENDIAN { self.swap_bytes() } else { self } }
+    /// The number whose big-endian bytes are `x`.
+    #[must_use]
+    pub const fn from_be(x: u32) -> u32 { x.to_be() }
+    /// The number whose little-endian bytes are `x`.
+    #[must_use]
+    pub const fn from_le(x: u32) -> u32 { x.to_le() }
+    /// The bytes, least significant first.
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 4] { [self as u8, (self >> 8) as u8, (self >> 16) as u8, (self >> 24) as u8] }
+    /// The bytes, most significant first.
+    #[must_use]
+    pub const fn to_be_bytes(self) -> [u8; 4] { [(self >> 24) as u8, (self >> 16) as u8, (self >> 8) as u8, self as u8] }
+    /// The bytes in the target's byte order.
+    #[must_use]
+    pub const fn to_ne_bytes(self) -> [u8; 4] { if BIG_ENDIAN { self.to_be_bytes() } else { self.to_le_bytes() } }
+    /// The number of `bytes`, least significant first.
+    #[must_use]
+    pub const fn from_le_bytes(bytes: [u8; 4]) -> u32 {
+        let x: u32 = 0;
+        for i in 0..4 { x = x | (bytes[i] as u32) << (8 * i as u32); }
+        x
+    }
+    /// The number of `bytes`, most significant first.
+    #[must_use]
+    pub const fn from_be_bytes(bytes: [u8; 4]) -> u32 {
+        let x: u32 = 0;
+        for i in 0..4 { x = x << 8 | bytes[i] as u32; }
+        x
+    }
+    /// The number of `bytes`, in the target's byte order.
+    #[must_use]
+    pub const fn from_ne_bytes(bytes: [u8; 4]) -> u32 { if BIG_ENDIAN { u32::from_be_bytes(bytes) } else { u32::from_le_bytes(bytes) } }
+
+    /// `self + rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_add(self, rhs: u32) -> u32 | none {
+        let r = self.wrapping_add(rhs);
+        if r < self { return none; }
+        r
+    }
+    /// `self - rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_sub(self, rhs: u32) -> u32 | none {
+        let r = self.wrapping_sub(rhs);
+        if self < rhs { return none; }
+        r
+    }
+    /// `self * rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_mul(self, rhs: u32) -> u32 | none {
+        let r = self.wrapping_mul(rhs);
+        if self != 0 && r / self != rhs { return none; }
+        r
+    }
+    /// `self / rhs`, or `none` when `rhs` is 0.
+    #[must_use]
+    pub const fn checked_div(self, rhs: u32) -> u32 | none {
+        if rhs == 0 { return none; }
+        self / rhs
+    }
+    /// `self % rhs`, or `none` when `rhs` is 0.
+    #[must_use]
+    pub const fn checked_rem(self, rhs: u32) -> u32 | none {
+        if rhs == 0 { return none; }
+        self % rhs
+    }
+    /// `-self`: `0` for 0, `none` for any other value.
+    #[must_use]
+    pub const fn checked_neg(self) -> u32 | none {
+        if self != 0 { return none; }
+        self
+    }
+    /// `self << n`, or `none` when `n` is at least `BITS`.
+    #[must_use]
+    pub const fn checked_shl(self, n: u32) -> u32 | none {
+        if n >= 32 { return none; }
+        self << (n as u32)
+    }
+    /// `self >> n`, or `none` when `n` is at least `BITS`.
+    #[must_use]
+    pub const fn checked_shr(self, n: u32) -> u32 | none {
+        if n >= 32 { return none; }
+        self >> (n as u32)
+    }
+    /// `self` to the `exp`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_pow(self, exp: u32) -> u32 | none {
+        if exp == 0 { return 1; }
+        let base = self;
+        let acc: u32 = 1;
+        let e = exp;
+        while e > 1 {
+            if e & 1 == 1 { acc = acc.checked_mul(base)?; }
+            e = e >> 1;
+            base = base.checked_mul(base)?;
+        }
+        acc.checked_mul(base)
+    }
+
+    /// `self / rhs` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn wrapping_div(self, rhs: u32) -> u32 {
+        self / rhs
+    }
+    /// `self % rhs` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn wrapping_rem(self, rhs: u32) -> u32 {
+        self % rhs
+    }
+    /// `0 - self`, wrapping around.
+    #[must_use]
+    pub const fn wrapping_neg(self) -> u32 { u32::wrapping_sub(0, self) }
+    /// `self << (n % BITS)`.
+    #[must_use]
+    pub const fn wrapping_shl(self, n: u32) -> u32 { self << ((n % 32) as u32) }
+    /// `self >> (n % BITS)`.
+    #[must_use]
+    pub const fn wrapping_shr(self, n: u32) -> u32 { self >> ((n % 32) as u32) }
+    /// `self` to the `exp`, wrapping around at the bounds.
+    #[must_use]
+    pub const fn wrapping_pow(self, exp: u32) -> u32 {
+        let base = self;
+        let acc: u32 = 1;
+        let e = exp;
+        while e > 0 {
+            if e & 1 == 1 { acc = acc.wrapping_mul(base); }
+            e = e >> 1;
+            base = base.wrapping_mul(base);
+        }
+        acc
+    }
+
+    /// `self + rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_add(self, rhs: u32) -> u32 { self.checked_add(rhs) ?? u32::MAX }
+    /// `self - rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_sub(self, rhs: u32) -> u32 { self.checked_sub(rhs) ?? 0 }
+    /// `self * rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_mul(self, rhs: u32) -> u32 { self.checked_mul(rhs) ?? u32::MAX }
+    /// `self` to the `exp`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_pow(self, exp: u32) -> u32 { self.checked_pow(exp) ?? u32::MAX }
+
+    /// `self + rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_add(self, rhs: u32) -> (u32, bool) {
+        (self.wrapping_add(rhs), self.checked_add(rhs) is none)
+    }
+    /// `self - rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_sub(self, rhs: u32) -> (u32, bool) {
+        (self.wrapping_sub(rhs), self.checked_sub(rhs) is none)
+    }
+    /// `self * rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_mul(self, rhs: u32) -> (u32, bool) {
+        (self.wrapping_mul(rhs), self.checked_mul(rhs) is none)
+    }
+    /// `self / rhs` and `false` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn overflowing_div(self, rhs: u32) -> (u32, bool) { (self / rhs, false) }
+    /// `self % rhs` and `false` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn overflowing_rem(self, rhs: u32) -> (u32, bool) { (self % rhs, false) }
+    /// `0 - self` wrapped, and whether it overflowed (any value but 0).
+    #[must_use]
+    pub const fn overflowing_neg(self) -> (u32, bool) { (self.wrapping_neg(), self != 0) }
+    /// `self << (n % BITS)`, and whether `n` was at least `BITS`.
+    #[must_use]
+    pub const fn overflowing_shl(self, n: u32) -> (u32, bool) { (self.wrapping_shl(n), n >= 32) }
+    /// `self >> (n % BITS)`, and whether `n` was at least `BITS`.
+    #[must_use]
+    pub const fn overflowing_shr(self, n: u32) -> (u32, bool) { (self.wrapping_shr(n), n >= 32) }
+    /// `self` to the `exp` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_pow(self, exp: u32) -> (u32, bool) {
+        (self.wrapping_pow(exp), self.checked_pow(exp) is none)
+    }
+
+    /// `self` to the `exp`; overflow is the arithmetic's (a panic;
+    /// a wrap with overflow checks off).
+    #[must_use]
+    pub const fn pow(self, exp: u32) -> u32 {
+        if exp == 0 { return 1; }
+        let base = self;
+        let acc: u32 = 1;
+        let e = exp;
+        while e > 1 {
+            if e & 1 == 1 { acc = acc * base; }
+            e = e >> 1;
+            base = base * base;
+        }
+        acc * base
+    }
+    /// `|self - rhs|`, as the unsigned type of the same width; never overflows.
+    #[must_use]
+    pub const fn abs_diff(self, rhs: u32) -> u32 { if self < rhs { rhs - self } else { self - rhs } }
+    /// Quotient rounded toward negative infinity: `/` for an unsigned
+    /// type (Python's `//`).
+    #[must_use]
+    #[track_caller]
+    pub const fn div_floor(self, rhs: u32) -> u32 { self / rhs }
+    /// The remainder with the divisor's sign: `%` for an unsigned type
+    /// (Python's `%`).
+    #[must_use]
+    #[track_caller]
+    pub const fn rem_floor(self, rhs: u32) -> u32 { self % rhs }
+    /// `self / rhs` (the same as `/` for unsigned numbers). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn div_euclid(self, rhs: u32) -> u32 { self / rhs }
+    /// `self % rhs` (the same as `%` for unsigned numbers). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn rem_euclid(self, rhs: u32) -> u32 { self % rhs }
+    /// Integer square root (rounded down).
+    #[track_caller]
+    #[must_use]
+    pub const fn isqrt(self) -> u32 {
+        if self < 2 { return self; }
+        // A float estimate, then exact fix-up (division keeps it from
+        // overflowing).
+        let x = (self as f64).sqrt() as u32;
+        while x > self / x { x -= 1; }
+        while x + 1 <= self / (x + 1) { x += 1; }
+        x
+    }
+    /// `true` when exactly one bit is set.
+    #[must_use]
+    pub const fn is_power_of_two(self) -> bool { self != 0 && self & (self - 1) == 0 }
+    /// The smallest power of two `>= self`; panics past `MAX`.
+    #[track_caller]
+    #[must_use]
+    pub const fn next_power_of_two(self) -> u32 {
+        self.checked_next_power_of_two() ?? panic("u32::next_power_of_two: the result overflows; use `checked_next_power_of_two` to get `none` instead")
+    }
+    /// The smallest power of two `>= self`, or `none` past `MAX`.
+    #[must_use]
+    pub const fn checked_next_power_of_two(self) -> u32 | none {
+        if self <= 1 { return 1; }
+        let p = 32 - (self - 1).leading_zeros();
+        if p >= 32 { return none; }
+        let one: u32 = 1;
+        one << (p as u32)
+    }
+    /// `floor(log2(self))`; panics unless `self > 0`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog2(self) -> u32 { self.checked_ilog2() ?? panic("u32::ilog2: the number is not positive; use `checked_ilog2` to get `none` instead") }
+    /// `floor(log10(self))`; panics unless `self > 0`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog10(self) -> u32 { self.checked_ilog10() ?? panic("u32::ilog10: the number is not positive; use `checked_ilog10` to get `none` instead") }
+    /// `floor(log(self, base))`; panics unless `self > 0` and `base >= 2`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog(self, base: u32) -> u32 {
+        self.checked_ilog(base) ?? panic("u32::ilog: the number is not positive or the base is below 2; use `checked_ilog` to get `none` instead")
+    }
+    /// `floor(log2(self))`, or `none` unless `self > 0`.
+    #[must_use]
+    pub const fn checked_ilog2(self) -> u32 | none {
+        if self <= 0 { return none; }
+        31 - self.leading_zeros()
+    }
+    /// `floor(log10(self))`, or `none` unless `self > 0`.
+    #[must_use]
+    pub const fn checked_ilog10(self) -> u32 | none { self.checked_ilog(10) }
+    /// `floor(log(self, base))`, or `none` unless `self > 0` and `base >= 2`.
+    #[must_use]
+    pub const fn checked_ilog(self, base: u32) -> u32 | none {
+        if self <= 0 || base < 2 { return none; }
+        let n: u32 = 0;
+        let x = self;
+        while x >= base {
+            x = x / base;
+            n += 1;
+        }
+        n
+    }
+}
+
+// u64
+
+impl u64 {
+    /// The smallest value.
+    pub const MIN: u64 = 0;
+    /// The largest value.
+    pub const MAX: u64 = 18446744073709551615;
+    /// The width in bits.
+    pub const BITS: u32 = 64;
+
+    /// `self + rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_add.u64")]
+    #[must_use]
+    pub const fn wrapping_add(self, rhs: u64) -> u64 { self.wrapping_add(rhs) }
+    /// `self - rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_sub.u64")]
+    #[must_use]
+    pub const fn wrapping_sub(self, rhs: u64) -> u64 { self.wrapping_sub(rhs) }
+    /// `self * rhs`, wrapping around at the bounds.
+    #[intrinsic("nabi.wrapping_mul.u64")]
+    #[must_use]
+    pub const fn wrapping_mul(self, rhs: u64) -> u64 { self.wrapping_mul(rhs) }
+    #[intrinsic("nabi.ctpop.u64")]
+    const fn ctpop(self) -> u64 { self.ctpop() }
+    #[intrinsic("nabi.ctlz.u64")]
+    const fn ctlz(self) -> u64 { self.ctlz() }
+    #[intrinsic("nabi.cttz.u64")]
+    const fn cttz(self) -> u64 { self.cttz() }
+
+    /// The number of one bits.
+    #[must_use]
+    pub const fn count_ones(self) -> u32 { self.ctpop() as u32 }
+    /// The number of zero bits.
+    #[must_use]
+    pub const fn count_zeros(self) -> u32 { (~self).ctpop() as u32 }
+    /// The number of zero bits above the highest one bit.
+    #[must_use]
+    pub const fn leading_zeros(self) -> u32 { self.ctlz() as u32 }
+    /// The number of zero bits below the lowest one bit.
+    #[must_use]
+    pub const fn trailing_zeros(self) -> u32 { self.cttz() as u32 }
+    /// The number of one bits above the highest zero bit.
+    #[must_use]
+    pub const fn leading_ones(self) -> u32 { (~self).ctlz() as u32 }
+    /// The number of one bits below the lowest zero bit.
+    #[must_use]
+    pub const fn trailing_ones(self) -> u32 { (~self).cttz() as u32 }
+
+    /// The bits shifted left by `n`, those shifted out coming back on the right.
+    #[must_use]
+    pub const fn rotate_left(self, n: u32) -> u64 {
+        let k = n % 64;
+        if k == 0 { return self; }
+        self << (k as u64) | self >> ((64 - k) as u64)
+    }
+    /// The bits shifted right by `n`, those shifted out coming back on the left.
+    #[must_use]
+    pub const fn rotate_right(self, n: u32) -> u64 { self.rotate_left(64 - n % 64) }
+    /// The bytes in reverse order.
+    #[intrinsic("nabi.bswap.u64")]
+    #[must_use]
+    pub const fn swap_bytes(self) -> u64 { self.swap_bytes() }
+
+    /// `self` in big-endian byte order (unchanged on a big-endian target).
+    #[must_use]
+    pub const fn to_be(self) -> u64 { if BIG_ENDIAN { self } else { self.swap_bytes() } }
+    /// `self` in little-endian byte order (unchanged on a little-endian target).
+    #[must_use]
+    pub const fn to_le(self) -> u64 { if BIG_ENDIAN { self.swap_bytes() } else { self } }
+    /// The number whose big-endian bytes are `x`.
+    #[must_use]
+    pub const fn from_be(x: u64) -> u64 { x.to_be() }
+    /// The number whose little-endian bytes are `x`.
+    #[must_use]
+    pub const fn from_le(x: u64) -> u64 { x.to_le() }
+    /// The bytes, least significant first.
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 8] { [self as u8, (self >> 8) as u8, (self >> 16) as u8, (self >> 24) as u8, (self >> 32) as u8, (self >> 40) as u8, (self >> 48) as u8, (self >> 56) as u8] }
+    /// The bytes, most significant first.
+    #[must_use]
+    pub const fn to_be_bytes(self) -> [u8; 8] { [(self >> 56) as u8, (self >> 48) as u8, (self >> 40) as u8, (self >> 32) as u8, (self >> 24) as u8, (self >> 16) as u8, (self >> 8) as u8, self as u8] }
+    /// The bytes in the target's byte order.
+    #[must_use]
+    pub const fn to_ne_bytes(self) -> [u8; 8] { if BIG_ENDIAN { self.to_be_bytes() } else { self.to_le_bytes() } }
+    /// The number of `bytes`, least significant first.
+    #[must_use]
+    pub const fn from_le_bytes(bytes: [u8; 8]) -> u64 {
+        let x: u64 = 0;
+        for i in 0..8 { x = x | (bytes[i] as u64) << (8 * i as u64); }
+        x
+    }
+    /// The number of `bytes`, most significant first.
+    #[must_use]
+    pub const fn from_be_bytes(bytes: [u8; 8]) -> u64 {
+        let x: u64 = 0;
+        for i in 0..8 { x = x << 8 | bytes[i] as u64; }
+        x
+    }
+    /// The number of `bytes`, in the target's byte order.
+    #[must_use]
+    pub const fn from_ne_bytes(bytes: [u8; 8]) -> u64 { if BIG_ENDIAN { u64::from_be_bytes(bytes) } else { u64::from_le_bytes(bytes) } }
+
+    /// `self + rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_add(self, rhs: u64) -> u64 | none {
+        let r = self.wrapping_add(rhs);
+        if r < self { return none; }
+        r
+    }
+    /// `self - rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_sub(self, rhs: u64) -> u64 | none {
+        let r = self.wrapping_sub(rhs);
+        if self < rhs { return none; }
+        r
+    }
+    /// `self * rhs`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_mul(self, rhs: u64) -> u64 | none {
+        let r = self.wrapping_mul(rhs);
+        if self != 0 && r / self != rhs { return none; }
+        r
+    }
+    /// `self / rhs`, or `none` when `rhs` is 0.
+    #[must_use]
+    pub const fn checked_div(self, rhs: u64) -> u64 | none {
+        if rhs == 0 { return none; }
+        self / rhs
+    }
+    /// `self % rhs`, or `none` when `rhs` is 0.
+    #[must_use]
+    pub const fn checked_rem(self, rhs: u64) -> u64 | none {
+        if rhs == 0 { return none; }
+        self % rhs
+    }
+    /// `-self`: `0` for 0, `none` for any other value.
+    #[must_use]
+    pub const fn checked_neg(self) -> u64 | none {
+        if self != 0 { return none; }
+        self
+    }
+    /// `self << n`, or `none` when `n` is at least `BITS`.
+    #[must_use]
+    pub const fn checked_shl(self, n: u32) -> u64 | none {
+        if n >= 64 { return none; }
+        self << (n as u64)
+    }
+    /// `self >> n`, or `none` when `n` is at least `BITS`.
+    #[must_use]
+    pub const fn checked_shr(self, n: u32) -> u64 | none {
+        if n >= 64 { return none; }
+        self >> (n as u64)
+    }
+    /// `self` to the `exp`, or `none` on overflow.
+    #[must_use]
+    pub const fn checked_pow(self, exp: u32) -> u64 | none {
+        if exp == 0 { return 1; }
+        let base = self;
+        let acc: u64 = 1;
+        let e = exp;
+        while e > 1 {
+            if e & 1 == 1 { acc = acc.checked_mul(base)?; }
+            e = e >> 1;
+            base = base.checked_mul(base)?;
+        }
+        acc.checked_mul(base)
+    }
+
+    /// `self / rhs` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn wrapping_div(self, rhs: u64) -> u64 {
+        self / rhs
+    }
+    /// `self % rhs` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn wrapping_rem(self, rhs: u64) -> u64 {
+        self % rhs
+    }
+    /// `0 - self`, wrapping around.
+    #[must_use]
+    pub const fn wrapping_neg(self) -> u64 { u64::wrapping_sub(0, self) }
+    /// `self << (n % BITS)`.
+    #[must_use]
+    pub const fn wrapping_shl(self, n: u32) -> u64 { self << ((n % 64) as u64) }
+    /// `self >> (n % BITS)`.
+    #[must_use]
+    pub const fn wrapping_shr(self, n: u32) -> u64 { self >> ((n % 64) as u64) }
+    /// `self` to the `exp`, wrapping around at the bounds.
+    #[must_use]
+    pub const fn wrapping_pow(self, exp: u32) -> u64 {
+        let base = self;
+        let acc: u64 = 1;
+        let e = exp;
+        while e > 0 {
+            if e & 1 == 1 { acc = acc.wrapping_mul(base); }
+            e = e >> 1;
+            base = base.wrapping_mul(base);
+        }
+        acc
+    }
+
+    /// `self + rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_add(self, rhs: u64) -> u64 { self.checked_add(rhs) ?? u64::MAX }
+    /// `self - rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_sub(self, rhs: u64) -> u64 { self.checked_sub(rhs) ?? 0 }
+    /// `self * rhs`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_mul(self, rhs: u64) -> u64 { self.checked_mul(rhs) ?? u64::MAX }
+    /// `self` to the `exp`, clamped to `MIN..=MAX`.
+    #[must_use]
+    pub const fn saturating_pow(self, exp: u32) -> u64 { self.checked_pow(exp) ?? u64::MAX }
+
+    /// `self + rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_add(self, rhs: u64) -> (u64, bool) {
+        (self.wrapping_add(rhs), self.checked_add(rhs) is none)
+    }
+    /// `self - rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_sub(self, rhs: u64) -> (u64, bool) {
+        (self.wrapping_sub(rhs), self.checked_sub(rhs) is none)
+    }
+    /// `self * rhs` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_mul(self, rhs: u64) -> (u64, bool) {
+        (self.wrapping_mul(rhs), self.checked_mul(rhs) is none)
+    }
+    /// `self / rhs` and `false` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn overflowing_div(self, rhs: u64) -> (u64, bool) { (self / rhs, false) }
+    /// `self % rhs` and `false` (it never overflows). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn overflowing_rem(self, rhs: u64) -> (u64, bool) { (self % rhs, false) }
+    /// `0 - self` wrapped, and whether it overflowed (any value but 0).
+    #[must_use]
+    pub const fn overflowing_neg(self) -> (u64, bool) { (self.wrapping_neg(), self != 0) }
+    /// `self << (n % BITS)`, and whether `n` was at least `BITS`.
+    #[must_use]
+    pub const fn overflowing_shl(self, n: u32) -> (u64, bool) { (self.wrapping_shl(n), n >= 64) }
+    /// `self >> (n % BITS)`, and whether `n` was at least `BITS`.
+    #[must_use]
+    pub const fn overflowing_shr(self, n: u32) -> (u64, bool) { (self.wrapping_shr(n), n >= 64) }
+    /// `self` to the `exp` wrapped, and whether it overflowed.
+    #[must_use]
+    pub const fn overflowing_pow(self, exp: u32) -> (u64, bool) {
+        (self.wrapping_pow(exp), self.checked_pow(exp) is none)
+    }
+
+    /// `self` to the `exp`; overflow is the arithmetic's (a panic;
+    /// a wrap with overflow checks off).
+    #[must_use]
+    pub const fn pow(self, exp: u32) -> u64 {
+        if exp == 0 { return 1; }
+        let base = self;
+        let acc: u64 = 1;
+        let e = exp;
+        while e > 1 {
+            if e & 1 == 1 { acc = acc * base; }
+            e = e >> 1;
+            base = base * base;
+        }
+        acc * base
+    }
+    /// `|self - rhs|`, as the unsigned type of the same width; never overflows.
+    #[must_use]
+    pub const fn abs_diff(self, rhs: u64) -> u64 { if self < rhs { rhs - self } else { self - rhs } }
+    /// Quotient rounded toward negative infinity: `/` for an unsigned
+    /// type (Python's `//`).
+    #[must_use]
+    #[track_caller]
+    pub const fn div_floor(self, rhs: u64) -> u64 { self / rhs }
+    /// The remainder with the divisor's sign: `%` for an unsigned type
+    /// (Python's `%`).
+    #[must_use]
+    #[track_caller]
+    pub const fn rem_floor(self, rhs: u64) -> u64 { self % rhs }
+    /// `self / rhs` (the same as `/` for unsigned numbers). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn div_euclid(self, rhs: u64) -> u64 { self / rhs }
+    /// `self % rhs` (the same as `%` for unsigned numbers). Panics when `rhs` is 0.
+    #[must_use]
+    pub const fn rem_euclid(self, rhs: u64) -> u64 { self % rhs }
+    /// Integer square root (rounded down).
+    #[track_caller]
+    #[must_use]
+    pub const fn isqrt(self) -> u64 {
+        if self < 2 { return self; }
+        // A float estimate, then exact fix-up (division keeps it from
+        // overflowing).
+        let x = (self as f64).sqrt() as u64;
+        while x > self / x { x -= 1; }
+        while x + 1 <= self / (x + 1) { x += 1; }
+        x
+    }
+    /// `true` when exactly one bit is set.
+    #[must_use]
+    pub const fn is_power_of_two(self) -> bool { self != 0 && self & (self - 1) == 0 }
+    /// The smallest power of two `>= self`; panics past `MAX`.
+    #[track_caller]
+    #[must_use]
+    pub const fn next_power_of_two(self) -> u64 {
+        self.checked_next_power_of_two() ?? panic("u64::next_power_of_two: the result overflows; use `checked_next_power_of_two` to get `none` instead")
+    }
+    /// The smallest power of two `>= self`, or `none` past `MAX`.
+    #[must_use]
+    pub const fn checked_next_power_of_two(self) -> u64 | none {
+        if self <= 1 { return 1; }
+        let p = 64 - (self - 1).leading_zeros();
+        if p >= 64 { return none; }
+        let one: u64 = 1;
+        one << (p as u64)
+    }
+    /// `floor(log2(self))`; panics unless `self > 0`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog2(self) -> u32 { self.checked_ilog2() ?? panic("u64::ilog2: the number is not positive; use `checked_ilog2` to get `none` instead") }
+    /// `floor(log10(self))`; panics unless `self > 0`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog10(self) -> u32 { self.checked_ilog10() ?? panic("u64::ilog10: the number is not positive; use `checked_ilog10` to get `none` instead") }
+    /// `floor(log(self, base))`; panics unless `self > 0` and `base >= 2`.
+    #[track_caller]
+    #[must_use]
+    pub const fn ilog(self, base: u64) -> u32 {
+        self.checked_ilog(base) ?? panic("u64::ilog: the number is not positive or the base is below 2; use `checked_ilog` to get `none` instead")
+    }
+    /// `floor(log2(self))`, or `none` unless `self > 0`.
+    #[must_use]
+    pub const fn checked_ilog2(self) -> u32 | none {
+        if self <= 0 { return none; }
+        63 - self.leading_zeros()
+    }
+    /// `floor(log10(self))`, or `none` unless `self > 0`.
+    #[must_use]
+    pub const fn checked_ilog10(self) -> u32 | none { self.checked_ilog(10) }
+    /// `floor(log(self, base))`, or `none` unless `self > 0` and `base >= 2`.
+    #[must_use]
+    pub const fn checked_ilog(self, base: u64) -> u32 | none {
+        if self <= 0 || base < 2 { return none; }
+        let n: u32 = 0;
+        let x = self;
+        while x >= base {
+            x = x / base;
+            n += 1;
+        }
+        n
+    }
+}

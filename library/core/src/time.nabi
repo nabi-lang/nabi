@@ -1,0 +1,295 @@
+//! core::time - `Duration` / `Instant`.
+//! The wall and boot clocks are `std::time`. Every span between two
+//! readings is an exact signed `Duration`: an earlier minus a later one
+//! is negative, never an error or zero.
+
+// Arithmetic overflow panics, and saturates with overflow
+// checks off. The helpers below redo the overflowing op unchecked: with
+// overflow checks on that op panics; past it, saturate.
+
+#[track_caller]
+const fn ns_add(a: i64, b: i64) -> i64 {
+    let r = a.checked_add(b);
+    if r is i64 { return r; }
+    let _ = a + b;
+    if b < 0 { -9223372036854775807 - 1 } else { 9223372036854775807 }
+}
+
+#[track_caller]
+const fn ns_sub(a: i64, b: i64) -> i64 {
+    let r = a.checked_sub(b);
+    if r is i64 { return r; }
+    let _ = a - b;
+    if b > 0 { -9223372036854775807 - 1 } else { 9223372036854775807 }
+}
+
+#[track_caller]
+const fn ns_mul(a: i64, b: i64) -> i64 {
+    let r = a.checked_mul(b);
+    if r is i64 { return r; }
+    let _ = a * b;
+    if (a < 0) != (b < 0) { -9223372036854775807 - 1 } else { 9223372036854775807 }
+}
+
+/// `x` nanoseconds truncated to `i64`; a non-finite or out-of-range `x`
+/// overflows as the integer ops do (NaN saturates to 0).
+#[track_caller]
+const fn ns_f64(x: f64) -> i64 {
+    if x >= -9223372036854775808.0 && x < 9223372036854775808.0 { return x as i64; }
+    if x > 0.0 { return ns_add(9223372036854775807, 1); }
+    if x < 0.0 { return ns_add(-9223372036854775807 - 1, -1); }
+    let _ = ns_add(9223372036854775807, 1);
+    0
+}
+
+/// A span of time: `i64` nanoseconds (about +/-292 years).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Duration {
+    ns: i64;
+}
+
+// The constructors take any integer type that converts to `i64` without
+// loss (`i8` .. `i64`, `u8` .. `u32`); `u64` / `usize` need `try_into`.
+impl Duration {
+    /// `n` nanoseconds.
+    #[must_use]
+    pub const fn ns<N>(n: N) -> Duration where i64: From<N> {
+        let n: i64 = n.into();
+        Duration { ns: n }
+    }
+    /// `n` microseconds; overflow panics where `i64 *` does, else saturates.
+    #[track_caller]
+    #[must_use]
+    pub const fn us<N>(n: N) -> Duration where i64: From<N> {
+        let n: i64 = n.into();
+        Duration { ns: ns_mul(n, 1000) }
+    }
+    /// `n` milliseconds; overflow panics where `i64 *` does, else saturates.
+    #[track_caller]
+    #[must_use]
+    pub const fn ms<N>(n: N) -> Duration where i64: From<N> {
+        let n: i64 = n.into();
+        Duration { ns: ns_mul(n, 1000000) }
+    }
+    /// `n` seconds; overflow panics where `i64 *` does, else saturates.
+    #[track_caller]
+    #[must_use]
+    pub const fn secs<N>(n: N) -> Duration where i64: From<N> {
+        let n: i64 = n.into();
+        Duration { ns: ns_mul(n, 1000000000) }
+    }
+    /// `n` minutes; overflow panics where `i64 *` does, else saturates.
+    #[track_caller]
+    #[must_use]
+    pub const fn mins<N>(n: N) -> Duration where i64: From<N> {
+        let n: i64 = n.into();
+        Duration { ns: ns_mul(n, 60000000000) }
+    }
+    /// `n` hours; overflow panics where `i64 *` does, else saturates.
+    #[track_caller]
+    #[must_use]
+    pub const fn hours<N>(n: N) -> Duration where i64: From<N> {
+        let n: i64 = n.into();
+        Duration { ns: ns_mul(n, 3600000000000) }
+    }
+    /// `n` days of 24 hours; overflow panics where `i64 *` does, else
+    /// saturates.
+    #[track_caller]
+    #[must_use]
+    pub const fn days<N>(n: N) -> Duration where i64: From<N> {
+        let n: i64 = n.into();
+        Duration { ns: ns_mul(n, 86400000000000) }
+    }
+
+    /// No time.
+    pub const ZERO: Duration = Duration { ns: 0 };
+    /// The longest duration.
+    pub const MAX: Duration = Duration { ns: 9223372036854775807 };
+
+    /// `s` seconds, truncated to whole nanoseconds. A non-finite or
+    /// out-of-range result panics; with overflow checks off it saturates
+    /// (NaN to zero).
+    #[must_use]
+    #[track_caller]
+    pub const fn secs_f64(s: f64) -> Duration { Duration { ns: ns_f64(s * 1000000000.0) } }
+
+    /// Whole nanoseconds.
+    #[must_use]
+    pub const fn as_ns(self) -> i64 { self.ns }
+    /// Whole microseconds, truncated toward zero.
+    #[must_use]
+    pub const fn as_us(self) -> i64 { self.ns / 1000 }
+    /// Whole milliseconds, truncated toward zero.
+    #[must_use]
+    pub const fn as_ms(self) -> i64 { self.ns / 1000000 }
+    /// Whole seconds, truncated toward zero.
+    #[must_use]
+    pub const fn as_secs(self) -> i64 { self.ns / 1000000000 }
+    /// Seconds as an `f64`, fraction included.
+    #[must_use]
+    pub const fn as_secs_f64(self) -> f64 { self.ns as f64 / 1000000000.0 }
+
+    /// The part below one second (of the magnitude for a negative span).
+    #[must_use]
+    pub const fn subsec_ns(self) -> u32 { (self.ns % 1000000000).abs() as u32 }
+    /// `subsec_ns` in whole microseconds.
+    #[must_use]
+    pub const fn subsec_us(self) -> u32 { self.subsec_ns() / 1000 }
+    /// `subsec_ns` in whole milliseconds.
+    #[must_use]
+    pub const fn subsec_ms(self) -> u32 { self.subsec_ns() / 1000000 }
+
+    /// `self + rhs`; `none` on overflow.
+    #[must_use]
+    pub const fn checked_add(self, rhs: Duration) -> Duration | none {
+        Duration { ns: self.ns.checked_add(rhs.ns)? }
+    }
+    /// `self - rhs`; `none` on overflow.
+    #[must_use]
+    pub const fn checked_sub(self, rhs: Duration) -> Duration | none {
+        Duration { ns: self.ns.checked_sub(rhs.ns)? }
+    }
+    /// `self * factor`; `none` on overflow.
+    #[must_use]
+    pub const fn checked_mul(self, factor: i64) -> Duration | none {
+        Duration { ns: self.ns.checked_mul(factor)? }
+    }
+    /// `self / divisor`; `none` when `divisor` is 0 or on overflow.
+    #[must_use]
+    pub const fn checked_div(self, divisor: i64) -> Duration | none {
+        Duration { ns: self.ns.checked_div(divisor)? }
+    }
+    /// `self + rhs`, clamped to the `i64` nanosecond range.
+    #[must_use]
+    pub const fn saturating_add(self, rhs: Duration) -> Duration { Duration { ns: self.ns.saturating_add(rhs.ns) } }
+    /// `self - rhs`, clamped to the `i64` nanosecond range.
+    #[must_use]
+    pub const fn saturating_sub(self, rhs: Duration) -> Duration { Duration { ns: self.ns.saturating_sub(rhs.ns) } }
+    /// `self * factor`, clamped to the `i64` nanosecond range.
+    #[must_use]
+    pub const fn saturating_mul(self, factor: i64) -> Duration { Duration { ns: self.ns.saturating_mul(factor) } }
+}
+
+impl Mul<i64> for Duration {
+    type Output = Duration;
+    #[track_caller]
+    const fn mul(self, rhs: i64) -> Duration { Duration { ns: ns_mul(self.ns, rhs) } }
+}
+
+impl Div<i64> for Duration {
+    type Output = Duration;
+    #[track_caller]
+    const fn div(self, rhs: i64) -> Duration {
+        if rhs == 0 { panic("Duration divided by zero"); }
+        // `MIN / -1` is the one overflow.
+        if rhs == -1 { return Duration { ns: ns_sub(0, self.ns) }; }
+        Duration { ns: self.ns / rhs }
+    }
+}
+
+/// Overflow as `Duration::secs_f64`.
+impl Mul<Duration> for f64 {
+    type Output = Duration;
+    #[track_caller]
+    const fn mul(self, rhs: Duration) -> Duration { Duration { ns: ns_f64(self * rhs.ns as f64) } }
+}
+
+/// `Duration::ZERO`.
+impl Default for Duration {
+    const fn default() -> Duration { Duration::ZERO }
+}
+
+/// The largest unit the span reaches, fraction without trailing zeros:
+/// `1.234s`, `5ms`, `1.5µs`, `100ns`, `0ns`, `-2s`.
+impl Display for Duration {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let mag = self.ns.unsigned_abs();
+        let sign = if self.ns < 0 { "-" } else { "" };
+        let (unit, name, width) = if mag >= 1000000000u64 {
+            (1000000000u64, "s", 9usize)
+        } else if mag >= 1000000u64 {
+            (1000000u64, "ms", 6usize)
+        } else if mag >= 1000u64 {
+            (1000u64, "µs", 3usize)
+        } else {
+            (1u64, "ns", 0usize)
+        };
+        let whole = mag / unit;
+        let frac = mag % unit;
+        try f.write_str(sign);
+        try Display::fmt(whole, ref f);
+        if frac == 0u64 {
+            try f.write_str(name);
+            return;
+        }
+        while frac % 10u64 == 0u64 {
+            frac = frac / 10u64;
+            width = width - 1;
+        }
+        try f.write_str(".");
+        let digits = f"{frac}";
+        for _ in digits.len()..width { try f.write_char('0'); }
+        try f.write_str(digits);
+        try f.write_str(name)
+    }
+}
+
+impl Debug for Duration {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Display::fmt(self, ref f) }
+}
+
+impl Add for Duration {
+    type Output = Duration;
+    #[track_caller]
+    const fn add(self, rhs: Duration) -> Duration { Duration { ns: ns_add(self.ns, rhs.ns) } }
+}
+
+impl Sub for Duration {
+    type Output = Duration;
+    #[track_caller]
+    const fn sub(self, rhs: Duration) -> Duration { Duration { ns: ns_sub(self.ns, rhs.ns) } }
+}
+
+/// A point on the monotonic clock; only meaningful within one
+/// process.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Instant {
+    /// Monotonic nanoseconds (the executor's clock).
+    pub(pkg) ns: i64;
+}
+
+impl Instant {
+    /// The current monotonic time.
+    pub fn now() -> Instant { Instant { ns: unsafe { nabi_time_now_ns() } } }
+    /// The time passed since `self`.
+    pub fn elapsed(self) -> Duration { Instant::now().duration_since(self) }
+    /// `self - earlier`, negative when `earlier` is later.
+    #[must_use]
+    pub const fn duration_since(self, earlier: Instant) -> Duration {
+        Duration { ns: ns_sub(self.ns, earlier.ns) }
+    }
+    /// `self + d`; `none` on overflow.
+    #[must_use]
+    pub const fn checked_add(self, d: Duration) -> Instant | none { Instant { ns: self.ns.checked_add(d.ns)? } }
+    /// `self - d`; `none` on overflow.
+    #[must_use]
+    pub const fn checked_sub(self, d: Duration) -> Instant | none { Instant { ns: self.ns.checked_sub(d.ns)? } }
+}
+
+impl Add<Duration> for Instant {
+    type Output = Instant;
+    #[track_caller]
+    const fn add(self, rhs: Duration) -> Instant { Instant { ns: ns_add(self.ns, rhs.ns) } }
+}
+
+impl Sub<Duration> for Instant {
+    type Output = Instant;
+    #[track_caller]
+    const fn sub(self, rhs: Duration) -> Instant { Instant { ns: ns_sub(self.ns, rhs.ns) } }
+}
+
+impl Sub<Instant> for Instant {
+    type Output = Duration;
+    #[track_caller]
+    const fn sub(self, rhs: Instant) -> Duration { Duration { ns: ns_sub(self.ns, rhs.ns) } }
+}

@@ -1,0 +1,9 @@
+# Paths exempt from layout rules: `RULES PATH`, where PATH is relative to
+# the checked root and a directory ends in `/`.
+
+# The test corpus: case names are spec section ids, and the layout of a
+# case is often what it tests.
+ABDEX tests/cases/
+
+# A build script cannot depend on a workspace crate: it shares this file.
+A runtime/nabir_common/build.rs

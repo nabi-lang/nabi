@@ -1,0 +1,41 @@
+// needs: threads
+// gc-stress: 5
+// A view made before `freeze` writes storage of its own, never what the
+// frozen list holds: the readers on other threads see the elements as
+// they were frozen.
+// expect-exit: 0
+// expect-stdout:
+// frozen [1, 2, 3, 4] [1, 2, 3, 4]
+// view 99 4
+// readers 40000
+
+use std::thread;
+
+fn stash(xs: List<i32>) -> SliceMut<i32> {
+    xs
+}
+
+fn freeze_it(xs: List<i32>) -> FrozenList<i32> {
+    xs.freeze()
+}
+
+fn main() {
+    let xs: List<i32> = [1, 2, 3, 4];
+    let v = stash(xs);
+    let f = freeze_it(xs);
+    let hs: List<thread::JoinHandle<i64>> = [];
+    for _ in 0..4 {
+        hs.push(thread::spawn(|| {
+            let n = 0i64;
+            for _ in 0..1000 { for x in f { n += x as i64; } }
+            n
+        }));
+    }
+    // The checker sees this use; in `unsafe` it lets it through.
+    unsafe { for i in 0..4 { v[i] = 99; } }
+    let n = 0i64;
+    for h in hs { n += try! h.join(); }
+    println(f"frozen {f:?} {f.to_list():?}");
+    println(f"view {unsafe { v[0] }} {f.len()}");
+    println(f"readers {n}");
+}

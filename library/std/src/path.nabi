@@ -1,0 +1,561 @@
+//! std::path: `Path`, a UTF-8 path value with
+//! Python-style `/` joining. Separators follow the target: `/` on Unix;
+//! `\` or `/` on Windows, where a path may start with a prefix (`C:`,
+//! `\\server\share`, `\\?\..`, `\\.\..`), is absolute only with a prefix
+//! and a root, and `join` writes `\`.
+//!
+//! `Path` is immutable: `/` returns a new one, `p /= q` is `p = p / q`.
+//! `RawPath` holds the OS form (Unix bytes, Windows UTF-16); the fs layer
+//! never produces one - it reports non-UTF-8 names as `InvalidData`.
+
+use bare::mem::GcBuf;
+use core::io::IoError;
+use std::fs;
+use std::fs::Metadata;
+use std::sys::{fetch, text_of, list_of_str};
+
+/// A filesystem path, held as text. Not checked against the filesystem
+/// until an fs call uses it.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Path {
+    s: str;
+}
+
+const WINDOWS: bool = cfg!(target_os = "windows");
+/// The separator `join` writes, and the root's spelling.
+#[cfg(target_os = "windows")]
+const SEP: str = "\\";
+#[cfg(not(target_os = "windows"))]
+const SEP: str = "/";
+
+/// Whether byte `i` of `s` separates components.
+const fn sep_at(s: str, i: usize) -> bool {
+    let b = s.byte(i);
+    b == 47u8 || (WINDOWS && b == 92u8)
+}
+
+/// The first separator at or after byte `i` of `s` (or its length).
+const fn comp_end(s: str, i: usize) -> usize {
+    let j = i;
+    while j < s.len() && !sep_at(s, j) { j += 1; }
+    j
+}
+
+/// Byte length of `s`'s Windows prefix (0 on Unix, or without one) and
+/// whether a root follows it (always, after a UNC / verbatim / device
+/// prefix).
+const fn prefix_of(s: str) -> (usize, bool) {
+    let n = s.len();
+    if !WINDOWS { return (0usize, n > 0 && s.byte(0) == 47u8); }
+    if n >= 2 && sep_at(s, 0) && sep_at(s, 1) {
+        // `\\?\..` (verbatim) / `\\.\..` (device)
+        if n >= 4 && (s.byte(2) == 63u8 || s.byte(2) == 46u8) && sep_at(s, 3) {
+            if s.byte(2) == 63u8 && n > 7 && s[4:7] == "UNC" && sep_at(s, 7) {
+                let e = comp_end(s, comp_end(s, 8) + 1);
+                return (if e < n { e } else { n }, true);
+            }
+            if s.byte(2) == 63u8 && n >= 6 && s.byte(5) == 58u8 { return (6usize, true); }
+            return (comp_end(s, 4), true);
+        }
+        // `\\server\share`
+        let e = comp_end(s, comp_end(s, 2) + 1);
+        return (if e < n { e } else { n }, true);
+    }
+    if n >= 2 && s.byte(1) == 58u8 {
+        let c = s.byte(0);
+        if (c >= 65u8 && c <= 90u8) || (c >= 97u8 && c <= 122u8) {
+            return (2usize, n > 2 && sep_at(s, 2));
+        }
+    }
+    (0usize, n > 0 && sep_at(s, 0))
+}
+
+/// One piece of a path (`Path::components`).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum Component {
+    RootDir,
+    Prefix(str),
+    CurDir,
+    ParentDir,
+    Normal(str),
+}
+
+impl Component {
+    /// The component as it is written in a path (`/`, `.`, `..`, the name).
+    #[must_use]
+    pub const fn as_str(self) -> str {
+        match self {
+            Component::RootDir => SEP,
+            Component::Prefix(p) => p,
+            Component::CurDir => ".",
+            Component::ParentDir => "..",
+            Component::Normal(n) => n,
+        }
+    }
+}
+
+impl Debug for Component {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(match self {
+            Component::RootDir => "RootDir",
+            Component::Prefix(p) => f"Prefix({p})",
+            Component::CurDir => "CurDir",
+            Component::ParentDir => "ParentDir",
+            Component::Normal(n) => f"Normal({n})",
+        })
+    }
+}
+
+/// What the fs functions take: a `Path` or a `str` spelling one.
+pub trait AsPath {
+    /// `self` as a `Path`.
+    fn as_path(self) -> Path;
+}
+
+impl AsPath for Path {
+    const fn as_path(self) -> Path { self }
+}
+
+impl AsPath for str {
+    const fn as_path(self) -> Path { Path { s: self } }
+}
+
+/// `s` without trailing `/`s (but `/` stays `/`).
+const fn trim_slashes(s: str) -> str {
+    let n = s.len();
+    while n > 1 && s[n - 1:n] == "/" { n -= 1; }
+    s[:n]
+}
+
+impl Path {
+    /// The path `s` spells.
+    pub const fn new(s: str) -> Path { Path { s: s } }
+    /// The empty path.
+    pub const fn empty() -> Path { Path { s: "" } }
+
+    /// The path joining each of `components` in turn (`Path::join`).
+    pub const fn from_components<I: IntoIterator<Item = str>>(components: I) -> Path {
+        let p = Path::empty();
+        for c in components { p = p.join(Path::new(c)); }
+        p
+    }
+
+    /// The path as text.
+    #[must_use]
+    pub const fn as_str(self) -> str { self.s }
+    /// The path as OS bytes (Unix) or WTF-16 units (Windows).
+    #[must_use]
+    pub const fn to_raw(self) -> RawPath { raw_of(self.s) }
+
+    /// Unix: rooted. Windows: a prefix and a root (`C:\x`, `\\srv\s\x`).
+    #[must_use]
+    pub const fn is_absolute(self) -> bool {
+        let (p, root) = prefix_of(self.s);
+        root && (p > 0 || !WINDOWS)
+    }
+    /// `true` when the path is not absolute.
+    #[must_use]
+    pub const fn is_relative(self) -> bool { !self.is_absolute() }
+    /// `true` when the path starts at a root (`/`, `\`, `C:\`).
+    #[must_use]
+    pub const fn has_root(self) -> bool { prefix_of(self.s).1 }
+
+    /// The path without its last component; `none` for `/` and `""`.
+    /// `Path::new("a").parent()` is `""` (as in Rust).
+    #[must_use]
+    pub const fn parent(self) -> Path | none {
+        let comps = self.component_list();
+        let n = comps.len();
+        if n == 0 { return none; }
+        let last = comps[n - 1];
+        if last is Component::RootDir || last is Component::Prefix { return none; }
+        let out = Path::empty();
+        for i in 0..n - 1 {
+            out = out.join(Path::new(comps[i].as_str()));
+        }
+        out
+    }
+
+    /// The last component unless it is `..` / `/`.
+    #[must_use]
+    pub const fn file_name(self) -> str | none {
+        let comps = self.component_list();
+        let n = comps.len();
+        if n == 0 { return none; }
+        match comps[n - 1] {
+            Component::Normal(name) => name,
+            _ => none,
+        }
+    }
+
+    /// `file_name` without its extension.
+    #[must_use]
+    pub const fn file_stem(self) -> str | none {
+        let name = self.file_name()?;
+        let dot = name.rfind(".") ?? 0usize;
+        if dot == 0 { return name; }
+        name[:dot]
+    }
+
+    /// After the last `.` of `file_name` (`none` for `.bashrc`, `a`).
+    #[must_use]
+    pub const fn extension(self) -> str | none {
+        let name = self.file_name()?;
+        let dot = name.rfind(".") ?? 0usize;
+        if dot == 0 { return none; }
+        name[dot + 1:]
+    }
+
+    /// The components, front to back: repeated separators and inner `.`
+    /// dropped, a leading `.` and every `..` kept.
+    #[must_use]
+    pub const fn components(self) -> Components {
+        Components { items: self.component_list(), pos: 0 }
+    }
+
+    /// `self`, its parent, its grandparent, ...
+    #[must_use]
+    pub const fn ancestors(self) -> Ancestors {
+        Ancestors { next: self }
+    }
+
+    const fn component_list(self) -> List<Component> {
+        let out: List<Component> = List::new();
+        let (p, root) = prefix_of(self.s);
+        if p > 0 { out.push(Component::Prefix(self.s[:p])); }
+        if root { out.push(Component::RootDir); }
+        let rest = self.s[p:];
+        if WINDOWS { rest = rest.replace("\\", "/"); }
+        let first = true;
+        for part in rest.split("/") {
+            if part == "" {
+                // separator run or the root
+            } else if part == "." {
+                if first && p == 0 && !root { out.push(Component::CurDir); }
+            } else if part == ".." {
+                out.push(Component::ParentDir);
+            } else {
+                out.push(Component::Normal(part));
+            }
+            first = false;
+        }
+        out
+    }
+
+    /// `other` (a `Path` or a `str`) appended; an absolute `other`
+    /// replaces `self`. Windows: so does one with a prefix (`D:x`), and a
+    /// rooted one without (`\x`) keeps `self`'s prefix.
+    #[must_use]
+    pub const fn join<P: AsPath>(self, other: P) -> Path {
+        let o = other.as_path();
+        if o.is_absolute() || self.s == "" { return o; }
+        if o.s == "" { return self; }
+        let (op, oroot) = prefix_of(o.s);
+        let (p, root) = prefix_of(self.s);
+        if op > 0 { return o; }
+        if oroot { return Path { s: self.s[:p] + o.s }; }
+        if sep_at(self.s, self.s.len() - 1) || (p == self.s.len() && !root) {
+            return Path { s: self.s + o.s };
+        }
+        Path { s: self.s + SEP + o.s }
+    }
+
+    /// `self` with its last component replaced by `name`.
+    #[must_use]
+    pub const fn with_file_name(self, name: str) -> Path {
+        let parent = self.parent() ?? Path::empty();
+        parent.join(Path::new(name))
+    }
+
+    /// `self` with its extension replaced by `ext`; an empty `ext` removes it.
+    #[must_use]
+    pub const fn with_extension(self, ext: str) -> Path {
+        let stem = self.file_stem() ?? "";
+        if ext == "" { return self.with_file_name(stem); }
+        self.with_file_name(stem + "." + ext)
+    }
+
+    /// Component-wise prefix test.
+    #[must_use]
+    pub const fn starts_with<P: AsPath>(self, base: P) -> bool {
+        unsafe {
+            let a = self.component_list();
+            let b = base.as_path().component_list();
+            if b.len() > a.len() { return false; }
+            for i in 0..b.len() {
+                if a[i] != b[i] { return false; }
+            }
+            true
+        }
+    }
+
+    /// Component-wise suffix test.
+    #[must_use]
+    pub const fn ends_with<P: AsPath>(self, suffix: P) -> bool {
+        unsafe {
+            let a = self.component_list();
+            let b = suffix.as_path().component_list();
+            if b.len() > a.len() { return false; }
+            let off = a.len() - b.len();
+            for i in 0..b.len() {
+                if a[off + i] != b[i] { return false; }
+            }
+            true
+        }
+    }
+
+    /// The rest of `self` after `base` (component-wise), or `none` when
+    /// `self` does not start with it (`str::strip_prefix` alike).
+    #[must_use]
+    pub const fn strip_prefix<P: AsPath>(self, base: P) -> Path | none {
+        let b = base.as_path();
+        if !self.starts_with(b) { return none; }
+        let a = self.component_list();
+        let out = Path::empty();
+        for i in b.component_list().len()..a.len() {
+            out = out.join(Path::new(a[i].as_str()));
+        }
+        out
+    }
+
+    /// Lexical `.` / `..` resolution (no filesystem access).
+    #[must_use]
+    pub const fn normalize(self) -> Path {
+        let kept: List<Component> = List::new();
+        for c in self.component_list() {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    let n = kept.len();
+                    if n > 0 && kept[n - 1] is Component::Normal {
+                        kept.pop();
+                    } else if !(n > 0 && kept[n - 1] is Component::RootDir) {
+                        kept.push(c);
+                    }
+                }
+                _ => kept.push(c),
+            }
+        }
+        let out = Path::empty();
+        for c in kept { out = out.join(Path::new(c.as_str())); }
+        if out.s == "" { return Path::new("."); }
+        out
+    }
+
+    /// Whether the path exists (symlinks followed); any error reads as
+    /// `false`.
+    pub fn exists(self) -> bool { fs::exists(self) }
+
+    /// Whether the path is a regular file (symlinks followed); `false` on
+    /// any error.
+    pub fn is_file(self) -> bool {
+        let m = try fs::metadata(self) catch _ { return false; };
+        m.is_file()
+    }
+
+    /// Whether the path is a directory (symlinks followed); `false` on any
+    /// error.
+    pub fn is_dir(self) -> bool {
+        let m = try fs::metadata(self) catch _ { return false; };
+        m.is_dir()
+    }
+
+    /// Whether the path itself is a symlink; `false` on any error.
+    pub fn is_symlink(self) -> bool {
+        let m = try fs::symlink_metadata(self) catch _ { return false; };
+        m.is_symlink()
+    }
+
+    /// The path's metadata, symlinks followed (`fs::metadata`).
+    pub fn metadata(self) throws (IoError) -> Metadata { try fs::metadata(self) }
+
+    /// Absolute, symlinks resolved (`realpath`).
+    pub fn canonicalize(self) throws (IoError) -> Path {
+        let p = self.s;
+        let real = try fetch(|b: GcBuf<u8>, at: usize, n: usize| unsafe { nabi_os_realpath(p, b, at, n) }, p);
+        Path { s: try text_of(real) }
+    }
+}
+
+impl Div<str> for Path {
+    type Output = Path;
+    const fn div(self, rhs: str) -> Path { self.join(Path::new(rhs)) }
+}
+
+impl Div<Path> for Path {
+    type Output = Path;
+    const fn div(self, rhs: Path) -> Path { self.join(rhs) }
+}
+
+/// OS path bytes that need not be UTF-8: Unix bytes.
+#[cfg(not(target_os = "windows"))]
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct RawPath {
+    raw: List<u8>;
+}
+
+#[cfg(not(target_os = "windows"))]
+const fn raw_of(s: str) -> RawPath { RawPath { raw: list_of_str(s) } }
+
+#[cfg(not(target_os = "windows"))]
+impl RawPath {
+    /// The path with OS bytes `bytes`.
+    pub const fn from_bytes<B: AsBytes>(bytes: B) -> RawPath { RawPath { raw: bytes.byte_slice().to_list() } }
+
+    /// The OS bytes.
+    pub const fn as_bytes(self) -> Slice<u8> { self.raw[0:self.raw.len()] }
+
+    /// The path; throws if the bytes are not UTF-8.
+    pub const fn to_path(self) throws (Utf8Error) -> Path { Path { s: try str::from_utf8(self.raw) } }
+
+    /// The path with each maximal ill-formed subsequence replaced by
+    /// one U+FFFD (`str::from_utf8_lossy`; Windows: each lone surrogate).
+    pub const fn to_path_lossy(self) -> Path { Path { s: str::from_utf8_lossy(self.raw) } }
+}
+
+/// An OS path that need not be valid UTF-16: Windows WTF-16
+/// units (lone surrogates allowed).
+#[cfg(target_os = "windows")]
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct RawPath {
+    raw: List<u16>;
+}
+
+#[cfg(target_os = "windows")]
+fn raw_of(s: str) -> RawPath {
+    let out: List<u16> = List::new();
+    for c in s.chars() {
+        let u = c as u32;
+        if u >= 0x10000u32 {
+            out.push((0xD800u32 + ((u - 0x10000u32) >> 10u32)) as u16);
+            out.push((0xDC00u32 + ((u - 0x10000u32) & 0x3FFu32)) as u16);
+        } else {
+            out.push(u as u16);
+        }
+    }
+    RawPath { raw: out }
+}
+
+/// The `Utf8Error` with `valid_up_to() == n`. Core makes them; decoding
+/// `n` ASCII bytes and a stray continuation byte gets one.
+#[cfg(target_os = "windows")]
+fn utf8_error_at(n: usize) -> Utf8Error {
+    let b: List<u8> = List::with_capacity(n + 1);
+    for _ in 0..n { b.push(0x61u8); }
+    b.push(0x80u8);
+    try str::from_utf8(b) catch e { return e; };
+    unreachable()
+}
+
+/// `w` as text (a lone surrogate as U+FFFD) and the index of its first
+/// lone surrogate (`w.len()` if none).
+#[cfg(target_os = "windows")]
+fn decode_wide(w: List<u16>) -> (str, usize) {
+    let out = StrBuf::new();
+    let n = w.len();
+    let bad = n;
+    let i = 0usize;
+    while i < n {
+        let u = w[i] as u32;
+        let c = u;
+        if u >= 0xD800u32 && u < 0xE000u32 {
+            let lo = if i + 1 < n { w[i + 1] as u32 } else { 0u32 };
+            if u < 0xDC00u32 && lo >= 0xDC00u32 && lo < 0xE000u32 {
+                c = 0x10000u32 + ((u - 0xD800u32) << 10u32) + (lo - 0xDC00u32);
+                i += 1;
+            } else {
+                if bad == n { bad = i; }
+                c = 0xFFFDu32;
+            }
+        }
+        out.push(char::from_u32(c) ?? '\u{FFFD}');
+        i += 1;
+    }
+    (out.to_str(), bad)
+}
+
+#[cfg(target_os = "windows")]
+impl RawPath {
+    /// The path of the UTF-16 units `wide`, which need not be valid.
+    pub fn from_wide(wide: Slice<u16>) -> RawPath {
+        let out: List<u16> = List::with_capacity(wide.len());
+        for u in wide { out.push(u); }
+        RawPath { raw: out }
+    }
+
+    /// The UTF-16 units of the path.
+    pub fn as_wide(self) -> Slice<u16> { self.raw[0:self.raw.len()] }
+
+    /// The path; throws if the units are not valid UTF-16
+    /// (`valid_up_to` counts UTF-16 units here).
+    pub fn to_path(self) throws (Utf8Error) -> Path {
+        let (s, bad) = decode_wide(self.raw);
+        if bad < self.raw.len() { throw utf8_error_at(bad); }
+        Path { s: s }
+    }
+
+    /// The path with each lone surrogate replaced by U+FFFD.
+    pub fn to_path_lossy(self) -> Path { Path { s: decode_wide(self.raw).0 } }
+}
+
+impl Debug for RawPath {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"RawPath({self.to_path_lossy().as_str():?})") }
+}
+
+/// `Path::from(s)`: the text as a path, as `Path::new`.
+impl From<str> for Path {
+    const fn from(s: str) -> Path { Path { s: s } }
+}
+
+/// `Path::try_from(raw)`: `raw` as a path; throws if it is not UTF-8.
+impl TryFrom<RawPath> for Path {
+    type Error = Utf8Error;
+    const fn try_from(raw: RawPath) throws (Utf8Error) -> Path { try raw.to_path() }
+}
+
+impl Display for Path {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.s) }
+}
+
+impl Debug for Path {
+    const fn fmt(self, ref f: Formatter) throws (FmtError) { try Debug::fmt(self.s, ref f) }
+}
+
+/// `Path::components`: the parts, from the root or first name.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Components {
+    items: List<Component>;
+    pos: usize;
+}
+
+impl Debug for Components {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Components") }
+}
+
+impl Iterator for Components {
+    type Item = Component;
+    const fn next(ref self) -> Component | none {
+        let c = self.items.get(self.pos)?;
+        self.pos += 1;
+        c
+    }
+}
+
+/// `Path::ancestors`: the path, then each parent up to the root.
+#[must_use("iterator is lazy and does nothing unless consumed: walk it with `for`, or call `{}.collect()`")]
+pub struct Ancestors {
+    next: Path | none;
+}
+
+impl Debug for Ancestors {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str("Ancestors") }
+}
+
+impl Iterator for Ancestors {
+    type Item = Path;
+    const fn next(ref self) -> Path | none {
+        let p = self.next?;
+        self.next = p.parent();
+        p
+    }
+}

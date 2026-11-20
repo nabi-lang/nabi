@@ -1,0 +1,384 @@
+//! core::reflect - `Reflect` / `Inspect`.
+//!
+//! `Reflect` is implemented by the compiler for every type (no impl in
+//! source; a manual one is an error): `T::type_name()`, `T::size()`,
+//! `T::align()` are the type's answer, constants; `x.type_name_of_val()` /
+//! `x.size_of_val()` are the value's: they look at the variant an `any` or
+//! sum value holds at run time. A type's own method of the same name wins.
+//!
+//! `Inspect` is opt-in through `#[derive(Inspect)]`, written below as a
+//! meta block: the compiler describes the type in read-only data
+//! (`TypeInfo`: fields with offsets, variants, type arguments, runtime
+//! attributes), and the derive adds the code that reads and writes its
+//! fields through `any`. Private fields are listed too: deriving it is
+//! the type's consent. Reading a description allocates nothing.
+
+pub mod attr;
+pub mod field;
+pub mod info;
+pub(pkg) mod ops;
+
+pub use attr::Attr;
+pub use field::Field;
+pub use info::{ReflectError, TypeInfo, TypeKind, TypeRef, Variant, find, info, info_of};
+
+/// Type facts every type has; the compiler implements it.
+pub trait Reflect {
+    /// The type's name.
+    fn type_name() -> str;
+    /// The type's size in bytes.
+    fn size() -> usize;
+    /// The type's alignment in bytes.
+    fn align() -> usize;
+    /// The name of `self`'s type.
+    fn type_name_of_val(self) -> str;
+    /// The size of `self`'s type in bytes.
+    fn size_of_val(self) -> usize;
+}
+
+/// Field and method listing, opt-in through `#[derive(Inspect)]`.
+pub trait Inspect: Reflect {
+    /// The type's description.
+    fn type_info() -> TypeInfo {
+        return info::<Self>();
+    }
+
+    /// The field names, in declaration order.
+    fn field_names() -> List<str> {
+        let names: List<str> = List::new();
+        let t = Self::type_info();
+        let i: usize = 0;
+        while i < t.field_count() {
+            names.push(t.field_at(i).name());
+            i += 1;
+        }
+        return names;
+    }
+
+    /// The value of field `name` (of the current variant for an enum), or
+    /// `none` when there is no such field.
+    fn get_field(self, name: str) -> any | none {
+        let held: any = self;
+        return match Self::type_info().field_of_val(held, name) {
+            f: Field => f.get(held),
+            none => none,
+        };
+    }
+
+    /// Sets field `name` to `value`; `false` when there is no such field or
+    /// `value` holds another type. A variant's payload is read-only.
+    fn set_field(ref self, name: str, value: any) -> bool {
+        let held: any = self;
+        match Self::type_info().field(name) {
+            f: Field => {
+                if !f.set(ref held, value) {
+                    return false;
+                }
+                match cast::<Self>(held) {
+                    v: Self => {
+                        self = v;
+                        return true;
+                    },
+                    none => {
+                        return false;
+                    },
+                }
+            },
+            none => {
+                return false;
+            },
+        }
+    }
+
+    /// The inherent methods, by name.
+    fn methods() -> List<MethodInfo> {
+        return methods_of::<Self>();
+    }
+
+    /// The fields with their types, in declaration order.
+    fn fields() -> List<FieldInfo> {
+        return fields_of::<Self>();
+    }
+
+    /// An enum's variant names, in declaration order; empty for a struct.
+    fn variant_names() -> List<str> {
+        let names: List<str> = List::new();
+        let t = Self::type_info();
+        let i: usize = 0;
+        while i < t.variant_count() {
+            names.push(t.variant_at(i).name());
+            i += 1;
+        }
+        return names;
+    }
+
+    /// The variant `self` holds (`"Circle"`); for a struct, its type name.
+    fn variant_name(self) -> str {
+        let held: any = self;
+        return match Self::type_info().variant_of(held) {
+            v: Variant => v.name(),
+            none => self.type_name_of_val(),
+        };
+    }
+
+    /// The fields `self` holds: a struct's fields, or the fields of the
+    /// variant an enum value holds (`"0"`, `"1"` for a tuple variant).
+    fn field_names_of_val(self) -> List<str> {
+        let held: any = self;
+        let t = Self::type_info();
+        let names: List<str> = List::new();
+        match t.variant_of(held) {
+            v: Variant => {
+                let i: usize = 0;
+                while i < v.field_count() {
+                    names.push(v.field_at(i).name());
+                    i += 1;
+                }
+            },
+            none => {
+                let i: usize = 0;
+                while i < t.field_count() {
+                    names.push(t.field_at(i).name());
+                    i += 1;
+                }
+            },
+        }
+        return names;
+    }
+
+    // The derive's accessors, which `TypeInfo` calls: field `field` of
+    // `owner` (an enum's numbered `variant << 16 | index`; `usize::MAX`:
+    // the variant index), a copy of `owner` with it set, and a value
+    // built from named fields.
+    /// Field `field` of `owner` (the derive writes it; `TypeInfo` calls it).
+    fn __inspect_get(owner: any, field: usize) -> any | none {
+        return none;
+    }
+
+    /// A copy of `owner` with field `field` set to `value`.
+    fn __inspect_set(owner: any, field: usize, value: any) -> any | none {
+        return none;
+    }
+
+    /// A value made from named fields, or `none` and what is wrong.
+    fn __inspect_build(variant: usize, fields: Dict<str, any>) -> (any | none, str) {
+        return (none, f"`{Self::type_name()}` has no `#[derive(Inspect)]` to build it with");
+    }
+}
+
+/// One field of an `Inspect` type. `type_name` is the instantiated type
+/// (`f64` for `v: T` in `Box<f64>`); `name` is `"0"`, `"1"`, .. for a
+/// tuple struct; `is_pub` is true only for a plain `pub` field.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct FieldInfo {
+    pub name: str;
+    pub type_name: str;
+    pub is_pub: bool;
+}
+
+/// One inherent method of an `Inspect` type. It has `name` / `arity` /
+/// `is_static` and `arg_types` / `return_type`.
+/// `arity` and `arg_types` leave out `self`.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct MethodInfo {
+    pub name: str;
+    pub arity: usize;
+    pub is_static: bool;
+    pub arg_types: List<str>;
+    pub return_type: str;
+}
+
+/// `value` as a `T`: the value when it holds a `T`; an integer of another
+/// integer type when it fits in `T` (`set_field("id", 42)` on a `u64`
+/// field); else `none`.
+#[intrinsic("nabi.any_cast")]
+pub fn cast<T>(value: any) -> T | none;
+
+// `T`'s inherent methods, one per line: `name \t static(0/1) \t return
+// type \t argument types..`.
+#[intrinsic("nabi.method_table")]
+fn method_table<T>() -> str;
+
+/// `T`'s inherent methods, by name: the body of `Inspect::methods`.
+pub(pkg) const fn methods_of<T>() -> List<MethodInfo> {
+    let out: List<MethodInfo> = List::new();
+    for line in method_table::<T>().split("\n") {
+        if line.len() == 0 {
+            continue;
+        }
+        let parts: List<str> = List::new();
+        for p in line.split("\t") {
+            parts.push(p);
+        }
+        let args: List<str> = List::new();
+        let i: usize = 3;
+        while i < parts.len() {
+            args.push(parts[i]);
+            i += 1;
+        }
+        out.push(MethodInfo {
+            name: parts[0],
+            arity: args.len(),
+            is_static: parts[1] == "1",
+            arg_types: args,
+            return_type: parts[2],
+        });
+    }
+    return out;
+}
+
+// `T`'s fields, one per line: `name \t pub(0/1) \t type`. Empty for
+// anything but a struct.
+#[intrinsic("nabi.field_table")]
+fn field_table<T>() -> str;
+
+/// `T`'s fields with their types, in declaration order: the body of
+/// `Inspect::fields`.
+pub(pkg) const fn fields_of<T: Inspect>() -> List<FieldInfo> {
+    let out: List<FieldInfo> = List::new();
+    for line in field_table::<T>().split("\n") {
+        if line.len() == 0 {
+            continue;
+        }
+        let parts: List<str> = List::new();
+        for p in line.split("\t") {
+            parts.push(p);
+        }
+        out.push(FieldInfo { name: parts[0], type_name: parts[2], is_pub: parts[1] == "1" });
+    }
+    return out;
+}
+
+// The accessors `TypeInfo` reads fields through. An enum's fields are
+// numbered `variant << 16 | index`; `usize::MAX` asks for the variant
+// index. A field is boxed in `any` first so a `T | none` field holding
+// `none` is not "no field". A variant's payload is read-only.
+#[impl_derive(Inspect)]
+pub @derive {
+    impl core::reflect::Inspect for @Self {
+        /// Field `field` of `owner` (the derive writes it; `TypeInfo` calls it).
+        fn __inspect_get(owner: any, field: usize) -> any | none {
+            match core::reflect::cast::<@Self>(owner) {
+                s: @Self => {
+                    @if_struct {
+                        @for_fields {
+                            @apply_if(!@field.has_attr(inspect)) {
+                                if field == @field.index {
+                                    let held: any = s.@field;
+                                    return held;
+                                }
+                            }
+                        }
+                    }
+                    @if_enum {
+                        match s {
+                            @for_variants {
+                                @variant.pattern => {
+                                    @for_fields {
+                                        if field == (@variant.index << 16) | @field.index {
+                                            let held: any = @field;
+                                            return held;
+                                        }
+                                    }
+                                    if field == usize::MAX {
+                                        let k: usize = @variant.index;
+                                        let held: any = k;
+                                        return held;
+                                    }
+                                },
+                            }
+                        }
+                    }
+                    return none;
+                },
+                none => {
+                    return none;
+                },
+            }
+        }
+
+        /// A copy of `owner` with field `field` set to `value`.
+        fn __inspect_set(owner: any, field: usize, value: any) -> any | none {
+            @if_struct {
+                match core::reflect::cast::<@Self>(owner) {
+                    s: @Self => {
+                        @for_fields {
+                            @apply_if(!@field.has_attr(inspect)) {
+                                if field == @field.index {
+                                    match core::reflect::cast::<@field.type>(value) {
+                                        v: @field.type => {
+                                            s.@field = v;
+                                            let held: any = s;
+                                            return held;
+                                        },
+                                        none => {
+                                            return none;
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                        return none;
+                    },
+                    none => {
+                        return none;
+                    },
+                }
+            }
+            @if_enum {
+                return none;
+            }
+        }
+
+        fn __inspect_build(variant: usize, fields: Dict<str, any>) -> (any | none, str) {
+            @if_struct {
+                @for_fields {
+                    let @field.binding: @field.type = match fields.get(@field.name.as_str()) {
+                        v: any => match core::reflect::cast::<@field.type>(v) {
+                            x: @field.type => x,
+                            none => {
+                                return (none, core::reflect::ops::wrong_type::<@field.type>(@field.name.as_str(), v));
+                            },
+                        },
+                        none => {
+                            @apply_if(@field.has_default) {
+                                @field.default
+                            }
+                            @apply_if(!@field.has_default) {
+                                return (none, core::reflect::ops::missing::<@Self>(@field.name.as_str()));
+                            }
+                        },
+                    };
+                }
+                let built: @Self = @Self.pattern;
+                let held: any = built;
+                return (held, "");
+            }
+            @if_enum {
+                @for_variants {
+                    if variant == @variant.index {
+                        @for_fields {
+                            let @field.binding: @field.type = match fields.get(@field.name.as_str()) {
+                                v: any => match core::reflect::cast::<@field.type>(v) {
+                                    x: @field.type => x,
+                                    none => {
+                                        return (none, core::reflect::ops::wrong_type::<@field.type>(@field.name.as_str(), v));
+                                    },
+                                },
+                                none => {
+                                    return (none, core::reflect::ops::missing::<@Self>(@field.name.as_str()));
+                                },
+                            };
+                        }
+                        let built: @Self = @variant.pattern;
+                        let held: any = built;
+                        return (held, "");
+                    }
+                }
+                return (none, core::reflect::ops::no_variant::<@Self>(variant));
+            }
+        }
+    }
+}

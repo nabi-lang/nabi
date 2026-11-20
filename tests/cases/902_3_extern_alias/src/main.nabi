@@ -1,0 +1,22 @@
+// nabic-arg: --extern util=tests/cases/902_3_extern_alias/util
+// nabic-arg: --extern helper=tests/cases/902_3_extern_alias/util
+// nabic-arg: --extern left=tests/cases/902_3_extern_alias/left
+// expect-exit: 0
+// expect-stdout:
+// left!
+// named
+// 4
+// root!
+
+// A second `--extern` name for the same package is an alias
+// of the first. `left` calls `util` `helper`; both names are one package,
+// so a `helper::Point` is a `util::Point`.
+use util::shout!;
+
+fn main() {
+    left::greet();
+    let p: util::Point = left::moved(util::origin());
+    println(p.x);
+    shout!("root");
+}
+

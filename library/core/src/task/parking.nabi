@@ -1,0 +1,348 @@
+// core::task::parking: async waits on sync primitives and fds, the
+// I/O driver and the runtime hooks.
+
+use core::collections::raw::{GcBuf, buf_new, buf_same};
+use core::future::{Context, Future, Poll, Waker};
+use core::rt::{atomic_add, atomic_xchg, key};
+use core::sync::{Atomic, Mutex};
+use core::task::{EXEC, Pool, SEARCHING, TaskRef, WOKEN, add_timer, executor, is_done, start_monitor, start_worker};
+
+/// Tasks waiting on a key (a primitive's GC address, or an fd's
+/// `io_key`): `Mutex::lock_async`, `Receiver::recv_async`, socket I/O
+/// park here; whoever may have made the key ready unparks it (the
+/// runtime's park / unpark at the task level). One process-wide table behind one
+/// lock.
+struct Parking {
+    lock: Mutex<i32>;
+    waiting: Dict<usize, List<Waker>>;
+    /// Set by the first `park`: until then `unpark` takes no lock.
+    used: Atomic<bool>;
+}
+
+// `waiting` is reached only under `lock`.
+unsafe impl Sync for Parking {}
+
+static PARKING: Parking = Parking {
+    lock: Mutex::new(0),
+    waiting: Dict::<usize, List<Waker>>::new(),
+    used: Atomic::new(false),
+};
+
+/// Wake `waker` at the next `unpark(key)`. The entry goes at that
+/// `unpark` or when the waker's task finishes (a cancelled task's wait).
+pub(pkg) fn park(key: usize, waker: Waker) {
+    let p = PARKING;
+    p.used.store(true);
+    using g = p.lock.lock() {
+        match p.waiting.get(key) {
+            l: List<Waker> => l.push(waker),
+            none => {
+                let l: List<Waker> = List::new();
+                l.push(waker);
+                p.waiting.insert(key, l);
+            }
+        }
+        let ks = waker.task.parked;
+        let known = false;
+        for k in ks {
+            if k == key { known = true; }
+        }
+        if !known {
+            // Keys it was since unparked from, once in a while (a
+            // long-lived task parking on many keys).
+            if ks.len() >= 16 && ks.len() % 16 == 0 {
+                let live: List<usize> = List::new();
+                for k in ks {
+                    if parked_on(p, k, waker.task) { live.push(k); }
+                }
+                ks.clear();
+                for k in live { ks.push(k); }
+            }
+            ks.push(key);
+        }
+    }
+}
+
+/// Is `t` in `key`'s list? (Under `p.lock`.)
+const fn parked_on(p: Parking, key: usize, t: TaskRef) -> bool {
+    if let l: List<Waker> = p.waiting.get(key) {
+        for w in l {
+            if buf_same(w.task.state, t.state) { return true; }
+        }
+    }
+    false
+}
+
+/// Drop finished task `t`'s parking entries.
+pub(pkg) fn unpark_task(t: TaskRef) {
+    let p = PARKING;
+    if t.parked.len() == 0 || !p.used.load() {
+        return;
+    }
+    using g = p.lock.lock() {
+        for k in t.parked {
+            if let l: List<Waker> = p.waiting.get(k) {
+                let rest: List<Waker> = List::new();
+                for w in l {
+                    if !buf_same(w.task.state, t.state) { rest.push(w); }
+                }
+                if rest.len() == 0 {
+                    p.waiting.remove(k);
+                } else {
+                    p.waiting.insert(k, rest);
+                }
+            }
+        }
+        t.parked.clear();
+    }
+}
+
+/// Parked wakers (all keys) plus pending timers of unfinished tasks: a
+/// diagnostic (a cancelled task leaves none behind).
+pub fn registrations() -> usize {
+    let n: usize = 0;
+    let p = PARKING;
+    using g = p.lock.lock() {
+        for l in p.waiting.values() {
+            n += l.len();
+        }
+    }
+    using g = executor().timers.lock() {
+        for tm in g.get().iter() {
+            if !is_done(tm.who.task) { n += 1; }
+        }
+    }
+    n
+}
+
+/// Wake every task parked on `key` (cheap when no task ever parked).
+pub(pkg) fn unpark(key: usize) {
+    let p = PARKING;
+    if !p.used.load() {
+        return;
+    }
+    let woken: List<Waker> | none = none;
+    using g = p.lock.lock() {
+        woken = p.waiting.remove(key);
+    }
+    if let l: List<Waker> = woken {
+        for w in l {
+            w.wake();
+        }
+    }
+}
+
+// the I/O driver
+
+/// The parking key of `fd`'s read (`write == 0`) or write readiness:
+/// odd, so never a GC address (8-aligned) at any pointer width.
+const fn io_key(fd: i32, write: i32) -> usize {
+    (fd as usize) * 4 + (write as usize) * 2 + 1
+}
+
+/// Wake every task waiting on `fd`'s readiness: after a `shutdown` or
+/// a close, which may raise no poller event.
+#[internal]
+pub fn wake_io(fd: i32) {
+    unpark(io_key(fd, 0));
+    unpark(io_key(fd, 1));
+}
+
+/// Start the driver thread once: it blocks in kqueue / epoll and
+/// unparks the tasks waiting on each fd that became ready.
+fn start_driver() {
+    // Solo: the guest polls (`solo_wait`).
+    if executor().solo {
+        return;
+    }
+    let pool = executor();
+    pool.driver.call_once(|| { spawn_driver(pool); });
+}
+
+fn spawn_driver(pool: Pool) {
+    unsafe {
+        let body: fn() + Send = || {
+            let evs: GcBuf<i64> = buf_new(128);
+            loop {
+                let n = unsafe { nabi_io_poll(evs, 128) };
+                unsafe { nabi_session_enter() };
+                for i in 0..n {
+                    let k = evs[i as usize];
+                    unpark(io_key((k / 2) as i32, (k % 2) as i32));
+                }
+                unsafe { nabi_session_leave() };
+            }
+        };
+        let id = nabi_thread_new_id();
+        pool.driver_id[0] = id;
+        let h = nabi_thread_spawn(body, 0, id);
+        if h == 0 {
+            panic("task executor: cannot start the I/O driver thread");
+        }
+        _ = nabi_thread_detach(h);
+    }
+}
+
+/// After a failed REPL cell put the session back as it was before it
+/// (`nabi_session_restored`): pool threads that are gone start again on
+/// their workers (none was polling a task then), and parked tasks look
+/// again: one waiting on a socket watches it again (the runtime dropped
+/// its poller's state), one waiting on a lock a gone thread held finds
+/// it released.
+pub(pkg) extern "C" fn hook_restart() {
+    unsafe {
+        let pool = EXEC[0];
+        // No threads to lose.
+        if pool.solo {
+            return;
+        }
+        for w in pool.workers {
+            if nabi_thread_lost(w.tid[0]) != 0 {
+                w.running[0] = none;
+                // A searcher that is gone searches no more.
+                if atomic_xchg(w.sleep, 0, 0, SeqCst) == WOKEN {
+                    atomic_add(pool.signal, SEARCHING, -1, SeqCst);
+                }
+                w.lane[0] = nabi_lane_new();
+                w.seen[0] = -1;
+                start_worker(w);
+            }
+        }
+        if nabi_thread_lost(pool.monitor_id[0]) != 0 {
+            start_monitor(pool);
+        }
+        if pool.driver_id[0] != 0 && nabi_thread_lost(pool.driver_id[0]) != 0 {
+            spawn_driver(pool);
+        }
+        pool.blocking.forget_lost();
+        pool.spares.forget_lost();
+        let p = PARKING;
+        if p.used.load() {
+            let keys: List<usize> = List::new();
+            using g = p.lock.lock() {
+                for k in p.waiting.keys() {
+                    keys.push(k);
+                }
+            }
+            for k in keys { unpark(k); }
+        }
+    }
+}
+
+/// Solo (WASI: `nabi_cpu_count() == 0`): wait for the watched fds or `next`
+/// ns (< 0: no limit) and unpark the ready ones.
+#[cfg(target_os = "wasi")]
+pub(pkg) fn solo_wait(next: i64) {
+    unsafe {
+        let evs: GcBuf<i64> = buf_new(128);
+        let n = nabi_io_wait(evs, 128, next);
+        for i in 0..n {
+            let k = evs[i as usize];
+            unpark(io_key((k / 2) as i32, (k % 2) as i32));
+        }
+    }
+}
+
+/// Only WASI targets run solo.
+#[cfg(not(target_os = "wasi"))]
+pub(pkg) fn solo_wait(next: i64) {
+    unsafe { nabi_thread_sleep_ns(next) };
+}
+
+/// A socket is watched (only the solo executor watches them itself).
+#[cfg(target_os = "wasi")]
+pub(pkg) fn io_armed() -> bool { unsafe { nabi_io_armed() } != 0 }
+
+#[cfg(not(target_os = "wasi"))]
+pub(pkg) const fn io_armed() -> bool { false }
+
+/// Completes once `fd` may be readable (`await task::readable(fd)`
+/// after a read hit `WouldBlock`); it may also complete spuriously, so
+/// retry the operation in a loop.
+#[internal]
+pub const fn readable(fd: i32) -> IoReady {
+    IoReady { fd: fd, write: 0, armed: false }
+}
+
+/// `readable` for writes.
+#[internal]
+pub const fn writable(fd: i32) -> IoReady {
+    IoReady { fd: fd, write: 1, armed: false }
+}
+
+/// The future `readable` / `writable` return: completes once the fd may
+/// be ready (possibly spuriously).
+#[must_use("future is never awaited, so its body never runs: write `await {}`")]
+pub(pkg) struct IoReady {
+    fd: i32;
+    write: i32;
+    armed: bool;
+}
+
+impl Future for IoReady {
+    type Output = ();
+    fn poll(ref self, ref ctx: Context) -> Poll<()> {
+        if self.armed {
+            return Poll::Ready(());
+        }
+        start_driver();
+        if unsafe { nabi_io_watch(self.fd, 1u32 << (self.write as u32)) } < 0 {
+            // Not pollable: let the operation report the error.
+            return Poll::Ready(());
+        }
+        // Park first, then look: an edge after the look unparks us.
+        park(io_key(self.fd, self.write), ctx.waker);
+        if unsafe { nabi_net_wait(self.fd, self.write, 0) } != 0 {
+            return Poll::Ready(());
+        }
+        self.armed = true;
+        Poll::Pending
+    }
+}
+
+// runtime ABI hooks
+//
+// `nabi_io_register` / `nabi_timer_register` / `nabi_coro_park` /
+// `nabi_coro_unpark` call these, for hand-written futures and foreign
+// code. A `waker` is a one-element `GcBuf<Waker>`; a coroutine `frame`
+// is any GC object, whose address is the parking key. Each registration
+// wakes once: register again for the next wait.
+
+/// Wake `w[0]` once `fd` may be readable (`interest & 1`) or writable
+/// (`interest & 2`) - at once if it already is, or if the fd cannot be
+/// watched (the retried operation reports the error).
+pub(pkg) extern "C" fn hook_io(fd: i32, interest: u32, w: GcBuf<Waker>) {
+    unsafe {
+        let waker = w[0];
+        start_driver();
+        if nabi_io_watch(fd, interest) < 0 {
+            waker.wake();
+            return;
+        }
+        for dir in 0..2 {
+            if (interest >> (dir as u32)) & 1u32 != 0u32 {
+                // Park first, then look (as `readable`).
+                park(io_key(fd, dir), waker);
+                if nabi_net_wait(fd, dir, 0) != 0 {
+                    waker.wake();
+                }
+            }
+        }
+    }
+}
+
+pub(pkg) extern "C" fn hook_timer(deadline: u64, w: GcBuf<Waker>) {
+    unsafe {
+        add_timer(deadline as i64, w[0]);
+    }
+}
+
+pub(pkg) extern "C" fn hook_park(frame: GcBuf<u8>, w: GcBuf<Waker>) {
+    unsafe {
+        park(key(frame), w[0]);
+    }
+}
+
+pub(pkg) extern "C" fn hook_unpark(frame: GcBuf<u8>) {
+    unpark(key(frame));
+}

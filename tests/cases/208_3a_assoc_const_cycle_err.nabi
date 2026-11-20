@@ -1,0 +1,14 @@
+// expect-error: 9:22: const `N` is defined in terms of itself
+
+// A trait const defined through itself is still a cycle.
+trait Size { const N: usize; }
+
+struct Pair { }
+
+impl Size for Pair {
+    const N: usize = <Pair as Size>::N + 1;
+}
+
+fn main() {
+    println(<Pair as Size>::N);
+}

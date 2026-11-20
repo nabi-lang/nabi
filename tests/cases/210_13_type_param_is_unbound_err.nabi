@@ -1,0 +1,9 @@
+// expect-error: `U` is not a parameter here: the type after `is` can't introduce one
+// expect-error: help: add `U` to the function's parameters, or test a concrete type: `T is List<f32>`
+
+fn f<T>(_x: T) -> bool {
+    if T is List<U> { return true; }
+    false
+}
+
+fn main() { println(f"{f(1.0f32)}"); }

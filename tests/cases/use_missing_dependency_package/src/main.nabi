@@ -1,0 +1,7 @@
+// expect-error: src/main.nabi:5:5: unresolved import: `json::parse` does not exist
+// expect-error: = help: `json` is not a dependency of this package: add it to nabi.nabion (`nabi add json`)
+// A package gets its dependencies from its nabi.nabion alone; the help
+// says so.
+use json::parse;
+
+fn main() -> i32 { return 0; }

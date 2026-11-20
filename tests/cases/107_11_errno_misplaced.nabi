@@ -1,0 +1,9 @@
+// expect-error: `#[errno]` and `#[leaf]` are for C declarations: put them on an `extern "C" { .. }` block or its functions
+
+// The runtime's own functions keep errno themselves.
+#[errno]
+extern "nabi" {
+    fn nabi_probe_errno_misplaced();
+}
+
+fn main() {}

@@ -1,0 +1,8 @@
+// expect-error: 7:5: type annotations needed: cannot infer the type of `m` (`M<_>`)
+
+// With neither `M::<T>` nor a typed slot nothing gives `T`.
+struct M<T>;
+
+fn main() {
+    let m = M;
+}

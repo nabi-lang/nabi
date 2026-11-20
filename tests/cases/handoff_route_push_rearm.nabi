@@ -1,0 +1,14 @@
+// needs: threads
+// expect-error: `items` still holds `it`, which was handed to another owner
+// After sending every element, a push must not make the old ones usable.
+use std::thread;
+fn main() {
+    let (tx, rx) = channel::<List<i32>>();
+    let t = thread::spawn(|| { if let l: List<i32> = rx.recv() { for i in 0..200000 { l.push(i); } } 0 });
+    let items: List<List<i32>> = [[]];
+    for it in items { try! tx.send(it); }
+    items.push([]);
+    for i in 0..200000 { items[0].push(i); }
+    let _ = try! t.join();
+    println(f"len {items[0].len()}");
+}

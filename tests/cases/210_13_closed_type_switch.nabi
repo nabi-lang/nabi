@@ -1,0 +1,17 @@
+// expect-exit: 0
+// expect-stdout: f32 f64
+// expect-lint: 12:12 this `if T is ..` chain fails for every other type: a new type compiles and panics at run time
+
+// A chain over a closed set of types whose fallback panics: a trait
+// with an impl per type says the same and fails at compile time.
+fn kind<T>(_x: T) -> str {
+    if T is f32 {
+        "f32"
+    } else if T is f64 {
+        "f64"
+    } else {
+        panic("unsupported type")
+    }
+}
+
+fn main() { println(f"{kind(1.0f32)} {kind(2.0)}"); }

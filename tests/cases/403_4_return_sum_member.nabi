@@ -1,0 +1,55 @@
+// expect-exit: 0
+// expect-stdout:
+// none 1 1 none
+// 2 x 3
+
+// Without a written return type, a return path that already is a sum
+// counts by its members: `none` beside `Resp?` returns `Resp?`, in either
+// order. No new sum is made.
+struct Resp { n: i32; }
+
+fn get(c: bool) -> Resp? {
+    if c { return Resp { n: 1 }; }
+    return none;
+}
+
+fn show(r: Resp?) -> str {
+    match r {
+        none => "none",
+        p: Resp => f"{p.n}",
+    }
+}
+
+fn wide(v: i64 | str) -> str {
+    match v {
+        n: i64 => f"{n}",
+        s: str => s,
+    }
+}
+
+fn none_first(c: bool) {
+    let r = get(true);
+    if c { return none; }
+    r
+}
+
+fn sum_first(c: bool) {
+    let r = get(true);
+    if c { return r; }
+    none
+}
+
+fn plain(c: bool) {
+    if c { return Resp { n: 2 }; }
+    get(false)
+}
+
+fn nested(c: bool, w: i64 | str) {
+    if c { return "x"; }
+    return w;
+}
+
+fn main() {
+    println(f"{show(none_first(true))} {show(none_first(false))} {show(sum_first(true))} {show(sum_first(false))}");
+    println(f"{show(plain(true))} {wide(nested(true, 3))} {wide(nested(false, 3))}");
+}

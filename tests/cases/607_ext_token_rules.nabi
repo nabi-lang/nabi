@@ -1,0 +1,17 @@
+// expect-error: `->` is a fixed token with no binary form: it is syntax, not an operator
+// expect-error: `a⊕` can't be a new operator token: `a` (U+0061) is an identifier character, not an operator one: letters and digits make names (`ax` is one name)
+
+// A registered token is `Pattern_Syntax` only and no fixed token.
+struct V { x: i32; }
+
+trait Arrow {
+    #[infix("->", like = "+")]
+    fn arrow(self, o: Self) -> Self;
+}
+
+trait Mixed {
+    #[infix("a⊕", like = "+")]
+    fn mixed(self, o: Self) -> Self;
+}
+
+fn main() {}
