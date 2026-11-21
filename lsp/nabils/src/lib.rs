@@ -62,6 +62,8 @@ pub(crate) struct Doc {
     /// The snapshot of the last check applied: an older one that ends
     /// later is dropped.
     shown: u64,
+    /// The snapshot of the last check started: past `shown` while it runs.
+    asked: u64,
     /// Another input or the dependencies changed after snapshot `n`
     /// (`Some(n)`), and no later check is in: positions do not tell what
     /// `good` still knows.
@@ -149,6 +151,8 @@ pub fn serve_with(
              (see `nabi help lsp`)"
         );
     }
+    // A panic of the server loop ends it; only a compile's is isolated.
+    nabic_tools::analysis::fatal_here();
     let (tx, rx) = mpsc::channel();
     let reader = tx.clone();
     std::thread::spawn(move || {
@@ -347,6 +351,7 @@ impl<W: Write> Server<W> {
                         partial: None,
                         diags: Vec::new(),
                         shown: 0,
+                        asked: 0,
                         moved: None,
                     });
                     text.clone_into(&mut doc.text);
@@ -392,6 +397,7 @@ impl<W: Write> Server<W> {
                 Json::Null
             }
             "textDocument/codeAction" => {
+                self.wait_check(&uri);
                 if self.docs.get(&uri).is_some_and(|d| d.dirty) {
                     self.refresh(&uri);
                 }
@@ -414,7 +420,15 @@ impl<W: Write> Server<W> {
                 let line = pos.get("line").as_u32().unwrap_or(0);
                 let col = pos.get("character").as_u32().unwrap_or(0);
                 if self.needs_check(method, &uri, line, col) {
-                    self.refresh(&uri);
+                    // The running check of this text, else one now.
+                    self.wait_check(&uri);
+                    if self
+                        .docs
+                        .get(&uri)
+                        .is_some_and(|d| d.dirty || d.moved.is_some())
+                    {
+                        self.refresh(&uri);
+                    }
                 }
                 let new_name = params.get("newName").as_str();
                 let renamed = match method {
@@ -799,7 +813,8 @@ impl<W: Write> Server<W> {
         if doc.moved.is_some() && !text_only {
             return true;
         }
-        if !doc.dirty {
+        // A check of the current text still running counts as not done.
+        if !doc.dirty && doc.asked <= doc.shown {
             return false;
         }
         match method {
@@ -852,6 +867,17 @@ impl<W: Write> Server<W> {
             let _ = done.send((uri, seq, job()));
             let _ = events.send(Event::Checked);
         });
+    }
+
+    /// Wait for the background check of `uri` when one runs: until it is
+    /// in, the buffer is clean but its diagnostics and analysis are older.
+    fn wait_check(&mut self, uri: &str) {
+        if self.docs.get(uri).is_none_or(|d| d.asked <= d.shown) {
+            return;
+        }
+        if let Some(Ok((uri, seq, a))) = self.running.take().map(|r| r.recv()) {
+            self.apply(&uri, seq, a);
+        }
     }
 
     /// Take the background check's result if it is done.
@@ -914,7 +940,9 @@ impl<W: Write> Server<W> {
         let doc = self.docs.get(uri).expect("checked above");
         let job = self.prepare(&path, &doc.text);
         self.seq += 1;
-        self.docs.get_mut(uri).expect("checked above").dirty = false;
+        let doc = self.docs.get_mut(uri).expect("checked above");
+        doc.dirty = false;
+        doc.asked = self.seq;
         Some((self.seq, job))
     }
 

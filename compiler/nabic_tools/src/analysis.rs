@@ -49,6 +49,16 @@ pub fn check(
     (result, diags)
 }
 
+thread_local! {
+    /// A panic here is fatal, not parked (`isolate`).
+    static CALLER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Panics on this thread stay fatal, as on a thread that called `isolate`.
+pub fn fatal_here() {
+    CALLER.with(|c| c.set(true));
+}
+
 /// Run compile `f` on the compile thread; a panic there or on a thread it
 /// spawns is `Err(message)` and the caller goes on.
 ///
@@ -65,9 +75,6 @@ pub fn isolate<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Res
     /// Fails the running compile.
     static FAIL: Mutex<Option<Fail>> = Mutex::new(None);
     static HOOK: std::sync::Once = std::sync::Once::new();
-    thread_local! {
-        static CALLER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
     fn lock<V>(m: &Mutex<V>) -> std::sync::MutexGuard<'_, V> {
         m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -91,7 +98,7 @@ pub fn isolate<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Res
             }
         }));
     });
-    CALLER.with(|c| c.set(true));
+    fatal_here();
     let (tx, rx) = channel::<Result<T, String>>();
     let failed = tx.clone();
     let job: Job = Box::new(move || drop(tx.send(Ok(f()))));
