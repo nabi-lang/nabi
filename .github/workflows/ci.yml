@@ -299,9 +299,11 @@ jobs:
         run: rustup toolchain install && rustc -vV
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
       # unset, or off main and the merge queue (the only refs the role trusts),
-      # the cache is read-only.
+      # the cache is read-only. A role that cannot be assumed costs the
+      # writes only, not the steps after it.
       - name: Configure AWS credentials for sccache writes
         if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -398,9 +400,11 @@ jobs:
           targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
       # unset, or off main and the merge queue (the only refs the role trusts),
-      # the cache is read-only.
+      # the cache is read-only. A role that cannot be assumed costs the
+      # writes only, not the steps after it.
       - name: Configure AWS credentials for sccache writes
         if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -470,9 +474,11 @@ jobs:
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
       # unset, or off main and the merge queue (the only refs the role trusts),
-      # the cache is read-only.
+      # the cache is read-only. A role that cannot be assumed costs the
+      # writes only, not the steps after it.
       - name: Configure AWS credentials for sccache writes
         if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -515,9 +521,11 @@ jobs:
         run: rustup toolchain install && rustc -vV
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
       # unset, or off main and the merge queue (the only refs the role trusts),
-      # the cache is read-only.
+      # the cache is read-only. A role that cannot be assumed costs the
+      # writes only, not the steps after it.
       - name: Configure AWS credentials for sccache writes
         if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -570,9 +578,11 @@ jobs:
           RUSTUP_TOOLCHAIN=$t rustc -vV
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
       # unset, or off main and the merge queue (the only refs the role trusts),
-      # the cache is read-only.
+      # the cache is read-only. A role that cannot be assumed costs the
+      # writes only, not the steps after it.
       - name: Configure AWS credentials for sccache writes
         if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -608,9 +618,11 @@ jobs:
         run: rustup toolchain install && rustc -vV
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
       # unset, or off main and the merge queue (the only refs the role trusts),
-      # the cache is read-only.
+      # the cache is read-only. A role that cannot be assumed costs the
+      # writes only, not the steps after it.
       - name: Configure AWS credentials for sccache writes
         if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
