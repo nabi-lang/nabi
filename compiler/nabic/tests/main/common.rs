@@ -591,11 +591,16 @@ pub fn exe_name(name: &str) -> String {
 /// A command running the built program `exe`: itself, or a wasm module
 /// under `NABI_TEST_WASM_RUNNER` ([`wasm_runner`]) or
 /// `node` with the toolchain's `nabi.mjs`; a native one under
-/// `NABI_TEST_RUNNER` when set. Its temp directory is [`case_tmp`].
+/// `NABI_TEST_RUNNER` when set. Its temp directory is [`case_tmp`];
+/// `PWD` names its working directory, as `nabi run` does (a WASI
+/// program starts there).
 pub fn run_command(exe: &Path) -> Command {
     let mut c = runner_command(exe);
     for v in ["TMPDIR", "TMP", "TEMP"] {
         c.env(v, case_tmp());
+    }
+    if let Ok(cwd) = env::current_dir() {
+        c.env("PWD", cwd);
     }
     c
 }

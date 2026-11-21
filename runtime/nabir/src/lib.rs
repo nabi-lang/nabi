@@ -477,6 +477,8 @@ pub extern "C" fn nabi_runtime_init() {
         // Threads started later see it through their start.
         nabi_cpu_lse.store(u8::from(hw & libc::HWCAP_ATOMICS != 0), Ordering::Relaxed);
     }
+    #[cfg(target_os = "wasi")]
+    os::start_dir();
     init_thread(true);
 }
 

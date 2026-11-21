@@ -290,6 +290,23 @@ pub extern "C" fn nabi_os_getcwd(buf: *mut u8, off: usize, len: usize) -> isize 
     put(buf, off, len, until_nul(&cwd))
 }
 
+/// WASI has no working directory of its own: wasi-libc starts at `/`.
+/// A runner that grants the host's root as `/` (`nabi run` / `nabi
+/// test`: wasmtime `--dir /::/`) passes the host's in `PWD`, so
+/// relative paths resolve as in a native run. Not absolute, or not
+/// reachable: `/` stays.
+#[cfg(target_os = "wasi")]
+pub(crate) fn start_dir() {
+    // SAFETY: getenv's result is null or NUL-terminated, read before
+    // any thread may set it.
+    unsafe {
+        let pwd = libc::getenv(c"PWD".as_ptr());
+        if !pwd.is_null() && *pwd == b'/' as libc::c_char {
+            libc::chdir(pwd);
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn nabi_os_chdir(path: NabiStr) -> i32 {
     // SAFETY: `path` is a C string.

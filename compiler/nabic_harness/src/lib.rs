@@ -416,12 +416,17 @@ fn unescape(s: &str) -> String {
 }
 
 /// The command running `exe` under `runner` (program and arguments
-/// first); `exe` itself when it is empty.
+/// first); `exe` itself when it is empty. Under a runner `PWD` names the
+/// working directory, which a WASI case starts in (it has none of its
+/// own).
 fn command(runner: &[String], exe: &Path) -> Command {
     match runner.split_first() {
         Some((program, args)) => {
             let mut c = Command::new(program);
             c.args(args).arg(exe);
+            if let Ok(cwd) = std::env::current_dir() {
+                c.env("PWD", cwd);
+            }
             c
         }
         None => Command::new(exe),
@@ -526,6 +531,7 @@ mod tests {
         assert_eq!(c.get_program(), "sh");
         let args: Vec<_> = c.get_args().collect();
         assert_eq!(args, ["-c", "exit 3", "x"]);
+        assert!(c.get_envs().any(|(k, v)| k == "PWD" && v.is_some()));
     }
 
     #[test]

@@ -1,0 +1,15 @@
+// needs: fs os
+// expect-exit: 0
+// expect-stdout:
+// starts in PWD: true
+
+// A program starts in the working directory its runner names in `PWD`,
+// on WASI too: it has none of its own, and the runtime moves there.
+
+use std::env;
+
+fn main() {
+    let cwd = f"{try! env::current_dir()}";
+    let pwd = try! env::var("PWD");
+    println(f"starts in PWD: {cwd == pwd}");
+}

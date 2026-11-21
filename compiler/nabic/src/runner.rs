@@ -173,12 +173,17 @@ pub fn runner(t: &TargetSpec) -> Result<Vec<OsString>, String> {
 }
 
 /// The command that runs `exe` through `runner` (from [`runner`]).
+/// Under a runner `PWD` names the working directory: a WASI program has
+/// none of its own and starts in it (the runtime's `start_dir`).
 #[must_use]
 pub fn run_command(runner: &[OsString], exe: &Path) -> Command {
     match runner.split_first() {
         Some((program, args)) => {
             let mut c = Command::new(program);
             c.args(args).arg(exe);
+            if let Ok(cwd) = std::env::current_dir() {
+                c.env("PWD", cwd);
+            }
             c
         }
         None => Command::new(exe),
