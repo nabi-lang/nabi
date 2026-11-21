@@ -20,6 +20,12 @@ version=$1
 root=$(cd "$(dirname "$0")/../.." && pwd)
 epoch=${SOURCE_DATE_EPOCH:-$(git -C "$root" log -1 --format=%ct)}
 stamp=$(jq -nr --argjson e "$epoch" '$e | todate')
+# serialNumber, which attest-sbom requires of CycloneDX: a UUID derived
+# from the version and the commit, so a rerun gives the same file.
+commit=$(git -C "$root" rev-parse HEAD)
+h=$(printf 'nabi %s %s' "$version" "$commit" | { sha256sum 2> /dev/null || shasum -a 256; } | cut -c1-32)
+serial=$(printf '%s' "$h" | sed -E 's/^(.{8})(.{4}).(.{3})(.)(.{3})(.{12})$/urn:uuid:\1-\2-5\3-\4\5-\6/')
+serial=$(printf '%s' "$serial" | awk -F- '{ v = substr($4, 1, 1); n = index("0123456789abcdef", v) - 1; printf "%s-%s-%s-%s%s-%s", $1, $2, $3, substr("89ab", n % 4 + 1, 1), substr($4, 2), $5 }')
 
 # Registry crates: "name<TAB>version<TAB>source<TAB>checksum".
 crates() {
@@ -65,11 +71,12 @@ notices() {
     description: "Where: \(.[1])",
     licenses: [{license: {name: .[2]}}]
   } + (if ($v | length) == 1 then {version: $v[0]} else {} end)'
-} | jq -s --arg v "$version" --arg t "$stamp" '
+} | jq -s --arg v "$version" --arg t "$stamp" --arg s "$serial" '
   sort_by(.["bom-ref"]) as $c |
   {
     bomFormat: "CycloneDX",
     specVersion: "1.6",
+    serialNumber: $s,
     version: 1,
     metadata: {
       timestamp: $t,
