@@ -28,7 +28,7 @@ jobs:
           echo "$GITHUB_REF_NAME pushed by $ACTOR"
       - name: Raise the alarm issue
         if: steps.who.outputs.ok == 'false'
-        uses: nabi-lang/.github/actions/sync-alarm-issue@v1.0.2
+        uses: nabi-lang/.github/actions/sync-alarm-issue@v1.0.3
         with:
           title: "Tag ${{ github.ref_name }} not created by release.yml"
           ok: "false"

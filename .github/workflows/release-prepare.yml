@@ -51,7 +51,7 @@ jobs:
           persist-credentials: false
       - name: Mint App token
         id: token
-        uses: nabi-lang/.github/actions/mint-app-token@v1.0.2
+        uses: nabi-lang/.github/actions/mint-app-token@v1.0.3
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_KEY }}
