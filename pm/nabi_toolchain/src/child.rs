@@ -39,7 +39,7 @@ pub fn exit(st: ExitStatus) -> ! {
 #[cfg(unix)]
 mod unix {
     use std::io;
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
     use std::os::unix::process::CommandExt;
     use std::process::{Command, ExitStatus};
     use std::sync::Once;
@@ -114,7 +114,36 @@ mod unix {
                 })
             };
         }
-        let mut child = c.spawn()?;
+        // The watcher first, then the program, which tells it its pid:
+        // no moment where `nabi` can die unwatched.
+        #[cfg(target_os = "macos")]
+        let (watcher, tell) = watch();
+        #[cfg(target_os = "macos")]
+        if tell >= 0 {
+            // SAFETY: getpid and a write of at most PIPE_BUF bytes, both
+            // async-signal-safe, between fork and exec.
+            unsafe {
+                c.pre_exec(move || {
+                    let me = libc::getpid();
+                    let n = std::mem::size_of_val(&me);
+                    libc::write(tell, (&raw const me).cast(), n);
+                    Ok(())
+                })
+            };
+        }
+        let spawned = c.spawn();
+        #[cfg(target_os = "macos")]
+        // SAFETY: our end of the watcher's pipe and our own child.
+        unsafe {
+            if tell >= 0 {
+                libc::close(tell);
+            }
+            if spawned.is_err() && watcher > 0 {
+                libc::kill(watcher, libc::SIGKILL);
+                libc::waitpid(watcher, std::ptr::null_mut(), 0);
+            }
+        }
+        let mut child = spawned?;
         let pid = child.id() as libc::pid_t;
         CHILD.store(pid, Ordering::SeqCst);
         let sig = PENDING.swap(0, Ordering::SeqCst);
@@ -122,8 +151,6 @@ mod unix {
             // SAFETY: our unreaped child.
             unsafe { libc::kill(pid, sig) };
         }
-        #[cfg(target_os = "macos")]
-        let watcher = watch(pid);
         // Wait without reaping: the pid stays ours while CHILD names it.
         // SAFETY: a zeroed siginfo for waitid to fill.
         unsafe {
@@ -177,17 +204,31 @@ mod unix {
         Ok(())
     }
 
-    /// A forked watcher that kills `child` should this process die
-    /// first; its pid, or -1.
+    /// A forked watcher that kills the program should this process die
+    /// first: its pid and the end of a pipe the program writes its own
+    /// pid to before exec (close-on-exec), or -1s. The watcher leaves
+    /// when the pipe closes with no pid: no program ran.
     #[cfg(target_os = "macos")]
-    fn watch(child: libc::pid_t) -> libc::pid_t {
+    fn watch() -> (libc::pid_t, libc::c_int) {
         // SAFETY: the forked side makes async-signal-safe calls only and
         // leaves by `_exit`.
         unsafe {
+            let mut fds = [-1; 2];
+            if libc::pipe(fds.as_mut_ptr()) != 0 {
+                return (-1, -1);
+            }
+            for fd in fds {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            }
             let parent = libc::getpid();
             let pid = libc::fork();
             if pid != 0 {
-                return pid;
+                libc::close(fds[0]);
+                if pid < 0 {
+                    libc::close(fds[1]);
+                    return (-1, -1);
+                }
+                return (pid, fds[1]);
             }
             // Only the program's end or ours ends the watcher.
             for sig in [
@@ -202,8 +243,26 @@ mod unix {
             // Hold none of the parent's files: pipes a reader waits to
             // close, locks.
             for fd in 0..libc::getdtablesize().min(1 << 16) {
-                libc::close(fd);
+                if fd != fds[0] {
+                    libc::close(fd);
+                }
             }
+            let mut child: libc::pid_t = 0;
+            let size = std::mem::size_of_val(&child);
+            let mut got = 0;
+            while got < size {
+                let n = libc::read(
+                    fds[0],
+                    (&raw mut child).cast::<u8>().add(got).cast(),
+                    size - got,
+                );
+                if n > 0 {
+                    got += n as usize;
+                } else if n == 0 || *libc::__error() != libc::EINTR {
+                    libc::_exit(0);
+                }
+            }
+            libc::close(fds[0]);
             let kq = libc::kqueue();
             let ev = |pid: libc::pid_t| libc::kevent {
                 ident: pid as usize,
