@@ -661,6 +661,16 @@ jobs:
       - name: Install Rust from rust-toolchain.toml
         if: runner.os == 'Windows'
         run: rustup toolchain install && rustc -vV
+      # Until the official packages are published, an archive leaves them
+      # out, as the rc does (docs/releasing.md, Bootstrap); dist/native.sh
+      # fails on an empty set otherwise.
+      - name: Leave out the official packages while the index has none
+        run: |
+          git clone -q --depth 1 https://github.com/nabi-lang/packages-index "$RUNNER_TEMP/index"
+          if ! grep -rqsE --exclude-dir='.*' --exclude='*.*' '^Package \{.*official: true' "$RUNNER_TEMP/index"; then
+            echo "::notice::no official package in the index yet: the archive leaves them out"
+            echo NABI_DIST_PACKAGES=0 >> "$GITHUB_ENV"
+          fi
       - name: Build the archive with dist/native.sh
         if: runner.os == 'Windows'
         run: scripts/dist/native.sh --out "$RUNNER_TEMP/dist"
