@@ -54,13 +54,23 @@ pub fn versions(home: &Path) -> Vec<String> {
     installed(home).into_iter().map(|(_, v)| v).collect()
 }
 
+/// `v` is a release, not a prerelease.
+fn is_release(v: &str) -> bool {
+    crate::semver::Version::parse(v).is_ok_and(|v| v.pre.is_empty())
+}
+
 /// The newest installed toolchain matching `pin` (`ToolchainReq`, or a
-/// directory name).
+/// directory name): the newest release, a prerelease only when no
+/// release matches (`0.1` takes `0.1.0` over `0.1.1-rc.1`).
 fn find(home: &Path, pin: &str) -> Option<PathBuf> {
-    installed(home)
+    let hits: Vec<(String, String)> = installed(home)
         .into_iter()
+        .filter(|(name, ver)| name == pin || pin_matches(pin, ver))
+        .collect();
+    hits.iter()
         .rev()
-        .find(|(name, ver)| name == pin || pin_matches(pin, ver))
+        .find(|(_, v)| is_release(v))
+        .or_else(|| hits.last())
         .map(|(name, _)| root(home).join(name))
 }
 
@@ -209,10 +219,9 @@ pub fn newest_installed(home: &Path) -> Option<PathBuf> {
                 .is_file()
         })
         .collect();
-    let release = |v: &str| crate::semver::Version::parse(v).is_ok_and(|v| v.pre.is_empty());
     all.iter()
         .rev()
-        .find(|(_, v)| release(v))
+        .find(|(_, v)| is_release(v))
         .or_else(|| all.last())
         .map(|(name, _)| root(home).join(name))
 }
@@ -1326,7 +1335,15 @@ mod tests {
     #[test]
     fn installed_in_semver_order() {
         let home = nabic_core::tmp::test_dir("tc-order");
-        for v in ["0.10.0", "0.1.0", "0.1.0-rc.1", "0.9.0"] {
+        for v in [
+            "0.10.0",
+            "0.1.0",
+            "0.1.0-rc.1",
+            "0.1.1-rc.1",
+            "0.9.0",
+            "0.11.0-rc.1",
+            "0.11.0-rc.2",
+        ] {
             std::fs::create_dir_all(super::root(&home).join(format!("{v}-{}", super::HOST)))
                 .unwrap();
         }
@@ -1334,11 +1351,34 @@ mod tests {
             .into_iter()
             .map(|(_, v)| v)
             .collect();
-        // A pin takes the newest match: the release over its candidate.
-        let pick = super::find(&home, "0.1")
-            .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()));
+        let pick = |pin: &str| {
+            super::find(&home, pin)
+                .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .map(|n| n.trim_end_matches(&format!("-{}", super::HOST)).to_owned())
+        };
+        // A series takes its newest release over any candidate; a
+        // candidate only when the series has no release.
+        let picks = [
+            pick("0.1"),
+            pick("0.11"),
+            pick("0.1.0"),
+            pick("0.1.1-rc.1"),
+            pick("^0.1.0"),
+        ];
         let _ = std::fs::remove_dir_all(&home);
-        assert_eq!(got, ["0.1.0-rc.1", "0.1.0", "0.9.0", "0.10.0"]);
-        assert_eq!(pick, Some(format!("0.1.0-{}", super::HOST)));
+        assert_eq!(
+            got,
+            [
+                "0.1.0-rc.1",
+                "0.1.0",
+                "0.1.1-rc.1",
+                "0.9.0",
+                "0.10.0",
+                "0.11.0-rc.1",
+                "0.11.0-rc.2"
+            ]
+        );
+        let want = ["0.1.0", "0.11.0-rc.2", "0.1.0", "0.1.1-rc.1", "0.1.0"];
+        assert_eq!(picks, want.map(|v| Some(v.to_owned())));
     }
 }

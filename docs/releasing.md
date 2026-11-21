@@ -410,6 +410,14 @@ steps:
 `release.yml` refuses `packages` `none` for a final version in `release`
 mode, so only a candidate can ship without the packages.
 
+Until step 3, packages, sites and editors pin the series (`toolchain:
+"0.1"`) and CI still installs a toolchain: a series pin takes the newest
+final `0.1.Z`, and only while `0.1` has no final release at all the
+newest non-draft `0.1.Z-rc.N`, with a warning (`no final 0.1 release yet;
+using 0.1.0-rc.2`). install-nabi (`nabi-lang/.github` `lib/toolchain.sh`),
+infra's `scripts/nabi-toolchain.sh` and `nabi`'s choice among installed
+toolchains follow this rule, so `0.1.0` is picked up with no pin change.
+
 ## Update pointer
 
 A series is the releases one breaking slot covers: `0.MINOR` while the
