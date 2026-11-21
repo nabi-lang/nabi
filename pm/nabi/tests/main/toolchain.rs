@@ -2,8 +2,10 @@
 
 #[allow(clippy::wildcard_imports)]
 use crate::*;
+#[cfg(unix)]
 use nabi_toolchain::sign::testing::TestKey;
 
+#[cfg(unix)]
 /// The throwaway key fake releases are signed with; downloads trust it
 /// with `--key` (`keyed`).
 pub(crate) const TEST_KEY: TestKey = TestKey {
@@ -11,6 +13,7 @@ pub(crate) const TEST_KEY: TestKey = TestKey {
     id: *b"nabitest",
 };
 
+#[cfg(unix)]
 /// `TEST_KEY`'s public key file under `root`; its path.
 pub(crate) fn test_key(root: &Path) -> String {
     let f = root.join("test.pub");
@@ -21,6 +24,7 @@ pub(crate) fn test_key(root: &Path) -> String {
     f.display().to_string()
 }
 
+#[cfg(unix)]
 /// `args` (after `toolchain`) with `--key <key>` when they download.
 pub(crate) fn keyed<'a>(args: &[&'a str], key: &'a str) -> Vec<&'a str> {
     let mut v = args.to_vec();
@@ -30,6 +34,7 @@ pub(crate) fn keyed<'a>(args: &[&'a str], key: &'a str) -> Vec<&'a str> {
     v
 }
 
+#[cfg(unix)]
 /// What a download checked with `--key key` warns first.
 fn key_warning(key: &str) -> String {
     format!(
@@ -38,6 +43,7 @@ fn key_warning(key: &str) -> String {
     )
 }
 
+#[cfg(unix)]
 /// Sign release directory `dir` as release.yml does: `SHA256SUMS` over
 /// its archives (`wrong` lists a wrong digest instead), then
 /// `SHA256SUMS.minisig`.
