@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-11-21)
 
 <!-- begin summary -->
 Summary: The first release of Nabi: the compiler, the `nabi` package tool, the language server, the runtime, the standard library and 20 official packages, with Nabi's own code generator and linker for 17 supported targets and release archives for 8 hosts.
@@ -34,3 +34,4 @@ Summary: The first release of Nabi: the compiler, the `nabi` package tool, the l
 - Only the registry's maintainers can publish packages for now; anyone can sign in and use them.
 - The toolchain's build cache is capped at 5 GiB; `NABI_CACHE_MAX_SIZE` changes the cap (`off`: none).
 <!-- end highlights -->
+
