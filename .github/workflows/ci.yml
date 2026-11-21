@@ -111,7 +111,7 @@ jobs:
   # Every commit of a pull request carries a Signed-off-by (CONTRIBUTING.md).
   dco:
     name: DCO
-    uses: nabi-lang/.github/.github/workflows/reusable-dco.yml@v1.0.0
+    uses: nabi-lang/.github/.github/workflows/reusable-dco.yml@v1.0.2
     permissions:
       contents: read
       pull-requests: read

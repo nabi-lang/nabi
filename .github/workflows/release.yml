@@ -89,7 +89,7 @@ jobs:
             --jq "map(select(.title == \"$title\"))[0].number // empty")
           patch=$(jq -nc --arg v "$VERSION" --arg f "$final" --arg p "$prev" --arg e "$event" --arg m "$MODE" \
             '{state: "PLANNED", version: $v, prerelease: ($v != $f), series: ($f | sub("\\.[0-9]+$"; "")), prev: $p, event: $e, mode: $m,
-              blocks: "nabi-lang/.github@v1.0.0"}')
+              blocks: "nabi-lang/.github@v1.0.2"}')
           {
             echo "issue=$issue"
             echo "title=$title"
@@ -101,7 +101,7 @@ jobs:
       - name: Open the release record
         id: open
         if: steps.plan.outputs.issue == ''
-        uses: nabi-lang/.github/actions/record-release@v1.0.0
+        uses: nabi-lang/.github/actions/record-release@v1.0.2
         with:
           title: ${{ steps.plan.outputs.title }}
           labels: ${{ steps.plan.outputs.labels }}
@@ -109,7 +109,7 @@ jobs:
       - name: Read the release record
         id: read
         if: steps.plan.outputs.issue != ''
-        uses: nabi-lang/.github/actions/record-release@v1.0.0
+        uses: nabi-lang/.github/actions/record-release@v1.0.2
         with:
           issue: ${{ steps.plan.outputs.issue }}
 
@@ -153,7 +153,7 @@ jobs:
       - name: Mint App token
         id: token
         if: steps.found.outputs.landed != 'true'
-        uses: nabi-lang/.github/actions/mint-app-token@v1.0.0
+        uses: nabi-lang/.github/actions/mint-app-token@v1.0.2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_KEY }}
@@ -212,7 +212,7 @@ jobs:
         run: |
           echo "patch=$(jq -nc --arg b "$BRANCH" --arg c "$SHA" '{prepare: {branch: $b, commit: $c}}')" >> "$GITHUB_OUTPUT"
       - name: Record the prepared commit
-        uses: nabi-lang/.github/actions/record-release@v1.0.0
+        uses: nabi-lang/.github/actions/record-release@v1.0.2
         with:
           issue: ${{ needs.plan.outputs.issue }}
           patch: ${{ steps.ev.outputs.patch }}
@@ -231,7 +231,7 @@ jobs:
     steps:
       - name: Mint App token
         id: token
-        uses: nabi-lang/.github/actions/mint-app-token@v1.0.0
+        uses: nabi-lang/.github/actions/mint-app-token@v1.0.2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_KEY }}
@@ -253,7 +253,7 @@ jobs:
           echo "main: $main -> $SHA"
           echo "patch=$(jq -nc --arg s "$SHA" --arg m "$main" '{land: {sha: $s, main_before: $m}}')" >> "$GITHUB_OUTPUT"
       - name: Record the landed commit
-        uses: nabi-lang/.github/actions/record-release@v1.0.0
+        uses: nabi-lang/.github/actions/record-release@v1.0.2
         with:
           issue: ${{ needs.plan.outputs.issue }}
           patch: ${{ steps.land.outputs.patch }}
@@ -411,7 +411,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "patch=$(jq -sc --arg s "$SHA" --arg r "$RUN" '{ready: {sha: $s}, build: {run: $r, assets: .}}' assets.jsonl)" >> "$GITHUB_OUTPUT"
       - name: Record the build
-        uses: nabi-lang/.github/actions/record-release@v1.0.0
+        uses: nabi-lang/.github/actions/record-release@v1.0.2
         with:
           issue: ${{ needs.plan.outputs.issue }}
           patch: ${{ steps.ev.outputs.patch }}
@@ -490,7 +490,7 @@ jobs:
           overwrite: true
       - name: Mint App token
         id: token
-        uses: nabi-lang/.github/actions/mint-app-token@v1.0.0
+        uses: nabi-lang/.github/actions/mint-app-token@v1.0.2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_KEY }}
@@ -531,7 +531,7 @@ jobs:
           echo "patch=$(jq -nc --arg by "$by" --arg t "$tag" --arg s "$SHA" --arg m "$MODE" \
             '{approval: {by: $by, at: (now | todate)}, tag: (if $m == "release" then {name: $t, sha: $s} else {checked: $t} end)}')" >> "$GITHUB_OUTPUT"
       - name: Record the approval and tag
-        uses: nabi-lang/.github/actions/record-release@v1.0.0
+        uses: nabi-lang/.github/actions/record-release@v1.0.2
         with:
           issue: ${{ needs.plan.outputs.issue }}
           patch: ${{ steps.tag.outputs.patch }}
@@ -612,7 +612,7 @@ jobs:
             echo "patch=$(jq -nc --arg n "rehearsal-$VERSION-$GITHUB_RUN_ID" '{release: {draft_checked: $n}}')" >> "$GITHUB_OUTPUT"
           fi
       - name: Record the release
-        uses: nabi-lang/.github/actions/record-release@v1.0.0
+        uses: nabi-lang/.github/actions/record-release@v1.0.2
         with:
           issue: ${{ needs.plan.outputs.issue }}
           patch: ${{ steps.publish.outputs.patch }}
@@ -635,7 +635,7 @@ jobs:
     steps:
       - name: Install the released Nabi
         id: nabi
-        uses: nabi-lang/.github/actions/install-nabi@v1.0.0
+        uses: nabi-lang/.github/actions/install-nabi@v1.0.2
         with:
           version: ${{ inputs.mode == 'release' && inputs.version || '' }}
           candidate-run: ${{ inputs.mode != 'release' && needs.collect.outputs.run || '' }}
@@ -731,7 +731,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "reached $reached; failed: $failed"
       - name: Record the state
-        uses: nabi-lang/.github/actions/record-release@v1.0.0
+        uses: nabi-lang/.github/actions/record-release@v1.0.2
         with:
           issue: ${{ needs.plan.outputs.issue }}
           patch: ${{ steps.state.outputs.patch }}
@@ -755,7 +755,7 @@ jobs:
           fi
       - name: Close the rehearsal record
         if: inputs.mode == 'rehearse' && steps.state.outputs.failed == '[]'
-        uses: nabi-lang/.github/actions/record-release@v1.0.0
+        uses: nabi-lang/.github/actions/record-release@v1.0.2
         with:
           issue: ${{ needs.plan.outputs.issue }}
           patch: '{"state": "CLOSED"}'
@@ -779,7 +779,7 @@ jobs:
     steps:
       - name: Mint App token
         id: token
-        uses: nabi-lang/.github/actions/mint-app-token@v1.0.0
+        uses: nabi-lang/.github/actions/mint-app-token@v1.0.2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_KEY }}
@@ -808,7 +808,7 @@ jobs:
     steps:
       - name: Mint App token
         id: token
-        uses: nabi-lang/.github/actions/mint-app-token@v1.0.0
+        uses: nabi-lang/.github/actions/mint-app-token@v1.0.2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_KEY }}
@@ -826,7 +826,7 @@ jobs:
             if gh api -X DELETE "repos/$GH_REPO/git/refs/heads/$b" 2> /dev/null; then echo "deleted $b"; fi
           done
       - name: Record the attempt as abandoned
-        uses: nabi-lang/.github/actions/record-release@v1.0.0
+        uses: nabi-lang/.github/actions/record-release@v1.0.2
         with:
           issue: ${{ needs.plan.outputs.issue }}
           patch: '{"state": "ABANDONED"}'
