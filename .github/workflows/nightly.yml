@@ -68,7 +68,7 @@ jobs:
       - name: Install Rust from rust-toolchain.toml
         run: rustup toolchain install && rustc -vV
       - name: Configure AWS credentials for sccache writes
-        if: vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -125,7 +125,7 @@ jobs:
       - name: Install Rust from rust-toolchain.toml
         run: rustup toolchain install && rustc -vV
       - name: Configure AWS credentials for sccache writes
-        if: vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -163,7 +163,7 @@ jobs:
       - name: Install Rust from rust-toolchain.toml
         run: rustup toolchain install && rustc -vV
       - name: Configure AWS credentials for sccache writes
-        if: vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -204,7 +204,7 @@ jobs:
       - name: Install Rust from rust-toolchain.toml
         run: rustup toolchain install && rustc -vV
       - name: Configure AWS credentials for sccache writes
-        if: vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -277,7 +277,7 @@ jobs:
       - name: Install Rust from rust-toolchain.toml
         run: rustup toolchain install && rustc -vV
       - name: Configure AWS credentials for sccache writes
-        if: vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -323,7 +323,7 @@ jobs:
       - name: Install Rust from rust-toolchain.toml
         run: rustup toolchain install && rustc -vV
       - name: Configure AWS credentials for sccache writes
-        if: vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}

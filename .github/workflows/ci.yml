@@ -298,9 +298,10 @@ jobs:
       - name: Install Rust from rust-toolchain.toml
         run: rustup toolchain install && rustc -vV
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
-      # unset, the cache is read-only.
+      # unset, or off main and the merge queue (the only refs the role trusts),
+      # the cache is read-only.
       - name: Configure AWS credentials for sccache writes
-        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -393,9 +394,10 @@ jobs:
         run: |
           targets/build.sh "$(rustc -vV | sed -n 's/^host: //p')"
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
-      # unset, the cache is read-only.
+      # unset, or off main and the merge queue (the only refs the role trusts),
+      # the cache is read-only.
       - name: Configure AWS credentials for sccache writes
-        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -464,9 +466,10 @@ jobs:
           & "$bin\clang.exe" --version
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
-      # unset, the cache is read-only.
+      # unset, or off main and the merge queue (the only refs the role trusts),
+      # the cache is read-only.
       - name: Configure AWS credentials for sccache writes
-        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -508,9 +511,10 @@ jobs:
       - name: Install Rust from rust-toolchain.toml
         run: rustup toolchain install && rustc -vV
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
-      # unset, the cache is read-only.
+      # unset, or off main and the merge queue (the only refs the role trusts),
+      # the cache is read-only.
       - name: Configure AWS credentials for sccache writes
-        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -562,9 +566,10 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$t" >>"$GITHUB_ENV"
           RUSTUP_TOOLCHAIN=$t rustc -vV
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
-      # unset, the cache is read-only.
+      # unset, or off main and the merge queue (the only refs the role trusts),
+      # the cache is read-only.
       - name: Configure AWS credentials for sccache writes
-        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
@@ -599,9 +604,10 @@ jobs:
       - name: Install Rust from rust-toolchain.toml
         run: rustup toolchain install && rustc -vV
       # NABI_SCCACHE_ROLE: the role ARN that may write the sccache bucket;
-      # unset, the cache is read-only.
+      # unset, or off main and the merge queue (the only refs the role trusts),
+      # the cache is read-only.
       - name: Configure AWS credentials for sccache writes
-        if: github.event_name != 'pull_request' && vars.NABI_SCCACHE_ROLE != ''
+        if: vars.NABI_SCCACHE_ROLE != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/'))
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.NABI_SCCACHE_ROLE }}
