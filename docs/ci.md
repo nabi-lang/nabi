@@ -30,7 +30,7 @@ arm64, `windows-2022` x86_64, `windows-11-arm` aarch64 (nightly and manual runs 
   self-hosted runner `CARGO_TARGET_DIR` under `NABI_CI_HOME`. Building needs only the pinned Rust toolchain:
   no LLVM, no prebuilt prefix.
 - `check`, per host: fmt, the layout rules (`just check-layout`), clippy, every test binary built and archived (`cargo nextest archive --workspace`,
-  uploaded as `tests-<host>`), doctests, `nabi fmt --check library`, and the compiler / runtime crate
+  with the `nabicc` and `nabils` it builds first, `.config/nextest.toml`; uploaded as `tests-<host>`), doctests, `nabi fmt --check library`, and the compiler / runtime crate
   isolation check (`nabir_abi`, shared by both, aside); every step runs even after one fails. On Linux after
   `targets/build.sh <host>`.
 - `test`, per host and part: every test but the two corpora from that archive, `nextest --partition

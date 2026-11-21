@@ -8,3 +8,14 @@ slow-timeout = { period = "60s", terminate-after = 8 }
 [[profile.default.overrides]]
 filter = "binary_id(nabic::main) & test(/^integration::/)"
 slow-timeout = { period = "60s", terminate-after = 15 }
+
+# nabi's tests run the nabicc and nabils beside it, binaries of packages
+# with no integration tests, which the archive leaves out: check builds
+# them first. One suffix of each exists on a host.
+[profile.default.archive]
+include = [
+    { path = "debug/nabicc", relative-to = "target", on-missing = "ignore" },
+    { path = "debug/nabicc.exe", relative-to = "target", on-missing = "ignore" },
+    { path = "debug/nabils", relative-to = "target", on-missing = "ignore" },
+    { path = "debug/nabils.exe", relative-to = "target", on-missing = "ignore" },
+]

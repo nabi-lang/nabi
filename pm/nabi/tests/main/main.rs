@@ -109,6 +109,8 @@ fn nabi_cmd(home: &Path, cwd: &Path, args: &[&str]) -> Command {
         .env_remove("NABI_ENV")
         .env_remove("NABI_REGISTRY_TOKEN")
         .env_remove("CLICOLOR_FORCE")
+        // A CI runner sets `CI`, which stops official packages coming in on use.
+        .env_remove("CI")
         .envs(
             tools::test_target()
                 .filter(|t| nabic_target::in_progress(t))
