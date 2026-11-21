@@ -280,3 +280,40 @@ fn ios_executables_name_their_platform() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An FDE whose CIE pointer is a SUBTRACTOR pair, as some `ld -r` output
+/// has it and the assembler writes it across atoms: the inline part is
+/// only the addend, the pointer is the pair's difference. The
+/// alignment between the records keeps the assembler from folding it.
+#[test]
+fn eh_frame_cie_pointer_relocation() {
+    let dir = scratch("eh-cie-reloc");
+    let s = dir.join("eh.s");
+    std::fs::write(
+        &s,
+        "\t.section __TEXT,__text,regular,pure_instructions\n\
+         \t.globl _main\n\t.p2align 2\n\
+         _main:\n\tmov w0, #42\n\tret\n\
+         \t.section __TEXT,__eh_frame,coalesced,no_toc+strip_static_syms+live_support\n\
+         cie:\n\t.long 0x10\n\t.long 0\n\t.byte 1\n\t.asciz \"zR\"\n\
+         \t.byte 1, 0x78, 30, 1, 0x10, 0x0c, 31, 0\n\
+         \t.p2align 2\n\
+         fde:\n\t.long 0x18\n\
+         Lptr:\n\t.long Lptr - cie\n\t.quad _main - .\n\t.quad 8\n\
+         \t.byte 0, 0, 0, 0\n\
+         \t.subsections_via_symbols\n",
+    )
+    .unwrap();
+    let o = dir.join("eh.o");
+    let ok = Command::new("cc")
+        .args(["-c", "-o"])
+        .arg(&o)
+        .arg(&s)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let exe = dir.join("eh");
+    nabild::link_executable(TargetSpec::host(), &[&o], &exe, true, None).unwrap();
+    assert_eq!(Command::new(&exe).status().unwrap().code(), Some(42));
+    let _ = std::fs::remove_dir_all(&dir);
+}

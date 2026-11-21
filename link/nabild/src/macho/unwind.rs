@@ -313,9 +313,25 @@ pub fn read_eh_frame(
                 personality,
             });
         } else {
-            let cie_at = (at + 4)
-                .checked_sub(id as usize)
-                .ok_or_else(|| err("CIE pointer", at))?;
+            // The CIE pointer: field - CIE. Some ld -r output and the
+            // assembler's across atoms spell it as a SUBTRACTOR pair
+            // whose inline part is only the addend.
+            let ptr = match rels.get(&((at + 4) as u32)) {
+                None => i64::from(id),
+                Some(EhRel::Diff { plus, minus }) => {
+                    let sym = |i: u32| {
+                        addrs
+                            .get(i as usize)
+                            .copied()
+                            .flatten()
+                            .ok_or_else(|| err("CIE pointer from an undefined symbol", at))
+                    };
+                    sym(*plus)? as i64 - sym(*minus)? as i64 + i64::from(id as i32)
+                }
+                Some(_) => return Err(err("CIE pointer relocation", at)),
+            };
+            let cie_at =
+                usize::try_from((at + 4) as i64 - ptr).map_err(|_| err("CIE pointer", at))?;
             let &(cie, fde_enc, lsda_enc, z) = cies
                 .get(&cie_at)
                 .ok_or_else(|| err("FDE before its CIE", at))?;
