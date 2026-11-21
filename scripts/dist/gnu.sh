@@ -70,13 +70,18 @@ case $packages in
 esac
 
 # Rootless podman maps the container's root to the caller; docker's is
-# root, so it runs as the caller.
+# root, so it runs as the caller. Either way $HOME is the cache's, not
+# the euid's home rustup-init expects: no sudo here, so skip its check.
+# The checkout's path is one no shipped file names by chance:
+# dist/native.sh's leak check greps for it, and a short /src matches
+# every Rust source path (/rustc/<commit>/library/core/src/...).
 user=""
 case $engine in */docker) user="--user $(id -u):$(id -g)" ;; esac
 # shellcheck disable=SC2086
 $engine run --rm $user \
-  -v "$PWD:/src:ro" -v "$cache:/cache" -v "$out:/out" -w /src \
+  -v "$PWD:/nabi-checkout:ro" -v "$cache:/cache" -v "$out:/out" -w /nabi-checkout \
   -e HOME=/cache/home -e RUSTUP_HOME=/cache/rustup -e CARGO_HOME=/cache/cargo \
+  -e RUSTUP_INIT_SKIP_SUDO_CHECK=yes \
   -e NABI_CACHE=/cache/nabi -e CARGO_TARGET_DIR=/cache/target -e TMPDIR=/cache/tmp \
   -e NABI_MIRROR="${NABI_MIRROR-}" -e NABI_DIST_PACKAGES="$packages" $packages_mount \
   -e NABI_COMMIT_HASH="$NABI_COMMIT_HASH" -e NABI_COMMIT_DATE="$NABI_COMMIT_DATE" \

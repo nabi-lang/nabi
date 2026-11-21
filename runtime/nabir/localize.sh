@@ -23,7 +23,8 @@ bin=$(rustc --print sysroot)/lib/rustlib/$host/bin
 
 mkdir "$tmp/x"
 (cd "$tmp/x" && "$bin/llvm-ar$exe" x "$in")
-first=$(ls "$tmp"/x/*.o | head -n 1)
+# The first member, by glob: `ls | head` makes ls write to a closed pipe.
+for first in "$tmp"/x/*.o; do break; done
 case $in in *.lib) magic=COFF ;; *) magic=$(od -An -c -N4 "$first" | tr -d ' ') ;; esac
 case $magic in
   COFF)
