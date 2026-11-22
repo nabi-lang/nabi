@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.2 (2026-11-22)
+
+<!-- begin summary -->
+Summary: A fix release: packages whose types go through `any`, such as `spatial` and `sparse`, build again as dependencies.
+<!-- end summary -->
+
+<!-- begin highlights -->
+### Highlights
+
+- 0.1.1 failed to build a project that depends on `spatial` ("cannot find type `spatial::euler::EulerOrder`"), or on `spatial` and `sparse` together ("cannot find trait `sparse::Preconditioner`"). The code `nabic` writes for a package's types stored in `any` now names them as that package sees them, and a package no longer carries that code for packages it does not depend on.
+- `any ::dep::Trait` parses as an `any` bound again; with a renamed dependency, `any al::Trait` failed with "cannot find type `any::alpha::Trait`".
+- Changing only which dependencies a package sees now rebuilds it; before, the build reused a stale result.
+<!-- end highlights -->
+
 ## 0.1.1 (2026-11-22)
 
 <!-- begin summary -->
