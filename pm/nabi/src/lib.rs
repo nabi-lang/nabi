@@ -15,6 +15,7 @@
 //! $NABI_HOME/cache/git/               shared git cache (see `git`)
 //! $NABI_HOME/cache/registry/          registry index clones (see `registry`), source archives (`archive`)
 //! $NABI_HOME/cache/native/            native packages, by SHA-256 (see `native`)
+//! $NABI_HOME/cache/advisories/        each index's advisory list, for an hour (see `audit`)
 //! $NABI_HOME/components.nabion         optional parts `nabi component` added (see `component`)
 //! <toolchain>/lib/nabi/packages/      the official packages a release carries (see `bundle`)
 //! $NABI_HOME/config.nabion             `Config { toolchain: "<default>" }`
@@ -26,6 +27,7 @@
 //! ```
 
 mod add;
+mod audit;
 mod cc;
 mod component;
 mod delegate;
@@ -428,6 +430,7 @@ fn run(g: &Global, cmd: &str, pre: &[String], post: &[String]) -> i32 {
         "update" => cmd_update(g, post),
         "deps" => cmd_deps(g, post),
         "search" => cmd_search(g, post),
+        "audit" => audit::cmd_audit(g, post),
         "publish" => cmd_publish(g, post),
         "yank" => cmd_yank(g, post),
         "login" => cmd_login(g, post),

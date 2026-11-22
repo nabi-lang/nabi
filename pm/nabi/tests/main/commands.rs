@@ -104,7 +104,7 @@ fn nabi_help_is_short() {
     let root = scratch("help-short");
     let home = root.join("home");
     let help = ok(&nabi(&home, &root, &["--help"]));
-    assert!(help.lines().count() < 64, "{help}");
+    assert!(help.lines().count() < 66, "{help}");
     assert_eq!(ok(&nabi(&home, &root, &["help"])), help);
     assert!(help.contains("\n  build ") && help.contains("nabi help <command>"));
 }

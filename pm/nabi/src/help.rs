@@ -71,7 +71,9 @@ pub fn runner_options(
 const GROUPS: &[(&str, &[&str])] = &[
     (
         "packages",
-        &["new", "init", "add", "remove", "update", "deps", "search"],
+        &[
+            "new", "init", "add", "remove", "update", "deps", "search", "audit",
+        ],
     ),
     (
         "building",
@@ -240,6 +242,34 @@ package or native record each, then a summary.",
         about: "The packages (or native packages) whose name contains <query>.",
         examples: &[("nabi search json", "")],
         flags: &[("--native", "native packages")],
+        ..CmdHelp::EMPTY
+    },
+    CmdHelp {
+        name: "audit",
+        summary: "check nabi.lock against security advisories",
+        usage: &["audit [--json] [--ignore <id>].. [--offline]"],
+        about: "\
+Check every registry package in nabi.lock (official ones the toolchain
+carries too) against the security advisories of its registry, and say
+what to upgrade to. Path and git dependencies and native packages are
+not checked. The advisory list is fetched once and kept for an hour;
+--offline uses that copy at any age. Exit status: 0 none apply, 1 some
+do, 2 the check could not run. --json (--format json) prints one JSON
+object per line: an advisory record per finding, a skipped record per
+package not checked, then a summary.",
+        examples: &[
+            ("nabi audit", ""),
+            ("nabi audit --ignore NABI-2026-0001", "accept one advisory"),
+            ("nabi audit --json", "for tools and CI"),
+        ],
+        flags: &[
+            ("--json", "JSON records (same as --format json)"),
+            (
+                "--ignore <id>",
+                "skip an advisory by id or alias (repeat for more)",
+            ),
+            ("--offline", "use only the cached advisory list"),
+        ],
         ..CmdHelp::EMPTY
     },
     CmdHelp {
@@ -917,7 +947,7 @@ mod tests {
     #[test]
     fn short_and_plain() {
         let u = short_usage_in(Depth::Off);
-        assert!(u.lines().count() < 64, "{u}");
+        assert!(u.lines().count() < 66, "{u}");
         assert!(u.contains("\n  build  ") && !u.contains("nabic"), "{u}");
     }
 }

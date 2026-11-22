@@ -1233,6 +1233,11 @@ fn call(api: &str, path: &str, token: Option<&str>, body: Option<&str>) -> Resul
     }))
 }
 
+/// A public `GET {api}{path}`: the reply on 2xx.
+pub fn get(api: &str, path: &str) -> Result<String, String> {
+    call(api, path, None, None)
+}
+
 /// The login `token` belongs to, and whether it may publish.
 pub fn me(api: &str, token: &str) -> Result<(String, bool), String> {
     let text = call(api, "/api/v1/me", Some(token), None)?;
