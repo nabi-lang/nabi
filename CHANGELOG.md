@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (2026-11-21)
+## 0.1.0 (2026-11-22)
 
 <!-- begin summary -->
 Summary: The first release of Nabi: the compiler, the `nabi` package tool, the language server, the runtime, the standard library and 20 official packages, with Nabi's own code generator and linker for 17 supported targets and release archives for 8 hosts.
