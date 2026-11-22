@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "layout"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "libc"
@@ -14,7 +14,7 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "nabi"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "nabi_manifest",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "nabi_manifest"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_nabion",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "nabi_resolve"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabi_manifest",
  "nabi_toolchain",
@@ -58,7 +58,7 @@ dependencies = [
 
 [[package]]
 name = "nabi_toolchain"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "nabi_manifest",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "nabic"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "nabic_core",
@@ -88,7 +88,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_ast"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_diagnostic",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_codegen"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_diagnostic",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_codegen_native"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_codegen",
  "nabic_core",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_consteval"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_diagnostic",
@@ -132,18 +132,18 @@ dependencies = [
 
 [[package]]
 name = "nabic_core"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "nabic_diagnostic"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
 ]
 
 [[package]]
 name = "nabic_driver"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_ast",
  "nabic_codegen",
@@ -166,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_harness"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_diagnostic",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_hir"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_ast",
  "nabic_core",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_hir_check"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_ast",
  "nabic_core",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_interface"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_ast",
  "nabic_core",
@@ -210,14 +210,14 @@ dependencies = [
 
 [[package]]
 name = "nabic_ir_common"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
 ]
 
 [[package]]
 name = "nabic_lexer"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_diagnostic",
@@ -225,7 +225,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_mir"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_diagnostic",
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_mono"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_ast",
  "nabic_core",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_nabion"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_ast",
  "nabic_diagnostic",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_parser"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_ast",
  "nabic_core",
@@ -269,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_target"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_nabion",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_tools"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_ast",
  "nabic_core",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_typeck"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_ast",
  "nabic_consteval",
@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "nabic_wit"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_lexer",
@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "nabicc"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_codegen_native",
  "nabic_core",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "nabicc_bindgen"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_lexer",
@@ -348,14 +348,14 @@ dependencies = [
 
 [[package]]
 name = "nabicc_lex"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
 ]
 
 [[package]]
 name = "nabicc_lower"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_codegen",
  "nabic_core",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "nabicc_parse"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabicc_lex",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "nabicc_pp"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabicc_lex",
@@ -392,7 +392,7 @@ dependencies = [
 
 [[package]]
 name = "nabicc_sema"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabicc_lex",
@@ -403,11 +403,11 @@ dependencies = [
 
 [[package]]
 name = "nabicc_target"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "nabild"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_target",
@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "nabils"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_ast",
  "nabic_core",
@@ -432,14 +432,14 @@ dependencies = [
 
 [[package]]
 name = "nabils_protocol"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_diagnostic",
 ]
 
 [[package]]
 name = "nabir"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "nabir_abi",
@@ -449,11 +449,11 @@ dependencies = [
 
 [[package]]
 name = "nabir_abi"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "nabir_common"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "nabir_abi",
@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "nabir_gc"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "nabir_common",
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "nabirepl"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_diagnostic",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "nabirepl_jupyter"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_diagnostic",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "nabirepl_lineedit"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nabic_core",
  "nabic_lexer",

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.3 (2026-11-22)
+
+<!-- begin summary -->
+Summary: `nabi audit` checks the packages pinned in `nabi.lock` against the registry's security advisories.
+<!-- end summary -->
+
+<!-- begin highlights -->
+### Highlights
+
+- `nabi audit` reads `nabi.lock` and reports each pinned package that a packages.nabi-lang.org advisory affects, with the advisory ID, summary, severity and the version to update to (for example `nabi update json`). It exits 0 when nothing is affected, 1 when something is, and 2 when it cannot check, so CI can run it as a gate.
+- `--json` prints machine-readable output, `--ignore <ID>` skips an advisory, and `--offline` uses only the cached advisory list. The list is cached for an hour; without a network, an older cache is used with a warning. Path and git dependencies are skipped and listed as not checked.
+<!-- end highlights -->
+
 ## 0.1.2 (2026-11-22)
 
 <!-- begin summary -->
