@@ -376,7 +376,7 @@ fn dependencies_per_package() {
     let seen = std::sync::Arc::clone(&calls);
     let deps: crate::Deps = Box::new(move |d: &Path| {
         seen.lock().unwrap().push(d.to_path_buf());
-        Ok(Vec::new())
+        Ok(crate::Externs::default())
     });
     let mut out = Vec::new();
     let code = crate::serve_with(

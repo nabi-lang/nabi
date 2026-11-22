@@ -197,6 +197,21 @@ pub fn parse_args(raw: Vec<String>, mut tail: Vec<OsString>) -> Args {
                 a.extern_features
                     .push((dep.replace('-', "_"), f.to_owned()));
             }
+            "--extern-dep" => {
+                let v = value(&name, inline, &mut it);
+                let Some((dep, n)) = v
+                    .split_once('=')
+                    .filter(|(d, n)| !d.is_empty() && !n.is_empty())
+                else {
+                    option_error(
+                        format!("`--extern-dep {v}`: expected <package>=<name>"),
+                        "name the package (`pkg`: the one being built) and the extern it \
+                         depends on: `--extern-dep pkg=json`",
+                    );
+                };
+                a.extern_deps
+                    .push((dep.replace('-', "_"), n.replace('-', "_")));
+            }
             "--name" => a.name = Some(value(&name, inline, &mut it)),
             "--target-dir" => a.target_dir = Some(value(&name, inline, &mut it).into()),
             "--emit-harness" => a.emit_harness = Some(value(&name, inline, &mut it).into()),

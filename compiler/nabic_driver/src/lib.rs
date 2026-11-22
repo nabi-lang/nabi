@@ -99,6 +99,10 @@ pub struct CompilerConfig {
     /// `<name>.nabihir` is prebuilt and links its `lib<name>.a`.
     /// A name whose path an earlier one has is an alias of that one.
     pub externs: Vec<(String, PathBuf)>,
+    /// `--extern-dep <package>=<name>`: `package` (`pkg`: the one being
+    /// built) depends on extern `name`. With any, a package sees only the
+    /// externs it depends on (`package::scopes`); without, every extern.
+    pub extern_deps: Vec<(String, String)>,
     /// The extern that is the package's own library (`src/lib.nabi` of
     /// the `src/main.nabi` being built).
     pub own_library: Option<String>,

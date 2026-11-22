@@ -255,6 +255,45 @@ fn official_packages_come_in_on_use() {
     assert!(read(&app3.join("nabi.nabion")).contains("\"two-words\": \"^0.1\""));
 }
 
+/// An official package that only a dependency has is not the root's: the
+/// root's use of it adds it to its own manifest, and the build goes on.
+#[test]
+fn official_package_of_a_dependency_comes_in_on_use() {
+    let root = scratch("official-dep");
+    let home = root.join("home");
+    official_index(&root, &home);
+    let mid = root.join("mid");
+    write(
+        &mid.join("src/lib.nabi"),
+        "pub fn two() -> i32 { return json::one() + 1; }\n",
+    );
+    write(
+        &mid.join("nabi.nabion"),
+        "Package { name: \"mid\", deps: { \"json\": \"^0.2\" } }\n",
+    );
+    let app = root.join("app");
+    write(
+        &app.join("src/main.nabi"),
+        "println(f\"{mid::two()} {json::one()}\");\n",
+    );
+    write(
+        &app.join("nabi.nabion"),
+        "Package { name: \"app\", deps: { \"mid\": Dep::path(\"../mid\") } }\n",
+    );
+    fails(
+        &nabi(&home, &app, &["--locked", "build"]),
+        "`json` is an official package the code uses, but it is not in nabi.nabion",
+    );
+    let out = nabi(&home, &app, &["run"]);
+    assert_eq!(ok(&out), "2 1\n");
+    assert!(
+        text(&out.stderr).contains("Added json ^0.2 (official)"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(read(&app.join("nabi.nabion")).contains("\"json\": \"^0.2\""));
+}
+
 /// `nabi component add packages` keeps the newest official archives, so
 /// official packages resolve and come in on use offline; `update` fetches
 /// newer ones, `remove` deletes them.

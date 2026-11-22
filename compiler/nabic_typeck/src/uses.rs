@@ -457,6 +457,17 @@ impl Missing<'_> {
     }
 }
 
+/// Help for a path from `root` in `module` when `root` is a package of
+/// the build that the module's package does not depend on, and nothing
+/// of the module takes the name.
+fn foreign_package(root: &str, module: &str, known: &HashSet<String>) -> Option<String> {
+    let local = qualified(module, root);
+    let taken = known
+        .iter()
+        .any(|k| *k == local || k.starts_with(&format!("{local}::")));
+    crate::lower::foreign_help(module, root).filter(|_| !taken)
+}
+
 /// Unresolved module-level imports, reported at the leaf, and each item
 /// hiding a named import of its name, with its error.
 ///
@@ -694,6 +705,11 @@ pub fn check_use_targets(
                 );
             } else if let Some((tier, found)) = other_tier(path, &known) {
                 d = d.with_help(format!("`{path}` is not in `{tier}`: write `use {found};`"));
+            } else if let Some(help) = root
+                .filter(|_| bare)
+                .and_then(|r| foreign_package(r, module_path, &known))
+            {
+                d = d.with_help(help);
             } else if let Some((help, note)) = root
                 .filter(|r| bare && unknown(r))
                 .zip(missing.as_ref())
@@ -1132,9 +1148,14 @@ fn resolve_root(segs: &[String], module_path: &str, earlier: &[UseEntry]) -> Vec
             .chain(segs[1..].iter().cloned())
             .collect();
     }
+    // A dependency's name is a top-level name in every module of the
+    // package that depends on it.
+    if let Some(m) = crate::lower::dependency_in(module_path, &segs[0]) {
+        return std::iter::once(m)
+            .chain(segs[1..].iter().cloned())
+            .collect();
+    }
     match segs[0].as_str() {
-        // A dependency's name is a top-level name in every module.
-        first if crate::lower::is_dependency(first) => segs.to_vec(),
         // A name an earlier `use` of this module brought in (`use a::b; use b::c;`).
         _ if earlier.iter().any(|e| through(e).is_some()) => {
             let full = earlier.iter().find_map(through).unwrap_or_default();

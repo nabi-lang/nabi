@@ -140,9 +140,16 @@ pub(crate) fn resolve_name(
     if let Some(candidate) = candidate.filter(|c| (set.exists)(c)) {
         return Ok(Some(candidate));
     }
-    // A dependency's name is a top-level name in every module.
-    if !absolute && segments.first().is_some_and(|s| is_dependency(s)) && (set.exists)(&suffix) {
-        return Ok(Some(suffix));
+    // A dependency's name is a top-level name in every module of the
+    // package that depends on it.
+    if let Some(m) = (!absolute).then(|| dependency_in(module, first)).flatten() {
+        let path = std::iter::once(m.as_str())
+            .chain(segments[1..].iter().copied())
+            .collect::<Vec<_>>()
+            .join("::");
+        if (set.exists)(&path) {
+            return Ok(Some(path));
+        }
     }
     // A standard library path, when no import or child module took
     // its tier's name.
@@ -260,10 +267,15 @@ pub fn root_path(segments: &[&str], module: &str) -> Option<Vec<String>> {
         }
         "" => {
             let first = *segments.get(1)?;
-            if !nabic_core::TIERS.contains(&first) && !is_dependency(first) {
-                return None;
+            if nabic_core::TIERS.contains(&first) {
+                return Some(owned(&segments[1..]));
             }
-            return Some(owned(&segments[1..]));
+            // Or by its top-level name (a renamed one's `::<name>`).
+            let m = dependency_in(module, first)
+                .or_else(|| renamed_in(module, first).map(|_| first.to_owned()))?;
+            let mut out = vec![m];
+            out.extend(owned(&segments[2..]));
+            return Some(out);
         }
         // A meta block's `pkg::`: its own package wherever it expands.
         root => {
@@ -438,6 +450,70 @@ pub fn set_no_implicit(modules: Vec<String>) {
 
 pub fn is_dependency(name: &str) -> bool {
     PACKAGES.with(|p| p.borrow().iter().any(|n| n == name))
+}
+
+/// A package's dependencies: the name its code writes, the package's
+/// top-level name.
+pub type DepScope = Vec<(String, String)>;
+
+thread_local! {
+    /// What each package (`""`: the one being built) depends on
+    /// (`HirInput::scopes`); `None`: each sees every dependency.
+    static SCOPES: std::cell::RefCell<Option<Vec<(String, DepScope)>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn set_scopes(scopes: Option<Vec<(String, DepScope)>>) {
+    SCOPES.with(|s| *s.borrow_mut() = scopes);
+}
+
+/// Help for a path from `root` in `module` when `root` is a package of
+/// the build that the module's package does not depend on.
+pub(crate) fn foreign_help(module: &str, root: &str) -> Option<String> {
+    if !is_dependency(root) || dependency_in(module, root).is_some() {
+        return None;
+    }
+    // A dependency it calls by another name.
+    if let Some(n) = renamed_in(module, root) {
+        return Some(format!(
+            "this package calls the package `{root}` `{n}` (its `deps` key): write `{n}::..`"
+        ));
+    }
+    Some(match package_of(module) {
+        "" => format!(
+            "`{root}` is not a dependency of this package: add it to nabi.nabion (`nabi add \
+             {root}`)"
+        ),
+        p => format!(
+            "`{root}` is not a dependency of package `{p}`: add it to the `deps` of that \
+             package's nabi.nabion"
+        ),
+    })
+}
+
+/// What the package of `module` calls the dependency whose top-level
+/// name is `name`, when it gives it another one.
+fn renamed_in(module: &str, name: &str) -> Option<String> {
+    SCOPES.with(|s| {
+        let s = s.borrow();
+        let (_, scope) = s.as_ref()?.iter().find(|(p, _)| p == package_of(module))?;
+        scope
+            .iter()
+            .find(|(_, m)| m == name)
+            .map(|(n, _)| n.clone())
+    })
+}
+
+/// The dependency `name` is to code in `module`: its top-level name, when
+/// the module's package depends on it under that name.
+pub(crate) fn dependency_in(module: &str, name: &str) -> Option<String> {
+    SCOPES.with(|s| match s.borrow().as_ref() {
+        None => is_dependency(name).then(|| name.to_owned()),
+        Some(all) => all
+            .iter()
+            .find(|(p, _)| p == package_of(module))
+            .and_then(|(_, scope)| scope.iter().find(|(n, _)| n == name))
+            .map(|(_, m)| m.clone()),
+    })
 }
 
 thread_local! {

@@ -495,6 +495,7 @@ pub fn lower_full(
 ) -> HirModule {
     let collect_started = nabic_diagnostic::time_passes().then(std::time::Instant::now);
     resolve::set_packages(input.packages.clone());
+    resolve::set_scopes(input.scopes.clone());
     resolve::set_own_library(input.own_library.clone());
     resolve::set_no_implicit(input.no_implicit_nabi.clone());
     resolve::set_shadows(input.shadows.clone());

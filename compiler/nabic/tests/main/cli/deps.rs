@@ -99,6 +99,61 @@ fn extern_dependencies_are_top_level_names() {
 }
 
 #[test]
+fn extern_deps_scope_each_package() {
+    let env = setup();
+    let dir = scratch("extern-deps");
+    // `t` has a module `csv` and no dependencies; `app` depends on both.
+    put(
+        dir.join("csv/src/lib.nabi"),
+        "pub fn read() -> i32 { return 1; }\n",
+    )
+    .unwrap();
+    put(
+        dir.join("t/src/lib.nabi"),
+        "pub mod csv;\npub use csv::parse;\n",
+    )
+    .unwrap();
+    put(
+        dir.join("t/src/csv.nabi"),
+        "pub fn parse() -> i32 { return 10; }\n",
+    )
+    .unwrap();
+    put(
+        dir.join("app/src/main.nabi"),
+        "println(f\"{t::parse()} {csv::read()}\");\n",
+    )
+    .unwrap();
+    let externs = ["--extern", "csv=csv", "--extern", "t=t"];
+    let scoped = [
+        &externs[..],
+        &["--extern-dep", "pkg=csv", "--extern-dep", "pkg=t"],
+    ]
+    .concat();
+    let out = build_run(Some(&env), &dir, &[&["app"], &scoped[..]].concat());
+    assert_exit(&out, 0);
+    assert_eq!(text(&out.stdout), "10 1\n");
+    // Without `--extern-dep` every package sees every extern.
+    let out = nabic(
+        Some(&env),
+        &dir,
+        &[&["check", "app"], &externs[..]].concat(),
+    );
+    assert_exit(&out, 1);
+    assert!(
+        text(&out.stderr).contains("`csv` is ambiguous: it names the dependency `csv`"),
+        "{}",
+        text(&out.stderr)
+    );
+    let out = nabic(None, &dir, &["check", "app", "--extern-dep", "pkg"]);
+    assert_exit(&out, 2);
+    assert!(
+        text(&out.stderr).contains("`--extern-dep pkg`: expected <package>=<name>"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
 fn extern_dependency_is_a_package_boundary() {
     let env = setup();
     let dir = scratch("extern-boundary");

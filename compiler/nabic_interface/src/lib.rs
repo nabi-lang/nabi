@@ -49,6 +49,12 @@ impl Session {
         self.config.externs.push((name, root));
     }
 
+    /// Package `dependent` (`pkg`: the one being built) depends on extern
+    /// `name` (`--extern-dep`); with any, packages see only their own.
+    pub fn add_extern_dep(&mut self, dependent: String, name: String) {
+        self.config.extern_deps.push((dependent, name));
+    }
+
     /// Extern `name` is the package's own library, which the executable
     /// being built uses.
     pub fn set_own_library(&mut self, name: Option<String>) {

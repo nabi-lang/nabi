@@ -88,9 +88,21 @@ type Job = Box<dyn FnOnce() -> Analysis + Send>;
 /// costs one check.
 const SETTLE: Duration = Duration::from_millis(30);
 
+/// `(dependent, dependency)` of `--extern-dep`.
+type Pair = (String, String);
+
+/// A package's dependencies as `nabic` takes them.
+#[derive(Clone, Default)]
+pub struct Externs {
+    /// `--extern` pairs ready to check with.
+    pub externs: Vec<(String, PathBuf)>,
+    /// `--extern-dep` pairs: each package sees only its own.
+    pub deps: Vec<(String, String)>,
+}
+
 /// The dependencies of the package in a directory (or, outside every
-/// package, the environment's), as `--extern` pairs ready to check with.
-pub type Deps = Box<dyn FnMut(&Path) -> Result<Vec<(String, PathBuf)>, String> + Send>;
+/// package, the environment's).
+pub type Deps = Box<dyn FnMut(&Path) -> Result<Externs, String> + Send>;
 
 struct Server<W> {
     out: W,
@@ -99,7 +111,7 @@ struct Server<W> {
     externs: Vec<(String, PathBuf)>,
     deps: Option<Deps>,
     /// `deps` by directory, until a manifest or lock changes.
-    resolved: HashMap<PathBuf, Vec<(String, PathBuf)>>,
+    resolved: HashMap<PathBuf, Externs>,
     /// The editor's workspace folders.
     folders: Vec<PathBuf>,
     /// The client registers file watchers on request.
@@ -659,16 +671,17 @@ impl<W: Write> Server<W> {
                     Json::obj([("type", Json::num(2)), ("message", Json::str(msg))]),
                 ),
             ]));
-            Vec::new()
+            Externs::default()
         });
         self.resolved.insert(dir, found);
     }
 
-    /// The `--extern`s a check of `path` uses.
-    fn externs_of(&self, path: &Path) -> &[(String, PathBuf)] {
-        self.deps_dir(path)
-            .and_then(|d| self.resolved.get(&d))
-            .unwrap_or(&self.externs)
+    /// The `--extern`s a check of `path` uses, and their `--extern-dep`s.
+    fn externs_of(&self, path: &Path) -> (&[(String, PathBuf)], &[Pair]) {
+        match self.deps_dir(path).and_then(|d| self.resolved.get(&d)) {
+            Some(e) => (&e.externs, &e.deps),
+            None => (&self.externs, &[]),
+        }
     }
 
     /// The operator tokens the files of `path`'s package lex: its own
@@ -712,8 +725,12 @@ impl<W: Write> Server<W> {
         for b in &self.bootstrap {
             s.add_bootstrap_file(b.clone());
         }
-        for (n, p) in self.externs_of(path) {
+        let (externs, deps) = self.externs_of(path);
+        for (n, p) in externs {
             s.add_extern(n.clone(), p.clone());
+        }
+        for (d, n) in deps {
+            s.add_extern_dep(d.clone(), n.clone());
         }
         s.set_anonymous(anonymous);
         // Submodule files as edited.

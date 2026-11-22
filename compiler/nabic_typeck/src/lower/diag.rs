@@ -488,6 +488,13 @@ impl<'a> LowerCtx<'a> {
     }
 
     pub(crate) fn import_help(&self, segs: &[&str]) -> Option<String> {
+        let module = self.access_module();
+        if let Some(h) = (segs.len() > 1)
+            .then(|| crate::lower::foreign_help(&module, segs[0]))
+            .flatten()
+        {
+            return Some(h);
+        }
         let tail = format!("::{}", segs.join("::"));
         let env = self.env;
         let found = env

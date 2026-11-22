@@ -316,7 +316,8 @@ pub(crate) fn compile_unit_in(
     let user_metas = format!("{:?}", &metas.metas[lib_metas..]);
     let ext = ext_ops(&prec, config, prebuilt, lib);
     relex_metas(&mut metas, &ext);
-    let aliases = std::sync::Arc::new(alias_metas(&mut metas, &config.externs));
+    let scopes = scopes(config);
+    alias_metas(&mut metas, &config.externs, scopes.as_deref());
     let cfg_env = cfg_env(config);
     // Per package: the user's, then each library root's.
     let cfgs: Vec<CfgEnv> = std::iter::once(cfg_env.clone())
@@ -368,17 +369,23 @@ pub(crate) fn compile_unit_in(
     );
     // Per package: the user's, then each library root's.
     let metas: Vec<MetaCtx> = (0..=roots.len())
-        .map(|i| MetaCtx {
-            package: i
+        .map(|i| {
+            let package = i
                 .checked_sub(1)
-                .map_or_else(String::new, |r| roots[r].0.join("::")),
-            table: std::sync::Arc::clone(&meta_table),
-            keywords: keywords.get(i).cloned().unwrap_or_default(),
-            literals: std::sync::Arc::clone(&lits[i]),
-            key: std::sync::OnceLock::new(),
-            target: config.target.clone(),
-            cfg: cfgs[i].clone(),
-            aliases: std::sync::Arc::clone(&aliases),
+                .map_or_else(String::new, |r| roots[r].0.join("::"));
+            let aliases = package_aliases(&config.externs, scopes.as_deref(), &package);
+            let deps = package_deps(&config.externs, scopes.as_deref(), &package);
+            MetaCtx {
+                package,
+                table: std::sync::Arc::clone(&meta_table),
+                keywords: keywords.get(i).cloned().unwrap_or_default(),
+                literals: std::sync::Arc::clone(&lits[i]),
+                key: std::sync::OnceLock::new(),
+                target: config.target.clone(),
+                cfg: cfgs[i].clone(),
+                aliases: std::sync::Arc::new(aliases),
+                deps: std::sync::Arc::new(deps),
+            }
         })
         .collect();
     let incr = incr::current();
@@ -387,8 +394,9 @@ pub(crate) fn compile_unit_in(
     // library's files (except under `NABI_INCREMENTAL_VERIFY`).
     let verify = incr::verify().is_some();
     let flags = format!(
-        "{:?} {lib:?} {:?} {} {} {} {} {:?} {} {}",
+        "{:?} {:?} {lib:?} {:?} {} {} {} {} {:?} {} {}",
         config.externs,
+        config.extern_deps,
         prebuilt.iter().map(|p| &p.nabihir.name).collect::<Vec<_>>(),
         config.check_library,
         config.target.pointer_width,
@@ -420,6 +428,7 @@ pub(crate) fn compile_unit_in(
     nabic_diagnostic::time("parse", || {
         real_parse(
             incr.as_deref().map(|i| (i, &ids)),
+            path,
             &root_dir_kw,
             &roots,
             &metas,
@@ -617,6 +626,7 @@ pub(crate) fn compile_unit_in(
     let (item_modules, items): (Vec<String>, Vec<nabic_ast::Item>) = all_items.into_iter().unzip();
     let input = nabic_typeck::HirInput {
         packages: mounted(&config.externs).map(|(n, _)| n.clone()).collect(),
+        scopes: scopes.clone(),
         own_library: config.own_library.clone(),
         lib: lib.map(str::to_owned),
         prebuilt: prebuilt.iter().map(|p| p.nabihir.name.clone()).collect(),
@@ -666,6 +676,7 @@ pub(crate) fn compile_unit_in(
     // Use trees -> per-module resolution tables, plus the `pub use`
     // re-exports.
     let (use_table, reexports) = nabic_diagnostic::time("use table", || {
+        nabic_typeck::set_scopes(input.scopes.clone());
         nabic_typeck::build_use_table(&all_uses, &input.packages, &input.shadows)
     });
     let mut libs = Vec::new();

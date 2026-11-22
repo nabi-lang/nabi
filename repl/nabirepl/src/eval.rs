@@ -58,6 +58,7 @@ impl Repl {
             bootstrap: &self.bootstrap,
             cfg: &[],
             features: &features,
+            deps: &[],
             opts: &self.opts,
             target: nabic_interface::TargetSpec::host(),
             dir: &self.deps_dir,

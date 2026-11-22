@@ -727,6 +727,7 @@ pub(crate) const AST_STACK: usize = 1 << 30;
 /// workers.
 pub(crate) fn real_parse(
     incr: Option<(&incr::Incr, &incr::Ids)>,
+    entry: &Path,
     user_dir: &Path,
     roots: &[LibRoot],
     metas: &[MetaCtx],
@@ -755,7 +756,12 @@ pub(crate) fn real_parse(
             .max_by_key(|(_, d)| d.components().count())?;
         let metas = metas.get(pkg)?;
         let includes = included(&path, &pre.sum.includes);
-        let (program, diags) = cached_parse(&path, file_id, pre, &includes, incr, ext, metas);
+        let module = (path != entry)
+            .then(|| file_module(&dirs[pkg], &path))
+            .unwrap_or_default();
+        let clashes = dep_clashes(&pre, &path, file_id, &module, metas, pkg == 0);
+        let (program, mut diags) = cached_parse(&path, file_id, pre, &includes, incr, ext, metas);
+        diags.extend(clashes);
         let mut parsed = settle(&path, file_id, program, diags, metas, keep);
         parsed.includes = includes.into_iter().map(|(p, _)| p).collect();
         Some((path, parsed))
@@ -768,6 +774,136 @@ pub(crate) fn real_parse(
         r.extend(parsed.iter().flat_map(|(_, p)| p.includes.iter().cloned()));
     });
     PARSED.with(|p| p.borrow_mut().extend(parsed));
+}
+
+/// The module path of `file` below its package directory `dir` (empty:
+/// the root file).
+pub(crate) fn file_module(dir: &Path, file: &Path) -> Vec<String> {
+    let rel = file.strip_prefix(dir).unwrap_or(file).with_extension("");
+    let segs: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if segs.len() == 1 && (segs[0] == "lib" || segs[0] == "main") {
+        return Vec::new();
+    }
+    segs
+}
+
+/// A path written `x::..` in a module with a child module `x`, where `x`
+/// also names one of the package's dependencies: both would be meant.
+/// Not at the root of the package being built, whose modules may not
+/// take a dependency's name at all (`check_dependency_names`).
+pub(crate) fn dep_clashes(
+    pre: &Prepassed,
+    path: &Path,
+    file_id: u32,
+    module: &[String],
+    metas: &MetaCtx,
+    built: bool,
+) -> Vec<NabiDiagnostic> {
+    fn mods<'a>(items: &'a [nabic_ast::Item], out: &mut Vec<&'a str>) {
+        for item in items {
+            if let Item::Mod(m) = item {
+                out.push(&m.name);
+                mods(m.items.as_deref().unwrap_or_default(), out);
+            }
+        }
+    }
+    let mut names = Vec::new();
+    mods(&pre.sum.skeleton, &mut names);
+    let dep = |n: &str| metas.deps.iter().find(|(d, _)| d == n);
+    if !names.iter().any(|n| dep(n).is_some()) {
+        return Vec::new();
+    }
+    let (tokens, _) = Lexer::new(&pre.source, path.display().to_string()).lex_all();
+    // Each token's module (index into `regions`): the file's, or an
+    // inline `mod x { .. }`'s; each module's path and child modules.
+    let mut regions: Vec<(Vec<String>, Vec<&str>)> = vec![(module.to_vec(), Vec::new())];
+    let mut at = vec![0; tokens.len()];
+    let mut open: Vec<(usize, usize)> = vec![(0, 0)];
+    let mut pending = None;
+    let mut depth = 0;
+    for (i, t) in tokens.iter().enumerate() {
+        let cur = open.last().map_or(0, |o| o.0);
+        at[i] = cur;
+        match &t.kind {
+            K::Mod => {
+                if let Some(K::Ident(n)) = tokens.get(i + 1).map(|t| &t.kind) {
+                    regions[cur].1.push(n);
+                    if tokens.get(i + 2).map(|t| &t.kind) == Some(&K::LBrace) {
+                        let mut p = regions[cur].0.clone();
+                        p.push(n.clone());
+                        regions.push((p, Vec::new()));
+                        pending = Some((i + 2, regions.len() - 1));
+                    }
+                }
+            }
+            K::LBrace => {
+                depth += 1;
+                if let Some((_, r)) = pending.take_if(|(j, _)| *j == i) {
+                    open.push((r, depth));
+                }
+            }
+            K::RBrace => {
+                if open.len() > 1 && open.last().is_some_and(|o| o.1 == depth) {
+                    open.pop();
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    let mut in_use = false;
+    for (i, t) in tokens.iter().enumerate() {
+        let prev = i.checked_sub(1).map(|j| &tokens[j].kind);
+        match &t.kind {
+            K::Use => in_use = true,
+            K::Semi => in_use = false,
+            _ => {}
+        }
+        let K::Ident(n) = &t.kind else {
+            continue;
+        };
+        let rooted = tokens.get(i + 1).map(|t| &t.kind) == Some(&K::ColonColon)
+            && !t.raw
+            && !matches!(prev, Some(K::ColonColon | K::Dot | K::QuestionDot))
+            && (!in_use || matches!(prev, Some(K::Use)));
+        let (region, children) = &regions[at[i]];
+        if !rooted || (built && at[i] == 0 && module.is_empty()) || !children.contains(&n.as_str())
+        {
+            continue;
+        }
+        let Some((_, to)) = dep(n) else {
+            continue;
+        };
+        let own: Vec<&str> = std::iter::once("pkg")
+            .chain(region.iter().map(String::as_str))
+            .chain([n.as_str()])
+            .collect();
+        let own = own.join("::");
+        let what = if to == n {
+            format!("the dependency `{n}`")
+        } else {
+            format!("the dependency `{n}` (package `{to}`)")
+        };
+        let mut span = t.span;
+        span.file = file_id;
+        out.push(
+            NabiDiagnostic::error(
+                Code::AMBIGUOUS_NAME,
+                span,
+                format!("`{n}` is ambiguous: it names {what} and the module `{own}`"),
+            )
+            .with_help(format!(
+                "write `::{n}::..` for the dependency or `{own}::..` for the module, or give \
+                 the dependency another name in nabi.nabion (a key like `\"{n}_dep\"` with \
+                 `package:` naming its package)"
+            )),
+        );
+    }
+    out
 }
 
 /// The files `includes` (`Summary::includes`) of the file at `path`
@@ -900,16 +1036,7 @@ pub(crate) fn parse_file(
             f.span.file = file_id;
         }
     }
-    if metas.package.is_empty() {
-        apply_aliases(&mut tokens, &metas.aliases);
-    } else {
-        // A tier's name stays the library in every other package.
-        let aliases: Vec<(String, String)> = (metas.aliases.iter())
-            .filter(|(a, _)| !nabic_core::TIERS.contains(&a.as_str()))
-            .cloned()
-            .collect();
-        apply_aliases(&mut tokens, &aliases);
-    }
+    apply_aliases(&mut tokens, &metas.aliases);
     apply_keywords(&mut tokens, &metas.keywords, &mut diags);
     let (program, mut parse_diags) = parse_program_meta(
         &tokens,

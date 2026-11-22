@@ -65,6 +65,7 @@ pub fn prebuild(a: &mut Args, pkg: Option<&Package>) -> Result<PathBuf, String> 
         bootstrap: &a.bootstrap,
         cfg: &a.cfg,
         features: &a.extern_features,
+        deps: &a.extern_deps,
         opts: &a.opts,
         target: a.spec(),
         dir: &dir,
@@ -98,6 +99,9 @@ pub fn session(a: &Args, pkg: &Package) -> Session {
     }
     for (n, p) in &a.externs {
         session.add_extern(n.clone(), p.clone());
+    }
+    for (d, n) in &a.extern_deps {
+        session.add_extern_dep(d.clone(), n.clone());
     }
     session.set_anonymous(pkg.anonymous);
     session.set_own_library(pkg.library.as_ref().map(|_| lib_name(pkg)));

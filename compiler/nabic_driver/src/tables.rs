@@ -17,8 +17,10 @@ pub(crate) struct MetaCtx {
     pub(crate) target: nabic_mir::Target,
     /// The package's cfg (`package_cfg`).
     pub(crate) cfg: CfgEnv,
-    /// `(alias, name)` of the dependencies (`extern_aliases`).
+    /// `(alias, replacement)` of its dependencies (`package_aliases`).
     pub(crate) aliases: std::sync::Arc<Vec<(String, String)>>,
+    /// Its dependencies: the name its code writes, the top-level one.
+    pub(crate) deps: std::sync::Arc<Vec<(String, String)>>,
 }
 
 impl MetaCtx {

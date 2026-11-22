@@ -76,6 +76,9 @@ pub struct Resolved {
     pub code: String,
     /// What other dependents call it (`package` renames).
     pub aliases: Vec<String>,
+    /// What it calls the dependencies the build gives it, sorted: the
+    /// only packages its code sees.
+    pub deps: Vec<String>,
     /// The package's `src/lib.nabi`.
     pub root: PathBuf,
     /// Its enabled features, sorted.
@@ -109,6 +112,8 @@ pub struct Graph {
     /// `Dep::system` and `Dep::framework` libraries, one per name.
     pub system: Vec<NativeDep>,
     pub features: Vec<String>,
+    /// What the root calls its dependencies in the build, sorted.
+    pub deps: Vec<String>,
 }
 
 /// A native package's identity.
@@ -308,7 +313,23 @@ fn graph_of(home: &Path, ctx: &Context, opts: &Options, old: Lock) -> Result<Gra
         root_deps.extend(ctx.manifest.dev_deps.iter().cloned());
     }
     let mut on = Features::default();
-    let root_features = activate(&nodes, root_deps, &ctx.manifest.features, opts, &mut on)?;
+    let mut uses: Vec<(String, String)> = Vec::new();
+    let root_features = activate(
+        &nodes,
+        root_deps,
+        &ctx.manifest.features,
+        opts,
+        &mut on,
+        &mut uses,
+    )?;
+    let uses_of = |key: &str| {
+        let mut out: Vec<String> = (uses.iter())
+            .filter(|(k, _)| k == key)
+            .map(|(_, d)| d.clone())
+            .collect();
+        out.sort();
+        out
+    };
     let packages: Vec<Resolved> = nodes
         .into_iter()
         .filter_map(|n| {
@@ -324,6 +345,7 @@ fn graph_of(home: &Path, ctx: &Context, opts: &Options, old: Lock) -> Result<Gra
                 .unwrap_or_default();
             Some(Resolved {
                 aliases,
+                deps: uses_of(&manifest::key(&n.name)),
                 name: n.name,
                 code: n.code,
                 root: n.root,
@@ -354,6 +376,7 @@ fn graph_of(home: &Path, ctx: &Context, opts: &Options, old: Lock) -> Result<Gra
         }
     }
     Ok(Graph {
+        deps: uses_of(""),
         packages,
         natives,
         system,
@@ -363,12 +386,15 @@ fn graph_of(home: &Path, ctx: &Context, opts: &Options, old: Lock) -> Result<Gra
 
 /// The features `opts` asks of the root (with `deps` and `features`):
 /// the root's, and in `on` each package reached (by key) with its own.
+/// `uses`: each enabled dependency, as (package key, `""` the root; what
+/// it calls the dependency).
 fn activate(
     nodes: &[Node],
     deps: Vec<Dep>,
     features: &Features,
     opts: &Options,
     on: &mut Features,
+    uses: &mut Vec<(String, String)>,
 ) -> Result<Vec<String>, String> {
     let root = Node {
         name: String::new(),
@@ -410,6 +436,12 @@ fn activate(
     }
     for f in &opts.features {
         a.apply(r, f, cli)?;
+    }
+    for (n, key) in &a.edges {
+        let node = a.nodes[*n];
+        if let Some(d) = node.deps.iter().find(|d| manifest::key(&d.name) == *key) {
+            uses.push((manifest::key(&node.name), manifest::code_name(&d.name)));
+        }
     }
     let mine = a.on.remove(&r).unwrap_or_default().into_iter().collect();
     for (i, n) in nodes.iter().enumerate() {
@@ -1684,7 +1716,15 @@ mod tests {
         let run = |root: &[&str], fs: &[(&str, &[&str])], o: Options| {
             let root = graph(&[("", root, fs)]).remove(0);
             let mut on = Features::default();
-            activate(&nodes, root.deps, &root.features, &o, &mut on).map(|mine| (mine, on))
+            activate(
+                &nodes,
+                root.deps,
+                &root.features,
+                &o,
+                &mut on,
+                &mut Vec::new(),
+            )
+            .map(|mine| (mine, on))
         };
         let opts = |features: &[&str]| Options {
             features: features.iter().map(|f| (*f).to_owned()).collect(),

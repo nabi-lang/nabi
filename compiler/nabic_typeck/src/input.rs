@@ -35,6 +35,10 @@ pub struct HirInput {
     /// package, `pkg::` in a dependency is that dependency, and a path
     /// starting with its name reaches it from anywhere.
     pub packages: Vec<String>,
+    /// What each package (`""`: the one being built) depends on: the name
+    /// its code writes, the package's top-level name. `None`: each sees
+    /// every dependency.
+    pub scopes: Option<Vec<(String, crate::lower::DepScope)>>,
     /// The dependency that is this package's own library, so
     /// errors say how the executable sees its items.
     pub own_library: Option<String>,

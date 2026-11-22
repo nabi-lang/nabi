@@ -158,40 +158,153 @@ pub(crate) fn extern_aliases(externs: &[(String, PathBuf)]) -> Vec<(String, Stri
         .collect()
 }
 
+/// What each package depends on (`--extern-dep`), `""` the one being
+/// built; `None` without any, when every package sees every extern. An
+/// extern none names (the package's own library, mounted by nabic) is the
+/// built package's, and depends on what it does.
+pub(crate) fn scopes(config: &CompilerConfig) -> Option<Vec<(String, nabic_typeck::DepScope)>> {
+    if config.extern_deps.is_empty() {
+        return None;
+    }
+    let externs = &config.externs;
+    let mounted_of = |name: &str| {
+        let (_, p) = externs.iter().find(|(n, _)| n == name)?;
+        mounted(externs)
+            .find(|(_, q)| q == p)
+            .map(|(n, _)| n.clone())
+    };
+    let mut out: Vec<(String, nabic_typeck::DepScope)> = Vec::new();
+    let push = |out: &mut Vec<(String, nabic_typeck::DepScope)>, at: &str, n: &str, m: String| {
+        let i = out.iter().position(|(k, _)| k == at).unwrap_or_else(|| {
+            out.push((at.to_owned(), Vec::new()));
+            out.len() - 1
+        });
+        if !out[i].1.iter().any(|(x, _)| x == n) {
+            out[i].1.push((n.to_owned(), m));
+        }
+    };
+    let mut listed: Vec<String> = Vec::new();
+    for (dependent, name) in &config.extern_deps {
+        let at = if dependent == "pkg" {
+            String::new()
+        } else if let Some(m) = mounted_of(dependent) {
+            m
+        } else {
+            continue;
+        };
+        let Some(m) = mounted_of(name) else {
+            continue;
+        };
+        // A tier's name stays the library in every package but the one
+        // built.
+        if !at.is_empty() && nabic_core::TIERS.contains(&name.as_str()) {
+            continue;
+        }
+        listed.push(m.clone());
+        push(&mut out, &at, name, m);
+    }
+    let root = (out.iter())
+        .find(|(k, _)| k.is_empty())
+        .map(|(_, s)| s.clone())
+        .unwrap_or_default();
+    for (n, _) in externs {
+        let Some(m) = mounted_of(n).filter(|m| !listed.contains(m)) else {
+            continue;
+        };
+        push(&mut out, "", n, m.clone());
+        if !out.iter().any(|(k, _)| *k == m) {
+            out.push((m, root.clone()));
+        }
+    }
+    Some(out)
+}
+
+/// The dependencies `package` (`""`: the one being built) sees.
+pub(crate) fn scope_of<'a>(
+    scopes: &'a [(String, nabic_typeck::DepScope)],
+    package: &str,
+) -> &'a [(String, String)] {
+    scopes
+        .iter()
+        .find(|(p, _)| p == package)
+        .map_or(&[], |(_, s)| s.as_slice())
+}
+
+/// The dependencies `package` sees: its scope, or every extern but itself
+/// (a tier's name only in the package being built).
+pub(crate) fn package_deps(
+    externs: &[(String, PathBuf)],
+    scopes: Option<&[(String, nabic_typeck::DepScope)]>,
+    package: &str,
+) -> Vec<(String, String)> {
+    if let Some(all) = scopes {
+        return scope_of(all, package).to_vec();
+    }
+    externs
+        .iter()
+        .filter_map(|(n, p)| {
+            let (m, _) = mounted(externs).find(|(_, q)| q == p)?;
+            let tier = !package.is_empty() && nabic_core::TIERS.contains(&n.as_str());
+            (m != package && !tier).then(|| (n.clone(), m.clone()))
+        })
+        .collect()
+}
+
+/// `(alias, replacement)` for the code of `package`: with scopes, each
+/// name it gives a dependency besides its top-level one, written
+/// `::<name>`; else every extern's aliases, a tier's only in the package
+/// being built.
+pub(crate) fn package_aliases(
+    externs: &[(String, PathBuf)],
+    scopes: Option<&[(String, nabic_typeck::DepScope)]>,
+    package: &str,
+) -> Vec<(String, String)> {
+    match scopes {
+        Some(all) => (scope_of(all, package).iter())
+            .filter(|(n, m)| n != m)
+            .map(|(n, m)| (n.clone(), format!("::{m}")))
+            .collect(),
+        None => (extern_aliases(externs).into_iter())
+            .filter(|(a, _)| package.is_empty() || !nabic_core::TIERS.contains(&a.as_str()))
+            .collect(),
+    }
+}
+
 /// The externs' aliases, applied to every meta block's template: they
-/// expand where no parse renames their paths.
+/// expand where no parse renames their paths. With scopes, each of a
+/// block's package's dependencies is named from its root (`pkg@<name>`),
+/// as the package that expands it may not depend on it.
 pub(crate) fn alias_metas(
     metas: &mut PrePass,
     externs: &[(String, PathBuf)],
-) -> Vec<(String, String)> {
-    let aliases = extern_aliases(externs);
-    // A tier's name stays the library in every package but the one built.
-    let others: Vec<(String, String)> = (aliases.iter())
-        .filter(|(a, _)| !nabic_core::TIERS.contains(&a.as_str()))
-        .cloned()
-        .collect();
+    scopes: Option<&[(String, nabic_typeck::DepScope)]>,
+) {
     for m in &mut metas.metas {
-        let own = if m.package.is_empty() {
-            &aliases
-        } else {
-            &others
+        let own = match scopes {
+            Some(all) => (scope_of(all, &m.package).iter())
+                .map(|(n, to)| (n.clone(), format!("{}{to}", nabic_parser::PKG_ROOT)))
+                .collect(),
+            None => package_aliases(externs, None, &m.package),
         };
-        apply_aliases(&mut m.body, own);
+        apply_aliases(&mut m.body, &own);
     }
-    aliases
 }
 
 /// A path that starts with an alias (`alias::..`, not after `::` or `.`)
-/// names the package it stands for.
-pub(crate) fn apply_aliases(tokens: &mut [nabic_lexer::Token], aliases: &[(String, String)]) {
+/// names the package it stands for; a `::<name>` replacement is two
+/// tokens.
+pub(crate) fn apply_aliases(tokens: &mut Vec<nabic_lexer::Token>, aliases: &[(String, String)]) {
     if aliases.is_empty() {
         return;
     }
-    for i in 0..tokens.len() {
+    let mut i = 0;
+    while i < tokens.len() {
         let TokenKind::Ident(name) = &tokens[i].kind else {
+            i += 1;
             continue;
         };
         let Some((_, to)) = aliases.iter().find(|(a, _)| a == name) else {
+            i += 1;
             continue;
         };
         let path = tokens
@@ -203,8 +316,19 @@ pub(crate) fn apply_aliases(tokens: &mut [nabic_lexer::Token], aliases: &[(Strin
                 TokenKind::ColonColon | TokenKind::Dot | TokenKind::QuestionDot
             );
         if path && !inner && !tokens[i].raw {
-            tokens[i].kind = TokenKind::Ident(to.clone());
+            if let Some(to) = to.strip_prefix("::") {
+                let mut sep = tokens[i].clone();
+                sep.kind = TokenKind::ColonColon;
+                sep.span.end = sep.span.start;
+                tokens[i].kind = TokenKind::Ident(to.to_owned());
+                tokens[i].docs.clear();
+                tokens.insert(i, sep);
+                i += 1;
+            } else {
+                tokens[i].kind = TokenKind::Ident(to.clone());
+            }
         }
+        i += 1;
     }
 }
 

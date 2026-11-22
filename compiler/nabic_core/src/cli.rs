@@ -158,6 +158,10 @@ build options:
   --extern-feature <name>=<f>  build source dependency <name> with
                                cfg feature=<f> (repeatable; `--cfg
                                feature=..` is the package's own)
+  --extern-dep <pkg>=<name>    package <pkg> (`pkg`: the one being built)
+                               depends on extern <name>; with any, a
+                               package sees only the externs it depends on
+                               (repeatable; `nabi` passes these)
   --name <name>                the package name (default: its directory's;
                                `nabi` passes nabi.nabion's `name`); a
                                library's is in its symbols

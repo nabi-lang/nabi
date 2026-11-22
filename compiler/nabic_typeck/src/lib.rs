@@ -20,7 +20,9 @@ mod uses;
 
 pub use input::{HirInput, RootMain, Script, TemplateRefs};
 pub use lower::mono::{Mono, set_mono};
-pub use lower::{Bodies, BodyCache, FN_BLOCK_LABEL, SHADOW, Unit, type_visible, unshadowed};
+pub use lower::{
+    Bodies, BodyCache, DepScope, FN_BLOCK_LABEL, SHADOW, Unit, set_scopes, type_visible, unshadowed,
+};
 pub use lower::{
     KeptLibrary, LibraryStage, keep_library, kept_library, lower, lower_full, lower_with_uses,
     stage,

@@ -208,6 +208,129 @@ fn per_dependent_renames() {
     );
 }
 
+/// A package sees only its own dependencies, under the names it gives
+/// them: another package's `csv` does not take the place of its own
+/// `mod csv`, while its renamed `csvio` is that `csv`. A dependency named
+/// like one of its modules is ambiguous; a package of the build it does
+/// not depend on is not there.
+#[test]
+fn package_sees_only_its_dependencies() {
+    let root = scratch("dep-scope");
+    let home = root.join("home");
+    let lib = |name: &str, deps: &str, files: &[(&str, &str)]| {
+        let dir = root.join(name);
+        write(
+            &dir.join("nabi.nabion"),
+            &format!("Package {{ name: \"{name}\", deps: {{ {deps} }} }}\n"),
+        );
+        for (f, text) in files {
+            write(&dir.join(f), text);
+        }
+    };
+    let app = |deps: &str, main: &str| {
+        let dir = root.join("app");
+        write(
+            &dir.join("nabi.nabion"),
+            &format!("Package {{ name: \"app\", deps: {{ {deps} }} }}\n"),
+        );
+        write(&dir.join("src/main.nabi"), main);
+        nabi(&home, &dir, &["-q", "run"])
+    };
+    lib(
+        "csv",
+        "",
+        &[("src/lib.nabi", "pub fn read() -> i32 { return 1; }\n")],
+    );
+    // `table`: `csv` renamed `csvio`, and a module `csv` of its own.
+    lib(
+        "table",
+        "\"csvio\": Dep::path(\"../csv\", package: \"csv\")",
+        &[
+            (
+                "src/lib.nabi",
+                "pub mod csv;\npub use csv::parse;\n\
+                 pub fn both() -> i32 { return csv::parse() + csvio::read(); }\n",
+            ),
+            ("src/csv.nabi", "pub fn parse() -> i32 { return 10; }\n"),
+        ],
+    );
+    let both = "\"csv\": Dep::path(\"../csv\"), \"table\": Dep::path(\"../table\")";
+    let out = app(
+        both,
+        "println(f\"{table::both()} {table::parse()} {csv::read()}\");\n",
+    );
+    assert_eq!(ok(&out), "11 10 1\n");
+    // In either order.
+    let out = app(
+        "\"table\": Dep::path(\"../table\"), \"csv\": Dep::path(\"../csv\")",
+        "println(table::both());\n",
+    );
+    assert_eq!(ok(&out), "11\n");
+    // `amb` depends on `csv` as `csv` and has a module `csv`.
+    lib(
+        "amb",
+        "\"csv\": Dep::path(\"../csv\")",
+        &[
+            (
+                "src/lib.nabi",
+                "pub mod csv;\npub fn both() -> i32 { return csv::parse() + csv::read(); }\n",
+            ),
+            ("src/csv.nabi", "pub fn parse() -> i32 { return 10; }\n"),
+        ],
+    );
+    let amb = "\"amb\": Dep::path(\"../amb\")";
+    let out = app(amb, "println(amb::both());\n");
+    fails(
+        &out,
+        "`csv` is ambiguous: it names the dependency `csv` and the module `pkg::csv`",
+    );
+    fails(
+        &out,
+        "write `::csv::..` for the dependency or `pkg::csv::..` for the module, or give the \
+         dependency another name in nabi.nabion",
+    );
+    write(
+        &root.join("amb/src/lib.nabi"),
+        "pub mod csv;\npub fn both() -> i32 { return pkg::csv::parse() + ::csv::read(); }\n",
+    );
+    assert_eq!(ok(&app(amb, "println(amb::both());\n")), "11\n");
+    // `plain` uses `csv` without depending on it.
+    lib(
+        "plain",
+        "",
+        &[(
+            "src/lib.nabi",
+            "use csv::read;\npub fn one() -> i32 { return read(); }\n",
+        )],
+    );
+    let out = app(
+        "\"csv\": Dep::path(\"../csv\"), \"plain\": Dep::path(\"../plain\")",
+        "println(plain::one());\n",
+    );
+    fails(
+        &out,
+        "`csv` is not a dependency of package `plain`: add it to the `deps` of that package's \
+         nabi.nabion",
+    );
+    // `ren` has `csv` as `csvio` only.
+    lib(
+        "ren",
+        "\"csvio\": Dep::path(\"../csv\", package: \"csv\")",
+        &[(
+            "src/lib.nabi",
+            "use csv::read;\npub fn one() -> i32 { return read(); }\n",
+        )],
+    );
+    let out = app(
+        "\"csv\": Dep::path(\"../csv\"), \"ren\": Dep::path(\"../ren\")",
+        "println(ren::one());\n",
+    );
+    fails(
+        &out,
+        "this package calls the package `csv` `csvio` (its `deps` key): write `csvio::..`",
+    );
+}
+
 #[test]
 fn add_lock_update_offline_remove() {
     let root = scratch("lock");

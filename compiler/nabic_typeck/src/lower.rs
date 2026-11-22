@@ -42,15 +42,15 @@ pub(crate) use crate::lower::diag::*;
 pub use crate::lower::env::*;
 pub use crate::lower::names::type_visible;
 pub(crate) use crate::lower::names::*;
-pub(crate) use crate::lower::resolve::shadowing;
+pub(crate) use crate::lower::resolve::{dependency_in, foreign_help, shadowing};
 pub(crate) use crate::lower::typedefs::*;
 pub use collect::{KeptLibrary, LibraryStage, keep_library, kept_library, lower_full, stage};
 pub use coro::FN_BLOCK_LABEL;
 pub use incr::{Bodies, BodyCache, Unit};
 pub use resolve::{
-    SHADOW, hidden_module, hidden_module_msg, implicit_use, is_dependency, module_visibility,
-    root_path, set_packages, set_shadows, unshadowed, up_path, visibility_rank, visible_from,
-    visible_paths,
+    DepScope, SHADOW, hidden_module, hidden_module_msg, implicit_use, is_dependency,
+    module_visibility, root_path, set_packages, set_scopes, set_shadows, unshadowed, up_path,
+    visibility_rank, visible_from, visible_paths,
 };
 
 use crate::ty::resolve_ty;

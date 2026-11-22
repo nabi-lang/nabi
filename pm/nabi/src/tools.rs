@@ -104,7 +104,13 @@ fn cmd_lsp(mut a: Args, deps: Option<Deps>) {
     let here = pkg
         .filter(|p| built && !p.anonymous)
         .and_then(|p| real(&p.dir));
-    let mut seed = here.map(|d| (d, a.externs.clone()));
+    let mut seed = here.map(|d| {
+        let own = nabils::Externs {
+            externs: a.externs.clone(),
+            deps: a.extern_deps.clone(),
+        };
+        (d, own)
+    });
     let deps = deps.map(|mut deps| -> Deps {
         Box::new(
             move |dir: &Path| match seed.take_if(|(d, _)| real(dir).as_ref() == Some(d)) {

@@ -406,6 +406,7 @@ fn lsp_deps(g: &Global, pre: &[String], post: &[String]) -> nabils::Deps {
         for p in &graph.packages {
             args.extend(extern_args(p));
         }
+        args.extend(dep_args(&graph, &[]));
         if let Some(d) = t.target_dir.clone().or_else(|| shared_target(&t.ctx)) {
             args.push(format!("--target-dir={}", d.display()));
         }
@@ -413,7 +414,10 @@ fn lsp_deps(g: &Global, pre: &[String], post: &[String]) -> nabils::Deps {
         let mut a = nabic::with_defaults(nabic::parse_args(args, Vec::new()));
         let pkg = nabic_interface::discover(dir).ok().filter(|p| !p.anonymous);
         nabic::prebuild(&mut a, pkg.as_ref())?;
-        Ok(a.externs)
+        Ok(nabils::Externs {
+            externs: a.externs,
+            deps: a.extern_deps,
+        })
     })
 }
 
@@ -622,6 +626,7 @@ pub(crate) fn invocation(
                     natives: Vec::new(),
                     system: Vec::new(),
                     features: Vec::new(),
+                    deps: Vec::new(),
                 }
             }
             Err(e) => return Err(e),
@@ -630,6 +635,7 @@ pub(crate) fn invocation(
         for p in graph.packages.iter().filter(|p| !skip.contains(&p.name)) {
             extra.extend(extern_args(p));
         }
+        extra.extend(dep_args(&graph, &skip));
         extra.extend(more);
         // The package's own features.
         for f in &graph.features {
@@ -746,6 +752,26 @@ pub(crate) fn extern_args(p: &Resolved) -> Vec<String> {
             .iter()
             .map(|f| format!("--extern-feature={name}={f}")),
     );
+    out
+}
+
+/// `--extern-dep=<package>=<name>` for each dependency of each package,
+/// `pkg` the root: nabic then lets a package see only its own.
+pub(crate) fn dep_args(graph: &resolve::Graph, skip: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = graph
+        .deps
+        .iter()
+        .map(|n| format!("--extern-dep=pkg={n}"))
+        .collect();
+    for p in graph.packages.iter().filter(|p| !skip.contains(&p.name)) {
+        let first = if nabic_core::TIERS.contains(&manifest::code_name(&p.code).as_str()) {
+            &p.name
+        } else {
+            &p.code
+        };
+        let name = manifest::code_name(first);
+        out.extend(p.deps.iter().map(|n| format!("--extern-dep={name}={n}")));
+    }
     out
 }
 

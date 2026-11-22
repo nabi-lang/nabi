@@ -51,6 +51,9 @@ pub struct Args {
     pub externs: Vec<(String, PathBuf)>,
     /// `--extern-feature <name>=<f>`: `(code name, feature)`.
     pub extern_features: Vec<(String, String)>,
+    /// `--extern-dep <package>=<name>`: `(dependent, dependency)`, `pkg`
+    /// the package being built.
+    pub extern_deps: Vec<(String, String)>,
     /// `--name`: a library build's package name.
     pub name: Option<String>,
     pub target_dir: Option<PathBuf>,

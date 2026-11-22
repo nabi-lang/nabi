@@ -360,7 +360,11 @@ impl TypeNames {
                     } else {
                         full
                     };
-                    full.split("::").map(str::to_owned).collect()
+                    // From the package's root: `to`'s package may not
+                    // depend on it.
+                    let mut abs: Vec<String> = full.split("::").map(str::to_owned).collect();
+                    abs[0].insert_str(0, nabic_parser::PKG_ROOT);
+                    abs
                 };
                 let last = p.segments.pop().map(|s| s.generics).unwrap_or_default();
                 let n = abs.len();

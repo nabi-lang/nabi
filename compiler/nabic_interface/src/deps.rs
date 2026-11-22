@@ -15,6 +15,8 @@ pub struct DepBuild<'a> {
     pub cfg: &'a [String],
     /// `(dependency, feature)`: `--extern-feature`.
     pub features: &'a [(String, String)],
+    /// `(dependent, dependency)`: `--extern-dep`.
+    pub deps: &'a [(String, String)],
     pub opts: &'a BuildOptions,
     pub target: &'a TargetSpec,
     /// `target/[<target>/]<profile>/deps`.
@@ -76,6 +78,17 @@ impl DepBuild<'_> {
         out
     }
 
+    /// The `--extern-dep`s of dependency `name` and of the ones before it.
+    fn deps_of<'s>(
+        &'s self,
+        name: &'s str,
+        before: &'s [(String, PathBuf)],
+    ) -> impl Iterator<Item = &'s (String, String)> {
+        self.deps
+            .iter()
+            .filter(move |(d, _)| d == name || before.iter().any(|(n, _)| n == d))
+    }
+
     fn fingerprint(
         &self,
         name: &str,
@@ -89,6 +102,13 @@ impl DepBuild<'_> {
             name.to_owned(),
         ];
         words.extend(self.cfg_of(name));
+        if !self.deps.is_empty() {
+            words.push("deps".to_owned());
+            words.extend(
+                self.deps_of(name, before)
+                    .map(|(d, n)| format!("dep {d}={n}")),
+            );
+        }
         let mut inputs = vec![root.parent().unwrap_or(root).to_path_buf()];
         let mut stamped = Vec::new();
         for b in self.bootstrap {
@@ -139,6 +159,10 @@ impl DepBuild<'_> {
         }
         for (n, p) in before {
             s.add_extern(n.clone(), p.clone());
+        }
+        // All of them: with none of its own, it still sees only those.
+        for (d, n) in self.deps {
+            s.add_extern_dep(d.clone(), n.clone());
         }
         s.set_lib_name(Some(name.to_owned()));
         s.set_target(self.target);
