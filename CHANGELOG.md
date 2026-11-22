@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.1 (2026-11-22)
+
+<!-- begin summary -->
+Summary: A fix release: each package now sees only its own dependencies, and the toolchain bundles the updated official packages.
+<!-- end summary -->
+
+<!-- begin highlights -->
+### Highlights
+
+- A package sees only the packages it depends on, under the names it gives them. Before, a bare `x::` path could resolve to any package in the build graph, so `table` 0.1.0 failed to build next to the `csv` package. When a dependency and a child module share a name, `x::` is now an error that names both and says to write `::x::..` or `pkg::x::..` (#11).
+- The bundled official packages: `table` 0.1.3 (builds in any graph, docs without a `plot` cycle), and `autodiff`, `linalg`, `ode`, `optimize`, `signal`, `sparse` and `stats` 0.1.1, whose tutorials moved into their API docs at docs.nabi-lang.org/packages.
+<!-- end highlights -->
+
 ## 0.1.0 (2026-11-22)
 
 <!-- begin summary -->

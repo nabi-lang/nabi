@@ -43,7 +43,7 @@ if ($PSVersionTable.PSEdition -ne 'Core') {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
 
-if (-not $Version) { $Version = if ($env:NABI_VERSION) { $env:NABI_VERSION } else { '0.1.0' } }
+if (-not $Version) { $Version = if ($env:NABI_VERSION) { $env:NABI_VERSION } else { '0.1.1' } }
 # The release key, keys/release.pub (key id B33E6FE61BE5314C).
 $releaseKey = 'RWRMMeUb5m8+s0rEtzbR47dmyrMdlGyGQSvWUn/Ob5QYh0GHgs1GvJEs'
 $dist = if ($env:NABI_DIST) { $env:NABI_DIST } else { 'https://github.com/nabi-lang/nabi/releases' }
