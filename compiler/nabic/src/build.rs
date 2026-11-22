@@ -663,6 +663,9 @@ pub fn fingerprint(a: &Args, pkg: &Package, out: &Path) -> Fingerprint {
         std::env::var("NABI_CC").unwrap_or_default(),
     ];
     words.extend(a.cfg.iter().cloned());
+    // What each package sees and enables.
+    words.extend(a.extern_deps.iter().map(|(d, n)| format!("dep {d}={n}")));
+    words.extend((a.extern_features.iter()).map(|(d, f)| format!("feature {d}={f}")));
     words.extend(pkg.lib.then(|| lib_name(pkg)));
     words.extend(a.cdylib.then(|| "cdylib".to_owned()));
     words.extend(a.staticlib.then(|| "staticlib".to_owned()));

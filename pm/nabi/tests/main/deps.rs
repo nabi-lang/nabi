@@ -331,6 +331,95 @@ fn package_sees_only_its_dependencies() {
     );
 }
 
+/// `any` across scoped packages: each prebuilt package's seeds name its
+/// own items from `pkg::` and a dependency's by the name it gives it
+/// (`any al::Pre` too), and a package built after one it does not depend
+/// on neither fails on that one's seeds nor carries them.
+#[test]
+fn any_seeds_across_scoped_packages() {
+    let root = scratch("dep-scope-seeds");
+    let home = root.join("home");
+    let lib = |name: &str, deps: &str, files: &[(&str, &str)]| {
+        let dir = root.join(name);
+        write(
+            &dir.join("nabi.nabion"),
+            &format!("Package {{ name: \"{name}\", deps: {{ {deps} }} }}\n"),
+        );
+        for (f, text) in files {
+            write(&dir.join(f), text);
+        }
+    };
+    // An enum of a child module stored in `any`, a trait-object dispatch.
+    lib(
+        "alpha",
+        "",
+        &[
+            (
+                "src/lib.nabi",
+                "pub mod kind;\n\
+                 pub trait Pre { fn apply(self, x: i32) -> i32; }\n\
+                 pub struct Twice {}\n\
+                 impl Pre for Twice { fn apply(self, x: i32) -> i32 { x * 2 } }\n\
+                 pub fn run(p: any Pre, x: i32) -> i32 { return p.apply(x); }\n",
+            ),
+            (
+                "src/kind.nabi",
+                "pub enum Order { Xyz, Zyx }\n\
+                 pub fn boxed() -> any { let o: any = Order::Zyx; return o; }\n",
+            ),
+        ],
+    );
+    // Built after `alpha`, with no dependencies.
+    lib(
+        "zone",
+        "",
+        &[(
+            "src/lib.nabi",
+            "pub enum Side { Left, Right }\n\
+             pub fn boxed() -> any { let s: any = Side::Right; return s; }\n",
+        )],
+    );
+    // `alpha` renamed `al`.
+    lib(
+        "wrap",
+        "\"al\": Dep::path(\"../alpha\", package: \"alpha\")",
+        &[(
+            "src/lib.nabi",
+            "pub struct Half {}\n\
+             impl al::Pre for Half { fn apply(self, x: i32) -> i32 { x / 2 } }\n\
+             pub fn half() -> any al::Pre { let p: any al::Pre = Half {}; return p; }\n\
+             pub fn mine(p: any al::Pre) -> i32 { return p.apply(10); }\n\
+             pub fn order() -> any { let o: any = al::kind::Order::Xyz; return o; }\n",
+        )],
+    );
+    let app = root.join("app");
+    write(
+        &app.join("nabi.nabion"),
+        "Package { name: \"app\", deps: { \"alpha\": Dep::path(\"../alpha\"), \"zone\": \
+         Dep::path(\"../zone\"), \"wrap\": Dep::path(\"../wrap\") } }\n",
+    );
+    write(
+        &app.join("src/main.nabi"),
+        "println(f\"{alpha::kind::boxed() is alpha::kind::Order} {zone::boxed() is \
+         zone::Side} {wrap::order() is alpha::kind::Order}\");\n\
+         let t: any alpha::Pre = alpha::Twice {};\n\
+         println(f\"{alpha::run(t, 4)} {alpha::run(wrap::half(), 4)} {wrap::mine(t)}\");\n",
+    );
+    let out = nabi(&home, &app, &["-q", "run"]);
+    assert_eq!(ok(&out), "true true true\n8 2 20\n");
+    let nabihir = |name: &str| {
+        let bytes = fs::read(app.join(format!("target/debug/deps/{name}.nabihir"))).unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    let zone = nabihir("zone");
+    assert!(
+        zone.contains("x: pkg::Side") && !zone.contains("Pre"),
+        "{zone}"
+    );
+    let wrap = nabihir("wrap");
+    assert!(wrap.contains("x: any ::al::Pre"), "{wrap}");
+}
+
 #[test]
 fn add_lock_update_offline_remove() {
     let root = scratch("lock");

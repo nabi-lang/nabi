@@ -304,7 +304,9 @@ fn prebuilt_dependency_sums_keep_their_tags() {
 
 /// A prebuilt library's `any` seeds name types by full path: its root
 /// imports neither the errors an untyped `throws` carries nor the std
-/// `List` (it declares its own), yet the dependent builds.
+/// `List` (it declares its own), yet the dependent builds, with each
+/// package scoped to its dependencies too (the seeds name the library's
+/// own items from `pkg::`).
 #[test]
 fn prebuilt_any_seeds_name_types_by_path() {
     let env = setup();
@@ -327,7 +329,9 @@ fn prebuilt_any_seeds_name_types_by_path() {
              let xs: List<i32> = [1, 2];\n\
              let out: any = xs;\n\
              out\n\
-         }\n",
+         }\n\
+         pub enum Mode { On, Off }\n\
+         pub fn mode() -> any { let m: any = Mode::Off; return m; }\n",
     )
     .unwrap();
     fs::create_dir_all(dir.join("app")).unwrap();
@@ -336,6 +340,7 @@ fn prebuilt_any_seeds_name_types_by_path() {
         "fn main() throws {\n\
              println(f\"{try dep::a::size(\"app/src/main.nabi\")}\");\n\
              println(f\"{dep::a::boxed() is List<i32>} {dep::List { k: 3 }.k}\");\n\
+             println(dep::a::mode() is dep::a::Mode);\n\
          }\n",
     )
     .unwrap();
@@ -346,7 +351,11 @@ fn prebuilt_any_seeds_name_types_by_path() {
     let out = build_run(Some(&env), &dir, &["-q", "app", "--extern", &ext]);
     assert_exit(&out, 0);
     let len = fs::read(dir.join("app/src/main.nabi")).unwrap().len();
-    assert_eq!(text(&out.stdout), format!("{len}\ntrue 3\n"));
+    assert_eq!(text(&out.stdout), format!("{len}\ntrue 3\ntrue\n"));
+    let scoped = ["-q", "app", "--extern", &ext, "--extern-dep", "pkg=dep"];
+    let out = build_run(Some(&env), &dir, &scoped);
+    assert_exit(&out, 0);
+    assert_eq!(text(&out.stdout), format!("{len}\ntrue 3\ntrue\n"));
 }
 
 /// Hand-off summaries survive in a prebuilt dependency's NABIHIR.

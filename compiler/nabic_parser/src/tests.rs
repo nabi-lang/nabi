@@ -733,6 +733,25 @@ fn any_trait_type_forms() {
 }
 
 #[test]
+fn any_trait_from_the_root() {
+    // `any ::a::Tr` is a bound from the packages; `any::a` stays a path.
+    let p = parse("fn f(a: any ::a::Tr, b: any::a::T) {}");
+    let Item::Fn(f) = &p.items[0] else {
+        panic!("expected fn");
+    };
+    let ty = |i: usize| &f.params[i].ty.as_ref().unwrap().kind;
+    let TyKind::AnyTrait(b) = ty(0) else {
+        panic!("expected `any Tr`, got {:?}", ty(0));
+    };
+    let names: Vec<&str> = b[0].segments.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["", "a", "Tr"]);
+    let TyKind::Path(p) = ty(1) else {
+        panic!("expected a path, got {:?}", ty(1));
+    };
+    assert_eq!(p.segments[0].name, "any");
+}
+
+#[test]
 fn block_like_statement_needs_no_semicolon() {
     // `if c {} -1` is two statements; `f() g()` lacks a `;`.
     let p = parse("fn t() { if c { a(); } -1; match x { _ => {} } loop { break; } }");

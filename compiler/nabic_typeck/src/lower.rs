@@ -42,7 +42,7 @@ pub(crate) use crate::lower::diag::*;
 pub use crate::lower::env::*;
 pub use crate::lower::names::type_visible;
 pub(crate) use crate::lower::names::*;
-pub(crate) use crate::lower::resolve::{dependency_in, foreign_help, shadowing};
+pub(crate) use crate::lower::resolve::{dependency_in, dependency_name, foreign_help, shadowing};
 pub(crate) use crate::lower::typedefs::*;
 pub use collect::{KeptLibrary, LibraryStage, keep_library, kept_library, lower_full, stage};
 pub use coro::FN_BLOCK_LABEL;

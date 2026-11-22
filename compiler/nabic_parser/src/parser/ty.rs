@@ -122,11 +122,15 @@ impl Parser<'_> {
             // tighter than `|`: `any Error | none` is `(any Error) | none`.
             TokenKind::Ident(_)
                 if self.at_kw("any")
-                    && !matches!(self.peek_next(), Some(TokenKind::ColonColon)) =>
+                    && (!matches!(self.peek_next(), Some(TokenKind::ColonColon))
+                        || self.at_any_rooted()) =>
             {
                 self.bump();
                 match self.peek() {
                     TokenKind::Ident(_) => TyKind::AnyTrait(vec![self.parse_type_path()?]),
+                    TokenKind::ColonColon if self.at_global_path() => {
+                        TyKind::AnyTrait(vec![self.parse_type_path()?])
+                    }
                     TokenKind::LParen => {
                         self.bump();
                         let mut bounds = vec![self.parse_type_path()?];
@@ -407,6 +411,22 @@ impl Parser<'_> {
 
     pub(crate) fn parse_path(&mut self) -> Option<Path> {
         self.parse_path_inner(false)
+    }
+
+    /// At `any ::name` with the `::` apart from `any` (as written, or a
+    /// renamed dependency's `::<name>`): a bound from the packages, where
+    /// `any::name` is a path.
+    pub(crate) fn at_any_rooted(&self) -> bool {
+        let t = |i: usize| self.tokens.get(self.pos + i);
+        match (t(0), t(1), t(2)) {
+            (Some(a), Some(sep), Some(n)) => {
+                self.pending.is_none()
+                    && sep.kind == TokenKind::ColonColon
+                    && matches!(n.kind, TokenKind::Ident(_))
+                    && sep.span.start != a.span.end
+            }
+            _ => false,
+        }
     }
 
     /// At `::name`: a path from the packages (`::std::fs`).

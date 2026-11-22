@@ -503,6 +503,19 @@ fn renamed_in(module: &str, name: &str) -> Option<String> {
     })
 }
 
+/// What code of `package` calls the package whose top-level name is
+/// `top`: its `deps` key; `None` when `package` does not depend on it.
+pub(crate) fn dependency_name(package: &str, top: &str) -> Option<String> {
+    SCOPES.with(|s| match s.borrow().as_ref() {
+        None => is_dependency(top).then(|| top.to_owned()),
+        Some(all) => all
+            .iter()
+            .find(|(p, _)| p == package)
+            .and_then(|(_, scope)| scope.iter().find(|(_, m)| m == top))
+            .map(|(n, _)| n.clone()),
+    })
+}
+
 /// The dependency `name` is to code in `module`: its top-level name, when
 /// the module's package depends on it under that name.
 pub(crate) fn dependency_in(module: &str, name: &str) -> Option<String> {

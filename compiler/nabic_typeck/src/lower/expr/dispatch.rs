@@ -561,8 +561,9 @@ pub(crate) fn any_dispatcher(
 /// its user), and a library ships its stored types and dispatchers as Nabi
 /// source `seeds` in its NABIHIR for the user to compile into its own.
 /// Returns `(seeds, dispatcher exports)`.
-// Seeds name types by full path (`ty_path`): they are compiled in a
-// module of the library that need not import them. Closures are skipped;
+// Seeds name types by full path (`ty_path`), rooted as the library's
+// code roots them: they are compiled in a module of the library that need
+// not import them and sees only the library's dependencies. Closures are skipped;
 // symbol keys use `ty_name`, as the user's own dispatchers do.
 #[allow(clippy::type_complexity)] // two lists, each read once
 pub(crate) fn any_link(
@@ -600,14 +601,34 @@ pub(crate) fn any_link(
             .find(|w| w.starts_with(&under))
             .map_or_else(|| lib.to_owned(), module_of)
     };
-    // Another package's item by its public path (`a::Tr`, not the private
-    // `a::inner::Tr`): the seed compiles here.
-    let public = |text: String| -> String {
+    // `text` as `lib`'s code names it, where the seed compiles: its own
+    // items from `pkg::`, another package's by its public path through
+    // the name `lib` gives it. `None` when it names a package `lib` does
+    // not depend on (that package's own seeds carry it).
+    let public = |text: &str| -> Option<String> {
         let mut out = String::with_capacity(text.len());
         let mut word = String::new();
-        let flush = |w: &mut String, out: &mut String| {
-            if w.contains("::") && !w.starts_with(&under) && !nabic_core::in_toolchain(w) {
-                out.push_str(env.names.visible_path(w));
+        let mut ok = true;
+        let mut flush = |w: &mut String, out: &mut String| {
+            if let Some(rest) = w.strip_prefix(&under) {
+                out.push_str("pkg::");
+                out.push_str(rest);
+            } else if w.contains("::") && !nabic_core::in_toolchain(w) {
+                let full = env.names.visible_path(w);
+                let (top, rest) = full.split_once("::").unwrap_or((full, ""));
+                let root = if top == lib {
+                    Some("pkg".to_owned())
+                } else {
+                    crate::lower::dependency_name(lib, top).map(|n| format!("::{n}"))
+                };
+                match root {
+                    Some(r) => {
+                        out.push_str(&r);
+                        out.push_str("::");
+                        out.push_str(rest);
+                    }
+                    None => ok = false,
+                }
             } else {
                 out.push_str(w);
             }
@@ -622,7 +643,7 @@ pub(crate) fn any_link(
             }
         }
         flush(&mut word, &mut out);
-        out
+        ok.then_some(out)
     };
     let nameable = |s: &str| {
         !["closure", "{unknown}", "Self", "#", "GcBuf"]
@@ -638,24 +659,37 @@ pub(crate) fn any_link(
         .map(|(t, _)| t.clone())
         .collect();
     for t in stored {
-        let name = public(c.ty_path(&t));
-        if matches!(t, HirTy::AnyTrait(_)) || !nameable(&name) {
+        let path = c.ty_path(&t);
+        if matches!(t, HirTy::AnyTrait(_)) || !nameable(&path) {
             continue;
         }
+        let Some(name) = public(&path) else {
+            continue;
+        };
         let n = seeds.len();
         seeds.push((
-            home(&name),
+            home(&path),
             format!(
                 "#[export_name(\"__nabi_seed_{lib}_{n}\")]\nfn __nabi_seed_{n}(x: {name}) -> any {{ return x; }}\n"
             ),
         ));
     }
     for d in &dispatch {
-        let recv = public(c.ty_path(&d.recv_ty));
-        let params: Vec<String> = d.params.iter().map(|t| public(c.ty_path(t))).collect();
-        if !nameable(&recv) || !params.iter().all(|p| nameable(p)) {
+        let recv_path = c.ty_path(&d.recv_ty);
+        let param_paths: Vec<String> = d.params.iter().map(|t| c.ty_path(t)).collect();
+        if !nameable(&recv_path) || !param_paths.iter().all(|p| nameable(p)) {
             continue;
         }
+        let Some(recv) = public(&recv_path) else {
+            continue;
+        };
+        let Some(params) = param_paths
+            .iter()
+            .map(|p| public(p))
+            .collect::<Option<Vec<String>>>()
+        else {
+            continue;
+        };
         let n = seeds.len();
         let decl: Vec<String> = params
             .iter()
@@ -680,7 +714,7 @@ pub(crate) fn any_link(
             format!("{try_}x.{}({});", d.method, args.join(", "))
         };
         seeds.push((
-            home(&recv),
+            home(&recv_path),
             format!(
                 "#[export_name(\"__nabi_seed_{lib}_{n}\")]\nfn __nabi_seed_{n}(x: {recv}{}){throws} {{ {body} }}\n",
                 decl.concat(),
