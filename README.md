@@ -8,6 +8,8 @@
 
 *Clear rules, free as a butterfly.*
 
+English · [한국어](README.ko.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
+
 The implementation of the Nabi language: the compiler `nabic`, the package / build
 front end `nabi`, the language server `nabils`, the runtime `libnabir.a`, and the
 standard library (`library/{core,std,bare}`).
