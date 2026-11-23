@@ -56,7 +56,8 @@ nix profile install github:nabi-lang/nabi
 검증되지 않는 것은 설치하지 않으며, 설치 스크립트도 `PATH`에 `minisign`이 있으면
 서명을 확인합니다(docs/releasing.md의 "Signing"). 그 밖에 필요한 것은 없습니다.
 툴체인에는 자체 코드 생성기와 링커가 있고 모든 대상의 런타임이 들어 있어서,
-어떤 호스트에서든 `--target <triple>`로 크로스 컴파일할 수 있습니다.
+어떤 호스트에서든 `--target <triple>`로 크로스 컴파일할 수 있습니다(Apple 대상은
+macOS에서만, Android 대상에는 NDK가 필요).
 
 ## 빠른 시작
 
@@ -107,7 +108,7 @@ cargo test --no-fail-fast
 `a`나 `b`가 들어간 코퍼스 케이스만 실행합니다. 비어 있거나 설정하지 않으면 모든
 케이스를 실행합니다.
 
-패키징(`dist-*.sh`), 크로스 대상과 wasm 코퍼스, CI 단계는
+패키징(`scripts/dist/*.sh`), 크로스 대상과 wasm 코퍼스, CI 단계는
 [docs/ci.md](docs/ci.md)에 설명되어 있습니다.
 
 ## 라이선스

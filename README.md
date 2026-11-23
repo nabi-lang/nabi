@@ -55,7 +55,8 @@ signed with minisign (`keys/release.pub`, key `B33E6FE61BE5314C`); `nabi toolcha
 update` installs nothing that does not verify, and the installers check it when
 `minisign` is on PATH (docs/releasing.md, "Signing"). Nothing else is needed: a
 toolchain has its own code generator and linker and ships every target's
-runtime, so `--target <triple>` cross-compiles from any host.
+runtime, so `--target <triple>` cross-compiles from any host (Apple targets
+only on macOS; Android ones need the NDK).
 
 ## Quick start
 
@@ -106,7 +107,7 @@ cargo test --no-fail-fast
 `NABI_TEST_FILTER=a,b cargo test -p nabic --test main integration::` runs only
 the corpus cases whose name contains `a` or `b`; empty or unset runs every case.
 
-Packaging (`dist-*.sh`), the cross-target and wasm corpus, and the CI tiers are
+Packaging (`scripts/dist/*.sh`), the cross-target and wasm corpus, and the CI tiers are
 documented in [docs/ci.md](docs/ci.md).
 
 ## License
