@@ -53,7 +53,8 @@ nix profile install github:nabi-lang/nabi
 金鑰 `B33E6FE61BE5314C`）；`nabi toolchain update` 不會安裝任何未通過驗證的內容，
 當 `PATH` 中有 `minisign` 時，安裝程式也會驗證簽章（docs/releasing.md 的
 「Signing」一節）。除此之外不需要其他東西：工具鏈有自己的程式碼產生器與連結器，
-並附上所有目標的執行環境，因此在任何主機上都能用 `--target <triple>` 跨平台編譯。
+並附上所有目標的執行環境，因此在任何主機上都能用 `--target <triple>` 跨平台編譯
+（Apple 目標只能在 macOS 上建置；Android 目標需要 NDK）。
 
 ## 快速開始
 
@@ -101,7 +102,7 @@ cargo test --no-fail-fast
 `NABI_TEST_FILTER=a,b cargo test -p nabic --test main integration::` 只執行名稱
 包含 `a` 或 `b` 的語料案例；空白或未設定時執行所有案例。
 
-封裝（`dist-*.sh`）、跨平台目標與 wasm 語料，以及 CI 分層說明於
+封裝（`scripts/dist/*.sh`）、跨平台目標與 wasm 語料，以及 CI 分層說明於
 [docs/ci.md](docs/ci.md)。
 
 ## 授權條款

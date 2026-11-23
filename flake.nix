@@ -1,5 +1,5 @@
 {
-  description = "Nabi: clear rules, free as a butterfly";
+  description = "Nabi: Clear rules, free as a butterfly";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 

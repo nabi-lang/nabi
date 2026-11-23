@@ -72,8 +72,8 @@ deletes it.
 ## Changes that affect behavior
 
 The language and standard library are defined by the spec (`nabi-lang/spec`,
-English and Korean editions). A change in observable behavior updates the spec
-in both editions in the same change.
+English, Korean, Simplified Chinese and Traditional Chinese editions). A change
+in observable behavior updates the spec in all four editions in the same change.
 
 ## Comments and style
 

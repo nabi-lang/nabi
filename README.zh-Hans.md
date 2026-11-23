@@ -53,7 +53,8 @@ nix profile install github:nabi-lang/nabi
 密钥 `B33E6FE61BE5314C`）；`nabi toolchain update` 不会安装任何未通过验证的内容，
 当 `PATH` 中有 `minisign` 时，安装脚本也会校验签名（docs/releasing.md 的
 “Signing”一节）。除此之外无需其他依赖：工具链自带代码生成器和链接器，并附带
-所有目标的运行时，因此在任何主机上都能用 `--target <triple>` 交叉编译。
+所有目标的运行时，因此在任何主机上都能用 `--target <triple>` 交叉编译（Apple
+目标只能在 macOS 上构建；Android 目标需要 NDK）。
 
 ## 快速开始
 
@@ -101,7 +102,7 @@ cargo test --no-fail-fast
 `NABI_TEST_FILTER=a,b cargo test -p nabic --test main integration::` 只运行名称
 包含 `a` 或 `b` 的语料用例；为空或未设置时运行全部用例。
 
-打包（`dist-*.sh`）、交叉目标与 wasm 语料以及 CI 分层见
+打包（`scripts/dist/*.sh`）、交叉目标与 wasm 语料以及 CI 分层见
 [docs/ci.md](docs/ci.md)。
 
 ## 许可证
