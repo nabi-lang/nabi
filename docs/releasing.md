@@ -72,7 +72,8 @@ opens an `alarm` issue for any `v*` tag the App did not create.
 
 Branches: `main` only, changed through the merge queue (squash) and, for
 the release commit, by the App's fast-forward. `release/X.Y.Z` and
-`rehearse/X.Y.Z` live for one release; the `release branches` ruleset lets
+`rehearse/X.Y.Z` live for one release (the tag job deletes `release/X.Y.Z`
+once the tag is on it; the tag keeps the release); the `release branches` ruleset lets
 only the App (and an org admin, to break glass) create or delete them,
 while anyone with write access pushes the hand-written blocks to
 `release/X.Y.Z`. There are no maintenance branches: only the latest series

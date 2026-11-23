@@ -528,6 +528,19 @@ jobs:
             gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$obj" > /dev/null
             echo "created $tag on $SHA"
           fi
+          # The tag keeps the release; release/<version> was only where it
+          # was prepared. Drop it once it is the tagged commit.
+          if [ "$MODE" = release ]; then
+            branch=release/$VERSION
+            head=$(gh api "repos/$GH_REPO/git/matching-refs/heads/$branch" \
+              --jq ".[] | select(.ref == \"refs/heads/$branch\") | .object.sha") || true
+            if [ "${head:-}" = "$SHA" ]; then
+              gh api -X DELETE "repos/$GH_REPO/git/refs/heads/$branch"
+              echo "deleted $branch"
+            elif [ -n "${head:-}" ]; then
+              echo "::warning::$branch is on $head, not $SHA; left in place"
+            fi
+          fi
           echo "patch=$(jq -nc --arg by "$by" --arg t "$tag" --arg s "$SHA" --arg m "$MODE" \
             '{approval: {by: $by, at: (now | todate)}, tag: (if $m == "release" then {name: $t, sha: $s} else {checked: $t} end)}')" >> "$GITHUB_OUTPUT"
       - name: Record the approval and tag
