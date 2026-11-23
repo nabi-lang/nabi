@@ -222,11 +222,7 @@ impl Parser<'_> {
             n
         } else {
             let s = self.peek_span();
-            self.error(
-                Code::SYNTAX,
-                s,
-                format!("expected trait name, found {}", self.peek().describe()),
-            );
+            self.expected_name(s, "trait name");
             return None;
         };
         let generics = self.parse_generic_params();
@@ -302,14 +298,7 @@ impl Parser<'_> {
                 self.bump();
                 let TokenKind::Ident(name) = self.peek().clone() else {
                     let s = self.peek_span();
-                    self.error(
-                        Code::SYNTAX,
-                        s,
-                        format!(
-                            "expected associated const name, found {}",
-                            self.peek().describe()
-                        ),
-                    );
+                    self.expected_name(s, "associated const name");
                     return None;
                 };
                 self.bump();
@@ -330,14 +319,7 @@ impl Parser<'_> {
                     n
                 } else {
                     let s = self.peek_span();
-                    self.error(
-                        Code::SYNTAX,
-                        s,
-                        format!(
-                            "expected associated type name, found {}",
-                            self.peek().describe()
-                        ),
-                    );
+                    self.expected_name(s, "associated type name");
                     return None;
                 };
                 // Optional bounds (`: A + B`) and default (`= T`).

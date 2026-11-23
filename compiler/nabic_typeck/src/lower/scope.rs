@@ -107,6 +107,7 @@ impl LowerCtx<'_> {
     /// before their scope's code.
     pub(crate) fn take_cells(&mut self, span: nabic_diagnostic::Span) -> Vec<HirStmt> {
         let mut out = self.take_resums(span);
+        out.extend(self.take_views());
         let cells: Vec<HirStmt> = std::mem::take(&mut self.pending_cells)
             .into_iter()
             .map(|(name, l, ty)| {
@@ -116,6 +117,15 @@ impl LowerCtx<'_> {
             .collect();
         out.extend(cells);
         out
+    }
+
+    /// `binder = (whole.i, ..)` for the `..name` tuple rests since the
+    /// last call.
+    pub(crate) fn take_views(&mut self) -> Vec<HirStmt> {
+        std::mem::take(&mut self.pending_views)
+            .into_iter()
+            .map(|(local, init)| HirStmt::Let { local, init })
+            .collect()
     }
 
     /// `binder = resum(whole)` for the sub-sum type patterns since the

@@ -330,6 +330,11 @@ impl TypeMarks {
         }
     }
 
+    /// A type or trait has the last segment `name`.
+    pub(crate) fn has(&self, name: &str) -> bool {
+        self.leaves.contains_key(name)
+    }
+
     /// The deprecated type `segs` names.
     pub(crate) fn find(
         &self,

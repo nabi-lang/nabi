@@ -1,4 +1,7 @@
 // expect-exit: 0
+// forbid-warning: unused variable `i32`
+// forbid-warning: unused variable `str`
+// forbid-warning: unused variable `f64`
 // expect-stdout:
 // float
 // int

@@ -391,11 +391,7 @@ impl Parser<'_> {
                     n.clone()
                 } else {
                     let s = self.peek_span();
-                    self.error(
-                        Code::SYNTAX,
-                        s,
-                        format!("expected binding name, found {}", self.peek().describe()),
-                    );
+                    self.expected_name(s, "binding name");
                     return None;
                 };
                 self.bump();

@@ -172,6 +172,8 @@ pub(crate) fn bind_narrowings(
         };
         // A narrowing rebinding is never a `[ref]` cell.
         ctx.pending_cells.clear();
+        ctx.pending_views.clear();
+        ctx.pending_views.clear();
         let resums = ctx.take_resums(at);
         let Some(new) = ctx.lookup_in_current_scope(&name) else {
             continue;
@@ -321,6 +323,7 @@ pub(crate) fn lower_is_on(
     // `is` binders aren't `[ref]` cells (no scope to start one in); capturing
     // one by `ref` is reported at the closure.
     ctx.pending_cells.clear();
+    ctx.pending_views.clear();
     // An `is v: A | B` sub-sum binder stays unconverted; the
     // `if x is (A | B)` narrowing form converts.
     ctx.pending_resums.clear();

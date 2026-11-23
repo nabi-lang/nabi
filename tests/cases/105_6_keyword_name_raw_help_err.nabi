@@ -1,0 +1,13 @@
+// expect-error: 9:14: `trait` is a keyword, not a name
+// expect-error: help: write `r#trait` to keep this name, or rename it
+// expect-error: 10:14: `as` is a keyword, not a name
+// expect-error: 11:4: `match` is a keyword, not a name
+// expect-error: 12:14: `struct` is a keyword, not a name
+
+// Any keyword in a name position says how to keep it as a name
+// (spec 1.5.6), not only the words reserved for later.
+fn a() { let trait = 1; }
+fn b() { let as = 1; }
+fn match(x: i32) -> i32 { x }
+fn c() { let struct = 1; }
+fn main() {}

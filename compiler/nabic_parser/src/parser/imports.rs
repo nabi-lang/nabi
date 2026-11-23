@@ -16,11 +16,7 @@ impl Parser<'_> {
             n
         } else {
             let s = self.peek_span();
-            self.error(
-                Code::SYNTAX,
-                s,
-                format!("expected module name, found {}", self.peek().describe()),
-            );
+            self.expected_name(s, "module name");
             return None;
         };
         let items = if matches!(self.peek(), TokenKind::LBrace) {
@@ -203,14 +199,7 @@ impl Parser<'_> {
                     n
                 } else {
                     let s = self.peek_span();
-                    self.error(
-                        Code::SYNTAX,
-                        s,
-                        format!(
-                            "expected alias name after `as`, found {}",
-                            self.peek().describe()
-                        ),
-                    );
+                    self.expected_name(s, "alias name after `as`");
                     return None;
                 };
                 nabic_ast::UseTreeKind::Simple(Some(alias))

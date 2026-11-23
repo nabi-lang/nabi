@@ -1,0 +1,13 @@
+// expect-error: 8:20: a tuple pattern has at most one `..`: `(first, .., last)`
+// expect-error: 11:9: this tuple pattern has 3 element(s) besides `..`, but the tuple has 2; write at most 2 patterns
+
+// One `..` per tuple pattern, and no more patterns than the tuple has.
+fn main() {
+    let t = (1, 2);
+    match t {
+        (a, .., b, .., c) => println("x"),
+    }
+    match t {
+        (a, b, c, ..) => println("x"),
+    }
+}

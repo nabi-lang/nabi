@@ -1,0 +1,11 @@
+// expect-error: 9:13: a path cannot start with `self::`
+// expect-error: help: a path starts at the name: write `helper`, or `pkg::helper` from the package root
+// expect-error: 10:16: a path cannot start with `self::`
+
+// `self::` (Rust) is not a path start; the error says what to write.
+fn helper() -> i32 { 1 }
+
+fn main() {
+    let x = self::helper();
+    println(f"{self::helper()} {x}");
+}

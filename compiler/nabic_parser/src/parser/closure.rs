@@ -130,14 +130,7 @@ impl Parser<'_> {
             if self.eat(&TokenKind::Ref) {
                 let Some(name) = self.capture_name() else {
                     let s = self.peek_span();
-                    self.error(
-                        Code::SYNTAX,
-                        s,
-                        format!(
-                            "expected capture name after `ref`, found {}",
-                            self.peek().describe()
-                        ),
-                    );
+                    self.expected_name(s, "capture name after `ref`");
                     return None;
                 };
                 captures.push(nabic_ast::CaptureSpec::Ref(name));

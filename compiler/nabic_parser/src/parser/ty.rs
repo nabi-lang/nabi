@@ -449,14 +449,7 @@ impl Parser<'_> {
         self.expect(&TokenKind::ColonColon, "`::`")?;
         let TokenKind::Ident(name) = self.peek().clone() else {
             let s = self.peek_span();
-            self.error(
-                Code::SYNTAX,
-                s,
-                format!(
-                    "expected associated item name after `<.. as ..>::`, found {}",
-                    self.peek().describe()
-                ),
-            );
+            self.expected_name(s, "associated item name after `<.. as ..>::`");
             return None;
         };
         self.bump();

@@ -250,11 +250,7 @@ impl Parser<'_> {
             n
         } else {
             let s = self.peek_span();
-            self.error(
-                Code::SYNTAX,
-                s,
-                format!("expected type alias name, found {}", self.peek().describe()),
-            );
+            self.expected_name(s, "type alias name");
             return None;
         };
         let generics = self.parse_generic_params();
@@ -326,11 +322,7 @@ impl Parser<'_> {
             n
         } else {
             let s = self.peek_span();
-            self.error(
-                Code::SYNTAX,
-                s,
-                format!("expected const name, found {}", self.peek().describe()),
-            );
+            self.expected_name(s, "const name");
             return None;
         };
         self.expect(&TokenKind::Colon, "`:`")?;
@@ -374,11 +366,7 @@ impl Parser<'_> {
             n
         } else {
             let s = self.peek_span();
-            self.error(
-                Code::SYNTAX,
-                s,
-                format!("expected static name, found {}", self.peek().describe()),
-            );
+            self.expected_name(s, "static name");
             return None;
         };
         self.expect(&TokenKind::Colon, "`:`")?;
@@ -412,11 +400,7 @@ impl Parser<'_> {
             n
         } else {
             let s = self.peek_span();
-            self.error(
-                Code::SYNTAX,
-                s,
-                format!("expected struct name, found {}", self.peek().describe()),
-            );
+            self.expected_name(s, "struct name");
             return None;
         };
         let generics = if matches!(self.peek(), TokenKind::Lt) {
@@ -486,11 +470,7 @@ impl Parser<'_> {
             n
         } else {
             let s = self.peek_span();
-            self.error(
-                Code::SYNTAX,
-                s,
-                format!("expected union name, found {}", self.peek().describe()),
-            );
+            self.expected_name(s, "union name");
             return None;
         };
         let generics = if matches!(self.peek(), TokenKind::Lt) {
@@ -521,11 +501,7 @@ impl Parser<'_> {
             let (attrs, vis) = self.parse_attrs_vis();
             let span = self.peek_span();
             let Some(name) = self.peek_name() else {
-                self.error(
-                    Code::SYNTAX,
-                    span,
-                    format!("expected field name, found {}", self.peek().describe()),
-                );
+                self.expected_name(span, "field name");
                 return None;
             };
             self.bump_name();
@@ -585,11 +561,7 @@ impl Parser<'_> {
             n
         } else {
             let s = self.peek_span();
-            self.error(
-                Code::SYNTAX,
-                s,
-                format!("expected enum name, found {}", self.peek().describe()),
-            );
+            self.expected_name(s, "enum name");
             return None;
         };
         let generics = if matches!(self.peek(), TokenKind::Lt) {
@@ -620,11 +592,7 @@ impl Parser<'_> {
                 n
             } else {
                 let s = self.peek_span();
-                self.error(
-                    Code::SYNTAX,
-                    s,
-                    format!("expected variant name, found {}", self.peek().describe()),
-                );
+                self.expected_name(s, "variant name");
                 return None;
             };
             let kind = match self.peek() {

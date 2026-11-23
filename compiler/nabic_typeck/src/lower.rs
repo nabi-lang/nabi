@@ -552,6 +552,9 @@ pub struct LowerCtx<'a> {
     /// Sub-sum type-pattern binders (`v: A | B` against `A | B | C`):
     /// `(binder, whole-scrutinee local)`, converted by `take_cells`.
     pending_resums: Vec<(LocalId, LocalId)>,
+    /// `..name` in a tuple pattern: `(binder, sub-tuple read from the
+    /// matched tuple)`, bound by `take_cells` (and before a guard).
+    pub(crate) pending_views: Vec<(LocalId, HirExpr)>,
     /// In a closure: locals holding a value capture (assigning one is an
     /// error).
     value_captured: nabic_core::HashSet<LocalId>,
@@ -837,6 +840,7 @@ impl<'a> LowerCtx<'a> {
             ref_captured: nabic_core::HashSet::default(),
             pending_cells: Vec::new(),
             pending_resums: Vec::new(),
+            pending_views: Vec::new(),
             value_captured: nabic_core::HashSet::default(),
             unsafe_depth: 0,
             available: Vec::new(),

@@ -132,11 +132,7 @@ impl Parser<'_> {
                     n
                 } else {
                     let s = self.peek_span();
-                    self.error(
-                        Code::SYNTAX,
-                        s,
-                        format!("expected binding name, found {}", self.peek().describe()),
-                    );
+                    self.expected_name(s, "binding name");
                     return None;
                 };
                 // `n @ (x, y)`: bind `n`, then destructure it.
@@ -211,11 +207,7 @@ impl Parser<'_> {
                     n
                 } else {
                     let s = self.peek_span();
-                    self.error(
-                        Code::SYNTAX,
-                        s,
-                        format!("expected rebind name, found {}", self.peek().describe()),
-                    );
+                    self.expected_name(s, "rebind name");
                     return None;
                 }
             } else {
@@ -260,32 +252,37 @@ impl Parser<'_> {
         })
     }
 
+    /// An item of a tuple or slice pattern: `..`, `..name` (the items
+    /// between, bound as one value) or a pattern.
+    pub(crate) fn parse_rest_or_pattern(&mut self) -> Option<Pattern> {
+        if !matches!(self.peek(), TokenKind::DotDot) {
+            return self.parse_pattern();
+        }
+        let span = self.peek_span();
+        self.bump();
+        let name = match self.peek().clone() {
+            TokenKind::Ident(n) if n != "_" => {
+                self.bump();
+                Some(n)
+            }
+            TokenKind::Ident(_) => {
+                self.bump();
+                None
+            }
+            _ => None,
+        };
+        Some(Pattern {
+            kind: PatternKind::Rest(name),
+            span,
+        })
+    }
+
     /// The items of `[a, ..rest, z]` after its `[`: patterns, and `..` or
     /// `..name` for the elements between.
     pub(crate) fn parse_slice_pattern_items(&mut self) -> Option<Vec<Pattern>> {
         let mut items = Vec::new();
         while !matches!(self.peek(), TokenKind::RBracket | TokenKind::Eof) {
-            if matches!(self.peek(), TokenKind::DotDot) {
-                let span = self.peek_span();
-                self.bump();
-                let name = match self.peek().clone() {
-                    TokenKind::Ident(n) if n != "_" => {
-                        self.bump();
-                        Some(n)
-                    }
-                    TokenKind::Ident(_) => {
-                        self.bump();
-                        None
-                    }
-                    _ => None,
-                };
-                items.push(Pattern {
-                    kind: PatternKind::Rest(name),
-                    span,
-                });
-            } else {
-                items.push(self.parse_pattern()?);
-            }
+            items.push(self.parse_rest_or_pattern()?);
             if !self.eat(&TokenKind::Comma) {
                 break;
             }
@@ -482,7 +479,7 @@ impl Parser<'_> {
                 let mut trailing_comma = false;
                 if !matches!(self.peek(), TokenKind::RParen) {
                     loop {
-                        subs.push(self.parse_pattern()?);
+                        subs.push(self.parse_rest_or_pattern()?);
                         trailing_comma = self.eat(&TokenKind::Comma);
                         if !trailing_comma || matches!(self.peek(), TokenKind::RParen) {
                             break;
@@ -490,8 +487,12 @@ impl Parser<'_> {
                     }
                 }
                 self.expect(&TokenKind::RParen, "`)`")?;
-                // `(p)` groups; a 1-tuple pattern is `(p,)`.
-                if subs.len() == 1 && !trailing_comma {
+                // `(p)` groups; a 1-tuple pattern is `(p,)`. `(..)` is
+                // any tuple.
+                if subs.len() == 1
+                    && !trailing_comma
+                    && !matches!(subs[0].kind, PatternKind::Rest(_))
+                {
                     return subs.pop();
                 }
                 PatternKind::Tuple(subs)

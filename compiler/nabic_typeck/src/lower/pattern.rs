@@ -60,7 +60,19 @@ pub(crate) fn lower_match(
         bad_pattern |= ctx.env.sink.diagnostics.borrow()[since..]
             .iter()
             .any(nabic_diagnostic::NabiDiagnostic::is_error);
-        let guard = arm.guard.as_ref().map(|g| lower_cond(ctx, g));
+        // A guard reads a `..name` rest too: bind it there as well.
+        let views: Vec<HirStmt> = ctx
+            .pending_views
+            .iter()
+            .map(|(local, init)| HirStmt::Let {
+                local: *local,
+                init: init.clone(),
+            })
+            .collect();
+        let guard = arm
+            .guard
+            .as_ref()
+            .map(|g| crate::lower::expr::with_lets(views, lower_cond(ctx, g)));
         let cells = ctx.take_cells(arm.body.span);
         let body = crate::lower::expr::with_lets(cells, lower_expr(ctx, &arm.body));
         ctx.pop_scope();
@@ -870,6 +882,13 @@ fn lower_pattern_here(ctx: &mut LowerCtx<'_>, pat: &AstPattern, scrut_ty: &HirTy
                 args: lowered_args,
             }
         }
+        AstPatternKind::Tuple(pats)
+            if pats
+                .iter()
+                .any(|p| matches!(p.kind, AstPatternKind::Rest(_))) =>
+        {
+            tuple_rest_pattern(ctx, pats, scrut_ty, pat.span)
+        }
         AstPatternKind::Tuple(pats) => match scrut_ty {
             HirTy::Tuple(elem_tys) if pats.len() == elem_tys.len() => HirPattern::Tuple(
                 pats.iter()
@@ -1020,8 +1039,8 @@ fn lower_pattern_here(ctx: &mut LowerCtx<'_>, pat: &AstPattern, scrut_ty: &HirTy
         AstPatternKind::Rest(_) => {
             ctx.emit_error(
                 Code::REST_PATTERN,
-                "a rest pattern `..` is only allowed in a slice pattern `[a, ..rest]` or a \
-                 tuple destructuring `let`"
+                "a rest pattern `..` goes only in a tuple `(a, ..rest)`, a slice \
+                 `[a, ..rest]` or a tuple variant `V(a, ..)`"
                     .to_owned(),
             );
             HirPattern::Wildcard
@@ -1060,6 +1079,115 @@ pub(crate) fn seq_len(ctx: &LowerCtx<'_>, ty: &HirTy) -> Option<SeqLen> {
             .contains(&enum_base_name(&ctx.struct_def(*id).name))
             .then_some(SeqLen::Dynamic),
         _ => None,
+    }
+}
+
+/// `(a, ..rest, z)` on a tuple: `..` stands for the elements between,
+/// `..rest` binds them as one tuple (a copy, built when the arm is
+/// entered).
+fn tuple_rest_pattern(
+    ctx: &mut LowerCtx<'_>,
+    pats: &[AstPattern],
+    scrut_ty: &HirTy,
+    span: nabic_diagnostic::Span,
+) -> HirPattern {
+    let rests: Vec<usize> = pats
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| matches!(p.kind, AstPatternKind::Rest(_)))
+        .map(|(i, _)| i)
+        .collect();
+    if rests.len() > 1 {
+        ctx.emit_error_at(
+            Code::REST_PATTERN,
+            pats[rests[1]].span,
+            "a tuple pattern has at most one `..`: `(first, .., last)`".to_owned(),
+        );
+        return HirPattern::Wildcard;
+    }
+    let r = rests[0];
+    let scrut_ty = crate::lower::infer::zonk(ctx, scrut_ty);
+    let tys = match &scrut_ty {
+        HirTy::Tuple(tys) => tys.clone(),
+        HirTy::Unit => Vec::new(),
+        HirTy::Unknown => return HirPattern::Wildcard,
+        t => {
+            ctx.emit_error(
+                Code::PATTERN_TYPE,
+                format!(
+                    "a tuple pattern can't match a value of type `{}`",
+                    ctx.ty_name(t)
+                ),
+            );
+            return HirPattern::Wildcard;
+        }
+    };
+    let fixed = pats.len() - 1;
+    if tys.len() < fixed {
+        ctx.emit_error_at(
+            Code::PATTERN_ARITY,
+            span,
+            format!(
+                "this tuple pattern has {fixed} element(s) besides `..`, but the tuple has {}; \
+                 write at most {} patterns",
+                tys.len(),
+                tys.len()
+            ),
+        );
+        return HirPattern::Wildcard;
+    }
+    let take = tys.len() - fixed;
+    let mut subs = Vec::with_capacity(tys.len());
+    for (p, t) in pats[..r].iter().zip(&tys) {
+        subs.push(lower_pattern(ctx, p, t));
+    }
+    subs.extend(std::iter::repeat_n(HirPattern::Wildcard, take));
+    for (p, t) in pats[r + 1..].iter().zip(&tys[r + take..]) {
+        subs.push(lower_pattern(ctx, p, t));
+    }
+    let tuple = if tys.is_empty() {
+        HirPattern::Wildcard
+    } else {
+        HirPattern::Tuple(subs)
+    };
+    let AstPatternKind::Rest(Some(name)) = &pats[r].kind else {
+        return tuple;
+    };
+    let whole = ctx.declare(None, scrut_ty.clone());
+    let fields: Vec<HirExpr> = (r..r + take)
+        .map(|k| HirExpr {
+            kind: HirExprKind::TupleField {
+                target: Box::new(hir_local(whole, &scrut_ty, span)),
+                index: u32::try_from(k).expect("tuple index overflow"),
+                field_ty: tys[k].clone(),
+            },
+            ty: tys[k].clone(),
+            span,
+        })
+        .collect();
+    let view = rest_tuple(fields, span);
+    let local = ctx.declare_bound(name, view.ty.clone(), pats[r].span);
+    ctx.pending_views.push((local, view));
+    HirPattern::At {
+        local: whole,
+        ty: scrut_ty,
+        sub: Box::new(tuple),
+    }
+}
+
+/// The tuple a `..rest` binds: `()` when it covers no element.
+pub(crate) fn rest_tuple(fields: Vec<HirExpr>, span: nabic_diagnostic::Span) -> HirExpr {
+    if fields.is_empty() {
+        return HirExpr {
+            kind: HirExprKind::Const(ConstVal::Unit),
+            ty: HirTy::Unit,
+            span,
+        };
+    }
+    HirExpr {
+        ty: HirTy::Tuple(fields.iter().map(|e| e.ty.clone()).collect()),
+        kind: HirExprKind::Tuple { fields },
+        span,
     }
 }
 
