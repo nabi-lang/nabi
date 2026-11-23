@@ -51,11 +51,7 @@ impl Parser<'_> {
     pub(crate) fn fn_name(&mut self) -> Option<String> {
         let TokenKind::Ident(name) = self.peek().clone() else {
             let s = self.peek_span();
-            self.error(
-                Code::SYNTAX,
-                s,
-                format!("expected function name, found {}", self.peek().describe()),
-            );
+            self.expected_name(s, "function name");
             return None;
         };
         self.bump();
@@ -366,14 +362,7 @@ impl Parser<'_> {
             } else {
                 let TokenKind::Ident(name) = self.peek().clone() else {
                     let s = self.peek_span();
-                    self.error(
-                        Code::SYNTAX,
-                        s,
-                        format!(
-                            "expected generic param name, found {}",
-                            self.peek().describe()
-                        ),
-                    );
+                    self.expected_name(s, "generic param name");
                     break;
                 };
                 self.bump();
@@ -610,14 +599,7 @@ impl Parser<'_> {
             n
         } else {
             let s = self.peek_span();
-            self.error(
-                Code::SYNTAX,
-                s,
-                format!(
-                    "expected parameter name or pattern, found {}",
-                    self.peek().describe()
-                ),
-            );
+            self.expected_name(s, "parameter name or pattern");
             return None;
         };
         // `xs: ...T` - `...` precedes the element type; the

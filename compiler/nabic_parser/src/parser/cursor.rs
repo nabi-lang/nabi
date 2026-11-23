@@ -357,6 +357,27 @@ impl Parser<'_> {
             .map(|(_, s)| *s)
     }
 
+    /// "expected {what}" at a name position; a keyword there gets the
+    /// `r#` help (spec 1.5.6) instead of a bare syntax error.
+    pub(crate) fn expected_name(&mut self, span: Span, what: &str) {
+        let found = self.peek();
+        match keyword_str(found) {
+            Some(kw) if !matches!(kw, "self" | "Self" | "_" | "true" | "false" | "none") => {
+                let msg = format!("`{kw}` is a keyword, not a name");
+                self.diagnostics.push(
+                    NabiDiagnostic::error(Code::RESERVED_NAME, span, msg)
+                        .with_file(self.file.clone())
+                        .with_help(format!("write `r#{kw}` to keep this name, or rename it"))
+                        .with_fix(span, format!("r#{kw}"), format!("write `r#{kw}`")),
+                );
+            }
+            _ => {
+                let msg = format!("expected {what}, found {}", found.describe());
+                self.error(Code::SYNTAX, span, msg);
+            }
+        }
+    }
+
     pub(crate) fn error(&mut self, code: Code, span: Span, msg: impl Into<String>) {
         self.diagnostics
             .push(NabiDiagnostic::error(code, span, msg).with_file(self.file.clone()));

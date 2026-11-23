@@ -567,6 +567,36 @@ impl Parser<'_> {
                     ExprKind::Path(path)
                 }
             }
+            // `self::f` (Rust): not a path start; say so, then read the
+            // rest as the path it meant.
+            TokenKind::SelfLower
+                if matches!(self.peek_next(), Some(TokenKind::ColonColon))
+                    && matches!(
+                        self.tokens.get(self.pos + 2).map(|t| &t.kind),
+                        Some(TokenKind::Ident(_))
+                    ) =>
+            {
+                self.bump();
+                self.bump();
+                let at = Span {
+                    end: self.peek_span().start,
+                    ..start
+                };
+                let name = match self.peek() {
+                    TokenKind::Ident(n) => n.clone(),
+                    _ => unreachable!(),
+                };
+                self.diagnostics.push(
+                    NabiDiagnostic::error(Code::SYNTAX, at, "a path cannot start with `self::`")
+                        .with_file(self.file.clone())
+                        .with_help(format!(
+                            "a path starts at the name: write `{name}`, or `pkg::{name}` from \
+                             the package root"
+                        ))
+                        .with_fix(at, "", "delete `self::`"),
+                );
+                ExprKind::Path(self.parse_path()?)
+            }
             TokenKind::SelfLower => {
                 self.bump();
                 ExprKind::SelfLower
@@ -822,14 +852,7 @@ impl Parser<'_> {
                         }
                         _ => {
                             let s = self.peek_span();
-                            self.error(
-                                Code::SYNTAX,
-                                s,
-                                format!(
-                                    "expected field or method name after `.`, found {}",
-                                    self.peek().describe()
-                                ),
-                            );
+                            self.expected_name(s, "field or method name after `.`");
                             return None;
                         }
                     };
@@ -1005,14 +1028,7 @@ impl Parser<'_> {
                         }
                         _ => {
                             let s = self.peek_span();
-                            self.error(
-                                Code::SYNTAX,
-                                s,
-                                format!(
-                                    "expected field or method name after `?.`, found {}",
-                                    self.peek().describe()
-                                ),
-                            );
+                            self.expected_name(s, "field or method name after `?.`");
                             return None;
                         }
                     };

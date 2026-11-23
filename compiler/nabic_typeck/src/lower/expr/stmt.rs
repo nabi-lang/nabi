@@ -585,13 +585,8 @@ pub(crate) fn lower_let_tuple(
                 read(src, elem_tys.get(src).cloned().unwrap_or(HirTy::Unknown))
             })
             .collect();
-        let rest_ty = HirTy::Tuple(sub.iter().map(|e| e.ty.clone()).collect());
-        let init = HirExpr {
-            ty: rest_ty.clone(),
-            span,
-            kind: HirExprKind::Tuple { fields: sub },
-        };
-        stmts.push(ctx.declare_var(rest_name, rest_ty, init, span));
+        let init = crate::lower::pattern::rest_tuple(sub, span);
+        stmts.push(ctx.declare_var(rest_name, init.ty.clone(), init, span));
     }
 }
 

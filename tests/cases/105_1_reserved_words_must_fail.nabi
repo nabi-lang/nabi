@@ -1,5 +1,5 @@
-// expect-error: expected binding name, found keyword `yield`
-// expect-error: expected binding name, found keyword `using`
+// expect-error: `yield` is a keyword, not a name
+// expect-error: `using` is a keyword, not a name
 // expect-error: expected binding name, found keyword `Self`
 // expect-error: expected binding name, found keyword `true`
 // expect-error: expected binding name, found keyword `none`

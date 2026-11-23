@@ -370,6 +370,9 @@ struct Cx<'a> {
     /// Every enum variant name: a bare one in a pattern may be a `use`d
     /// variant, not a binding.
     variants: HashSet<String>,
+    /// `(file, start)` of match-arm names that are types: a type
+    /// pattern against a sum (`i32 =>`), not a binding.
+    type_arms: HashSet<(u32, u32)>,
     /// Function bodies the walk is in.
     in_fn: u32,
 }
@@ -433,6 +436,7 @@ impl<'a> Cx<'a> {
             impl_of: None,
             traits,
             variants,
+            type_arms: HashSet::default(),
             in_fn: 0,
         }
     }
@@ -1121,6 +1125,17 @@ fn pat_binds(p: &Pattern, out: &mut Vec<(String, Span)>) {
     }
 }
 
+impl Cx<'_> {
+    /// `name` is a type a bare pattern can test for: a built-in or a
+    /// declared type.
+    fn is_type_name(&self, name: &str) -> bool {
+        matches!(name, "bool" | "char" | "str")
+            || nabic_lexer::lexer::INT_SUFFIXES.contains(&name)
+            || nabic_lexer::lexer::FLOAT_SUFFIXES.contains(&name)
+            || self.types.has(name)
+    }
+}
+
 impl AstVisitor for Cx<'_> {
     fn or_pattern(&mut self, alts: &[Pattern]) {
         let mut all = Vec::new();
@@ -1194,6 +1209,7 @@ impl AstVisitor for Cx<'_> {
             || name.starts_with('_')
             || generated(name)
             || self.variants.contains(name)
+            || self.type_arms.contains(&key(at))
         {
             return;
         }
@@ -1372,6 +1388,17 @@ impl AstVisitor for Cx<'_> {
             ExprKind::Match { arms, .. } => {
                 for a in arms {
                     pat_names(&a.pat, &mut self.file_names);
+                    let alts = match &a.pat.kind {
+                        PatternKind::Or(alts) => alts.as_slice(),
+                        _ => std::slice::from_ref(&a.pat),
+                    };
+                    for p in alts {
+                        if matches!(&p.kind, PatternKind::Binding { name, sub: None }
+                            if self.is_type_name(name))
+                        {
+                            self.type_arms.insert(key(p.span));
+                        }
+                    }
                 }
             }
             ExprKind::Is(_, pat) => pat_names(pat, &mut self.file_names),
