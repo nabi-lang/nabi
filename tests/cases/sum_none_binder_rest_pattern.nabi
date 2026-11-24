@@ -18,7 +18,7 @@ fn step(i: i32) -> Result<str, Bad> | none {
 
 fn show(r: Result<str, Bad> | none) -> str {
     if r is none { return ""; }
-    match r ?? Result::Ok("?") {
+    match r {
         Result::Ok(x) => { return f" ok {x},"; }
         Result::Err(b) => { return f" err {b.code},"; }
     }

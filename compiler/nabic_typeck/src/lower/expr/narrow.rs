@@ -21,6 +21,34 @@ pub(crate) fn optional_local(ctx: &LowerCtx<'_>, e: &Expr) -> Option<String> {
     matches!(ctx.var_ty(l), HirTy::Sum(vs) if vs.contains(&HirTy::None)).then(|| seg.name.clone())
 }
 
+/// The one-segment names `e` reads.
+pub(crate) fn mentioned(e: &Expr) -> nabic_core::HashSet<String> {
+    struct Names(nabic_core::HashSet<String>);
+    impl nabic_hir::walk::AstVisitor for Names {
+        fn expr(&mut self, e: &Expr) {
+            if let ExprKind::Path(p) = &e.kind {
+                if let [seg] = p.segments.as_slice() {
+                    self.0.insert(seg.name.clone());
+                }
+            }
+        }
+    }
+    let mut v = Names(nabic_core::HashSet::default());
+    nabic_hir::walk::walk_expr(&mut v, e);
+    v.0
+}
+
+/// `none`, as a literal pattern or as the type `none`.
+const fn is_none_pattern(pat: &nabic_ast::Pattern) -> bool {
+    match &pat.kind {
+        AstPatternKind::Literal(AstLit::None) => true,
+        AstPatternKind::TypeCheck { binder: None, ty } => {
+            matches!(ty.kind, nabic_ast::TyKind::None)
+        }
+        _ => false,
+    }
+}
+
 /// `x == none` / `none == x` / `x is none` (`eq`) or `x != none`: the
 /// optional local.
 pub(crate) fn none_test(ctx: &LowerCtx<'_>, cond: &Expr, eq: bool) -> Option<String> {
@@ -35,11 +63,8 @@ pub(crate) fn none_test(ctx: &LowerCtx<'_>, cond: &Expr, eq: bool) -> Option<Str
                 None
             }
         }
-        ExprKind::Is(operand, pat)
-            if eq && matches!(pat.kind, AstPatternKind::Literal(AstLit::None)) =>
-        {
-            optional_local(ctx, operand)
-        }
+        // `x is none` parses as a test for the type `none`.
+        ExprKind::Is(operand, pat) if eq && is_none_pattern(pat) => optional_local(ctx, operand),
         _ => None,
     }
 }

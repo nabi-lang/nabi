@@ -1,0 +1,11 @@
+// expect-error: 9:16: cannot infer the type of this value
+// expect-error: help: bind it to a typed `let` first
+
+// A hole whose value has no type is an error, never an empty string: a
+// recursive implicit generic called with an unsuffixed literal.
+fn rec(n) { if n <= 0 { 0 } else { n + rec(n - 1) } }
+
+fn main() {
+    println(f"{rec(4)}");
+    println(rec(4));
+}
