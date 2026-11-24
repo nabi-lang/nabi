@@ -1,0 +1,23 @@
+// expect-exit: 0
+// expect-stdout:
+// 1
+// 2
+// 1
+// 1.5
+
+// A type pattern fixes an open literal's type (spec 1.6.3, 3.13.3).
+fn main() {
+    let it = [1, 2].iter();
+    while let x: i32 = it.next() {
+        println(f"{x}");
+    }
+    let xs = [1, 2];
+    match xs.get(0) {
+        x: i32 => println(f"{x}"),
+        none => {},
+    }
+    let ys = [1.5];
+    if let y: f32 = ys.get(0) {
+        println(f"{y}");
+    }
+}

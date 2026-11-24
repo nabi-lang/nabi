@@ -413,16 +413,23 @@ pub(crate) fn bind_irrefutable(
             == Some(enum_base_name(&ctx.struct_def(sid).name)) =>
         {
             crate::lower::pattern::struct_pattern_rest(ctx, pat, &value.ty);
+            let expanded;
             let parts: Vec<(String, Option<&AstPattern>)> = match &pat.kind {
                 AstPatternKind::Struct { fields, .. } => fields
                     .iter()
                     .map(|f| (f.name.clone(), f.pat.as_ref()))
                     .collect(),
-                AstPatternKind::EnumVariant { args, .. } => args
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| (i.to_string(), Some(a)))
-                    .collect(),
+                AstPatternKind::EnumVariant { args, .. } => {
+                    expanded =
+                        crate::lower::pattern::expand_rest(args, ctx.struct_def(sid).fields.len());
+                    expanded
+                        .as_deref()
+                        .unwrap_or(args)
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| (i.to_string(), Some(a)))
+                        .collect()
+                }
                 _ => Vec::new(),
             };
             let tmp = ctx.declare(None, value.ty.clone());
@@ -556,9 +563,30 @@ pub(crate) fn bind_irrefutable(
         (AstPatternKind::Wildcard, _) | (_, HirTy::Unknown) => {}
         // `let (a: i32, b: str) = ..`: an annotated element is a slot of
         // that type, not a runtime test.
-        (AstPatternKind::TypeCheck { binder, ty }, _) => {
+        (AstPatternKind::TypeCheck { binder, ty }, have) => {
             let want = ctx.resolve_ast_ty(ty);
             let name = binder.clone().unwrap_or_else(|| "_".to_owned());
+            // `for x: i32 in xs` over `i32 | none`: a test, which a pattern
+            // that must always match cannot be.
+            if matches!(&have, HirTy::Sum(vs) if vs.contains(&want)) {
+                let (t, h) = (ctx.ty_name(&want), ctx.ty_name(&have));
+                ctx.emit_error_at(
+                    Code::PATTERN_TYPE,
+                    pat.span,
+                    format!(
+                        "the pattern `{name}: {t}` can't always match a `{h}`, and a `for` or \
+                         `let` pattern must"
+                    ),
+                );
+                ctx.help_last(Some(format!(
+                    "test each value instead: `for v in xs {{ if let {name}: {t} = v {{ .. }} }}`, \
+                     or `let {name}: {t} = v else {{ .. }};`"
+                )));
+                if binder.is_some() {
+                    ctx.declare(Some(name), HirTy::Unknown);
+                }
+                return;
+            }
             let value = coerce(ctx, &want, value, &|| format!("the pattern `{name}`"));
             if binder.is_some() {
                 stmts.push(ctx.declare_var(&name, want, value, pat.span));
