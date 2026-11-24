@@ -1,8 +1,8 @@
 {
-  "version": "0.1.4",
+  "version": "0.1.5",
   "archives": {
-    "aarch64-darwin": { "url": "https://github.com/nabi-lang/nabi/releases/download/v0.1.4/nabi-0.1.4-aarch64-apple-darwin.tar.xz", "sha256": "0c0a1da5696aef9439349451bd30659f94b06b23bd050aa8f540b4ce0d3b0762" },
-    "aarch64-linux": { "url": "https://github.com/nabi-lang/nabi/releases/download/v0.1.4/nabi-0.1.4-aarch64-unknown-linux-musl.tar.xz", "sha256": "4983e0e30b673e08c5908f6ad2c63548c1350a565112cf8cc7d6b7f1fab40baf" },
-    "x86_64-linux": { "url": "https://github.com/nabi-lang/nabi/releases/download/v0.1.4/nabi-0.1.4-x86_64-unknown-linux-musl.tar.xz", "sha256": "d910d925524d3cb86526eb80d12732ac539acbbe68237c0776e2a9b6791158c9" }
+    "aarch64-darwin": { "url": "https://github.com/nabi-lang/nabi/releases/download/v0.1.5/nabi-0.1.5-aarch64-apple-darwin.tar.xz", "sha256": "a8b724ab87ed6ca366b6da409d0b87a4819f140587574af5073bc206c1e88466" },
+    "aarch64-linux": { "url": "https://github.com/nabi-lang/nabi/releases/download/v0.1.5/nabi-0.1.5-aarch64-unknown-linux-musl.tar.xz", "sha256": "75935f90f8173f783797ea27ac8727c2a83f79c595ad4e7b8215c16df4f9aa0b" },
+    "x86_64-linux": { "url": "https://github.com/nabi-lang/nabi/releases/download/v0.1.5/nabi-0.1.5-x86_64-unknown-linux-musl.tar.xz", "sha256": "a9fe7d4e3ad99b27fb19696b98523c1287af843605aa2b61bd0f9e79a08d3446" }
   }
 }
