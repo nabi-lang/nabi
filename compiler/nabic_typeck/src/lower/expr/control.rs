@@ -247,7 +247,13 @@ pub(crate) fn lower_if(
         return build(cond_h, then_h, None, HirTy::Unit);
     };
     // `if x == none { .. } else { x is not none here }`.
-    let else_list = else_narrowings(ctx, cond);
+    // Only names the branch reads: a narrowed binding reads the value,
+    // and a bare tag test must not (a value handed over since).
+    let used = crate::lower::expr::narrow::mentioned(else_e);
+    let else_list: Vec<_> = else_narrowings(ctx, cond)
+        .into_iter()
+        .filter(|(x, _)| used.contains(x))
+        .collect();
     let since_else = ctx.env.sink.diagnostics.borrow().len();
     let dead_else = u32::from(known == Some(true));
     ctx.dead += dead_else;

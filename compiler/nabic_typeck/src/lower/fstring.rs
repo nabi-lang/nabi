@@ -104,7 +104,8 @@ pub(crate) fn lower_fstring(ctx: &mut LowerCtx<'_>, parts: &[FStringPart], span:
     let mut stmts = Vec::new();
     // `Err(text)`: a literal piece.
     let mut pieces: Vec<Result<Hole, String>> = Vec::new();
-    for part in parts {
+    let snap = snapshots(parts);
+    for (i, part) in parts.iter().enumerate() {
         match part {
             FStringPart::Lit(text) => pieces.push(Err(text.clone())),
             FStringPart::Hole { expr, spec } => {
@@ -113,6 +114,13 @@ pub(crate) fn lower_fstring(ctx: &mut LowerCtx<'_>, parts: &[FStringPart], span:
                     continue;
                 };
                 let ty = ctx.local_ty(local_of(ctx, &value));
+                if snap[i] && shared(ctx, &ty) {
+                    let Some(h) = snapshot(ctx, &mut stmts, value, spec, expr.span) else {
+                        continue;
+                    };
+                    pieces.push(Ok(h));
+                    continue;
+                }
                 // The spec as text, or as f-string pieces when dynamic.
                 let mut text = String::new();
                 let mut dynamic = Vec::new();
@@ -159,6 +167,36 @@ pub(crate) fn lower_fstring(ctx: &mut LowerCtx<'_>, parts: &[FStringPart], span:
         })),
         span,
     }
+}
+
+/// `value` formatted now with `spec` (spec values evaluated here too):
+/// a `str` hole that a later hole cannot change.
+fn snapshot(
+    ctx: &mut LowerCtx<'_>,
+    stmts: &mut Vec<HirStmt>,
+    value: Expr,
+    spec: &[SpecPiece],
+    span: Span,
+) -> Option<Hole> {
+    let mut pieces = Vec::new();
+    for piece in spec {
+        match piece {
+            SpecPiece::Text(t) => pieces.push(SpecPiece::Text(t.clone())),
+            SpecPiece::Expr(e) => pieces.push(SpecPiece::Expr(bind(ctx, stmts, e)?)),
+        }
+    }
+    let one = mk(
+        ExprKind::FString(vec![FStringPart::Hole {
+            expr: value,
+            spec: pieces,
+        }]),
+        span,
+    );
+    ctx.push_expected(HirTy::Prim(PrimTy::Str));
+    let text = lower_expr(ctx, &one);
+    ctx.pop_expected();
+    let text = bind_hir(ctx, stmts, "#fv", text, point(span));
+    static_hole(ctx, text, &HirTy::Prim(PrimTy::Str), "")
 }
 
 /// An f-string where it is written: an `Arguments` in a
@@ -224,7 +262,8 @@ pub(crate) fn lower_fstring_args(
             span,
         });
     };
-    for part in parts {
+    let snap = snapshots(parts);
+    for (i, part) in parts.iter().enumerate() {
         match part {
             FStringPart::Lit(text) => put(
                 "fstr_put_str",
@@ -234,6 +273,14 @@ pub(crate) fn lower_fstring_args(
                 let Some(value) = bind(ctx, &mut stmts, expr) else {
                     continue;
                 };
+                let ty = ctx.local_ty(local_of(ctx, &value));
+                if snap[i] && shared(ctx, &ty) {
+                    let Some(h) = snapshot(ctx, &mut stmts, value, spec, expr.span) else {
+                        continue;
+                    };
+                    put("fstr_put_str", h.value);
+                    continue;
+                }
                 let mut text = String::new();
                 let mut pieces = Vec::new();
                 for piece in spec {
@@ -758,6 +805,41 @@ fn plain_write(t: &Expr, value: Expr, kind: Kind, debug: bool, flags: Expr, coun
     }
 }
 
+/// `e` may change a value an earlier hole holds: anything but a name, a
+/// literal or a field of one.
+fn effectful(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Path(_) | ExprKind::Literal(_) => false,
+        ExprKind::Field(x, _) | ExprKind::TupleField(x, _) => effectful(x),
+        _ => true,
+    }
+}
+
+/// For each part: a later hole or spec value may change what this hole
+/// holds (`f"{xs:?} {xs.pop():?}"`), so it is formatted when evaluated.
+fn snapshots(parts: &[FStringPart]) -> Vec<bool> {
+    let mut later = false;
+    let mut out = vec![false; parts.len()];
+    for (i, part) in parts.iter().enumerate().rev() {
+        out[i] = later;
+        if let FStringPart::Hole { expr, spec } = part {
+            later |= effectful(expr)
+                || spec
+                    .iter()
+                    .any(|p| matches!(p, SpecPiece::Expr(e) if effectful(e)));
+        }
+    }
+    out
+}
+
+/// A value whose text a later hole could change: not a number, `char`
+/// or `str` (copies, or immutable).
+fn shared(ctx: &LowerCtx<'_>, ty: &HirTy) -> bool {
+    !matches!(kind_of(ctx, ty), Kind::Str | Kind::Char)
+        && !kind_of(ctx, ty).number()
+        && !matches!(crate::lower::infer::zonk(ctx, ty), HirTy::Prim(_))
+}
+
 /// `let #fN = e;`: the temp's path, or `None` when `e` didn't type.
 fn bind(ctx: &mut LowerCtx<'_>, stmts: &mut Vec<HirStmt>, e: &Expr) -> Option<Expr> {
     // A hole has no expected type: the f-string's own `str` slot is not it.
@@ -765,6 +847,27 @@ fn bind(ctx: &mut LowerCtx<'_>, stmts: &mut Vec<HirStmt>, e: &Expr) -> Option<Ex
     let init = lower_expr(ctx, e);
     ctx.pop_expected();
     if init.ty == HirTy::Unknown {
+        // Dropped without a word, the hole would print nothing. After any
+        // error it is that error's echo (a name it left untyped).
+        let quiet = !ctx
+            .env
+            .sink
+            .diagnostics
+            .borrow()
+            .iter()
+            .any(nabic_diagnostic::NabiDiagnostic::is_error);
+        if quiet {
+            ctx.emit_error_at(
+                Code::TYPE_ANNOTATIONS_NEEDED,
+                e.span,
+                "cannot infer the type of this value".to_owned(),
+            );
+            ctx.help_last(Some(
+                "bind it to a typed `let` first (`let v: i64 = ..;`) and format `v`, or give \
+                 its literals a type (`4i64`)"
+                    .to_owned(),
+            ));
+        }
         return None;
     }
     Some(bind_hir(ctx, stmts, "#f", init, point(e.span)))

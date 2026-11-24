@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout:
+// [1, 2] 2
+// [1, 2] 2 [1]
+// 0 1 1
+// 5 1   5
+
+// Holes are written left to right: a later hole that changes a value
+// does not change what an earlier hole shows (spec 2.10.1).
+fn main() {
+    let xs: List<i32> = [1, 2];
+    println(f"{xs:?} {xs.pop():?}");
+    let ys: List<i32> = [1, 2];
+    let s = f"{ys:?} {ys.pop():?} {ys:?}";
+    println(s);
+    let d: Dict<str, i32> = Dict::new();
+    println(f"{d.len()} {d.entry("a").or_insert(1)} {d.len()}");
+    let n = 5;
+    println(f"{n} {xs.len()} {n:>3}");
+}

@@ -199,7 +199,7 @@ fn ec_key(b: Slice<u8>, curve: EcCurve | none) throws (TlsError) -> PrivateKey {
         none => {},
     }
     if c is none { throw TlsError::certificate("ECPrivateKey without a curve"); }
-    let cv = c ?? EcCurve::P256;
+    let cv = c;
     let sk = try ecdsa::SigningKey::from_bytes(cv, d) catch _ { throw TlsError::certificate("bad EC private key"); };
     PrivateKey { key: KeyKind::Ec(sk) }
 }

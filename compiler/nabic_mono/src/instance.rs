@@ -127,6 +127,27 @@ pub(crate) fn unify_param_ty_with(
                 }
             }
         }
+        // A single-member value fits the sum: `T | none` against `str`
+        // binds `T = str`, unless the value is one of the named members.
+        (nabic_ast::TyKind::Sum(parts), a)
+            if !matches!(a, HirTy::None | HirTy::Unknown | HirTy::Never) =>
+        {
+            let parts: Vec<&nabic_ast::Ty> =
+                parts.iter().map(|p| p.nest_inner().unwrap_or(p)).collect();
+            let (params, fixed): (Vec<&nabic_ast::Ty>, Vec<&nabic_ast::Ty>) =
+                parts.iter().partition(|p| {
+                    matches!(&p.kind, nabic_ast::TyKind::Path(path)
+                        if path.segments.len() == 1
+                            && generic_names.contains(&path.segments[0].name))
+                });
+            let named = fixed.iter().any(|p| match &p.kind {
+                nabic_ast::TyKind::None => false,
+                _ => ctx.resolve_ast_ty(p) == *a,
+            });
+            if let ([param], false) = (params.as_slice(), named) {
+                rec(param, a);
+            }
+        }
         (
             nabic_ast::TyKind::Fn(args, ret, _),
             HirTy::Fn(arg_args, arg_ret, _)

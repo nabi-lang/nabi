@@ -272,9 +272,9 @@ pub(crate) fn narrow_to(
     }
 }
 
-/// Patterns act on a nested sum's outer layer; a catch-all after arms
-/// covering every outer member binds the inner one (`none => .., v => ..`
-/// on `(i32 | none)?` gives `v: i32 | none`).
+/// A catch-all after arms that took some members of a sum binds the
+/// rest (`none => .., v => ..` on `i32 | none` gives `v: i32`; on
+/// `(i32 | none)?`, the inner layer `v: i32 | none`).
 fn inner_layer_binding(
     ctx: &mut LowerCtx<'_>,
     pat: &AstPattern,
@@ -285,29 +285,27 @@ fn inner_layer_binding(
     else {
         return None;
     };
-    if name == "_" || ctx.enum_path(&[name.as_str()]).is_some() {
+    // `_`, a variant, or a bare type name (`str =>`, a type pattern).
+    if name == "_"
+        || ctx.enum_path(&[name.as_str()]).is_some()
+        || bare_type_patterns(ctx, pat, scrut_ty).is_some()
+    {
         return None;
     }
     let mut covered = Vec::new();
     for a in before.iter().filter(|a| a.guard.is_none()) {
         covered_variants(&a.pat, &mut covered);
     }
-    let mut rest =
-        (0..vs.len()).filter(|i| !covered.contains(&u32::try_from(*i).unwrap_or(u32::MAX)));
-    let (i, None) = (rest.next()?, rest.next()) else {
-        return None;
-    };
-    let inner = vs[i].clone();
-    if !matches!(inner, HirTy::Sum(_)) {
+    if covered.is_empty() {
         return None;
     }
-    let local = ctx.declare_bound(name, inner.clone(), pat.span);
-    Some(HirPattern::SumVariant {
-        sum_ty: scrut_ty.clone(),
-        variant_index: u32::try_from(i).expect("variant overflow"),
-        binder: Some(local),
-        payload_ty: Some(inner),
-    })
+    let rest: Vec<usize> = (0..vs.len())
+        .filter(|i| !covered.contains(&u32::try_from(*i).unwrap_or(u32::MAX)))
+        .collect();
+    if rest.is_empty() {
+        return None;
+    }
+    Some(narrow_to(ctx, name, scrut_ty, &rest, pat.span))
 }
 
 /// Matches every value of its type (no refutable sub-pattern).

@@ -1,0 +1,17 @@
+// expect-exit: 0
+// expect-stdout: 2 3 4 0
+
+// `x is none` narrows as `x == none` does (spec 2.2.6): after an early
+// return, in the `else` block, and under `!(x is none)`.
+fn f(v: i32 | none) -> i32 {
+    if v is none { return 0; }
+    v + 1
+}
+
+fn g(v: i32 | none) -> i32 { if v is none { 0 } else { v + 1 } }
+
+fn h(v: i32 | none) -> i32 { if !(v is none) { v + 1 } else { 0 } }
+
+fn main() {
+    println(f"{f(1)} {g(2)} {h(3)} {f(none)}");
+}

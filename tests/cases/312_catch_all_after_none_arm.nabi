@@ -1,0 +1,14 @@
+// expect-exit: 0
+// expect-stdout: 3 0 4 "s" none 15 1
+
+// A catch-all after arms that took some members binds the rest: `v` is
+// `i32` after `none =>` (spec 3.14.10 writes `e?` this way).
+fn a(x: i32 | none) -> i32 { match x { none => 0, v => v } }
+
+fn b(x: i32 | str | none) -> str { match x { none => "none", v => f"{v:?}" } }
+
+fn c(x: i32 | str | none) -> i32 { match x { none => 0, str => 1, v => v + 10 } }
+
+fn main() {
+    println(f"{a(3)} {a(none)} {b(4)} {b("s")} {b(none)} {c(5)} {c("q")}");
+}

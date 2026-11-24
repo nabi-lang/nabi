@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout:
+// false
+// 3
+// 7 true
+
+// A plain value passed to a `T | none` parameter binds `T` to its type
+// (spec 2.6.4).
+fn c<T>(x: T | none) -> bool { x is none }
+
+fn b<T>(x: T | none, d: T) -> T { x ?? d }
+
+fn main() {
+    let s = "x";
+    println(f"{c(s)}");
+    let a: i32 = 3;
+    println(f"{b(a, 0)}");
+    let o: i32 | none = none;
+    println(f"{b(o, 7)} {c(o)}");
+}
