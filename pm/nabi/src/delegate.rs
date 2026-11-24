@@ -324,6 +324,20 @@ pub(crate) fn feature_flags(args: &[String], o: &mut Options) -> Result<Vec<Stri
             }
             _ => match a.strip_prefix("--features=") {
                 Some(v) => o.features.extend(split_features(v)),
+                // `--featurs a`: its value would be read as the path.
+                None if a.starts_with("--")
+                    && !crate::all_flags()
+                        .iter()
+                        .any(|k| k == a.split('=').next().unwrap_or(a)) =>
+                {
+                    let own = ["--features", "--all-features", "--no-default-features"];
+                    let hint =
+                        nabic_core::cli::did_you_mean(a.split('=').next().unwrap_or(a), own, &[]);
+                    if !hint.is_empty() {
+                        return Err(format!("unknown option `{a}`{hint}"));
+                    }
+                    rest.push(a.clone());
+                }
                 None => rest.push(a.clone()),
             },
         }
@@ -498,6 +512,11 @@ pub(crate) fn nabic_command(
     let inv = invocation(g, cmd, pre, post, in_env)?;
     let nabic = toolchain::nabic_for()?;
     let mut c = Command::new(&nabic);
+    // nabic's "did you mean" knows nabi's own flags of the command too.
+    c.env(
+        nabic_core::cli::FRONT_FLAGS_VAR,
+        crate::flags_of(cmd).join("\n"),
+    );
     c.args(&inv.args).args(&inv.tail);
     // The environment's own value wins.
     let (mac, ios) = &inv.deployment;

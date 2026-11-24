@@ -339,6 +339,30 @@ pub const CMD_SYNONYMS: &[(&str, &[&str])] = &[
     ("version", &["ver"]),
 ];
 
+/// The front end's own flags of a command (`nabi run`, its tools),
+/// which an unknown option is also matched against.
+static FLAG_SOURCE: std::sync::OnceLock<fn(&str) -> Vec<String>> = std::sync::OnceLock::new();
+
+/// Register where the flags of the front end's commands come from.
+pub fn set_flag_source(f: fn(&str) -> Vec<String>) {
+    let _ = FLAG_SOURCE.set(f);
+}
+
+/// The variable a front end passes its flags of the command in, one per
+/// line, when it runs nabic as a child.
+pub const FRONT_FLAGS_VAR: &str = "NABI_FRONT_FLAGS";
+
+/// The front end's flags of `cmd` (none outside it).
+#[must_use]
+pub fn front_end_flags(cmd: &str) -> Vec<String> {
+    if let Some(f) = FLAG_SOURCE.get() {
+        return f(cmd);
+    }
+    std::env::var(FRONT_FLAGS_VAR)
+        .map(|v| v.lines().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
 /// "; did you mean `x`?" for `name` among `cands` (synonyms first), or
 /// nothing.
 #[must_use]

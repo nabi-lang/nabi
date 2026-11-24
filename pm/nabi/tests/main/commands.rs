@@ -183,6 +183,29 @@ fn nabic_option_reported_as_nabi() {
         &out,
         "nabi: unexpected argument `extra`: `check` takes one path",
     );
+    // Every command names the closest option: its own, nabi's, the
+    // test harness's (spec 9.10.1).
+    for (args, want) in [
+        (&["run", "--relese"][..], "`--relese`; did you mean `--release`?"),
+        (&["test", "--formt=json"], "`--formt`; did you mean `--format`?"),
+        (&["test", "--show-ouput"], "`--show-ouput`; did you mean `--show-output`?"),
+        (&["bench", "--sampls", "3"], "`--sampls`; did you mean `--samples`?"),
+        (&["check", "--offlin"], "`--offlin`; did you mean `--offline`?"),
+        (&["fmt", "--chek"], "`--chek`; did you mean `--check`?"),
+        (&["run", "--featurs", "a"], "`--featurs`; did you mean `--features`?"),
+        (&["--colour", "never", "version"], "`--colour`; did you mean `--color`?"),
+    ] {
+        let out = nabi(&home, &app, args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        fails(&out, &format!("nabi: unknown option {want}"));
+    }
+    let out = nabi(&home, &app, &["version", "--bogus"]);
+    assert_eq!(out.status.code(), Some(2));
+    fails(&out, "nabi: unknown option `--bogus`");
+    std::fs::write(app.join("s.nabi"), "fn main() {}\n").unwrap();
+    let out = nabi(&home, &app, &["run", "s.nabi", "x"]);
+    assert_eq!(out.status.code(), Some(2));
+    fails(&out, "write `nabi run s.nabi -- x` or `nabi s.nabi x`");
 }
 
 /// `nabi args` in `cwd` with `TERM=xterm` (16 colours) and `vars`; its
