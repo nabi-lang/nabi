@@ -411,6 +411,7 @@ fn lower_expr_inner(ctx: &mut LowerCtx<'_>, expr: &Expr) -> HirExpr {
                     if *other == HirTy::Prim(PrimTy::Str) {
                         str_index_help(ctx, arr, idx);
                     }
+                    tuple_index_help(ctx, other, arr, idx);
                     return e;
                 }
             };
@@ -565,5 +566,13 @@ pub(crate) fn hir_binop(
         },
         ty,
         span,
+    }
+}
+
+/// `t[0]` on a tuple: its parts are fields, `t.0`.
+fn tuple_index_help(ctx: &LowerCtx<'_>, ty: &HirTy, arr: &Expr, idx: &Expr) {
+    if let (HirTy::Tuple(_), ExprKind::Literal(AstLit::Int(n))) = (ty, &idx.kind) {
+        let t = ctx.src(arr.span).unwrap_or("t");
+        ctx.help_last(Some(format!("a tuple's parts are fields: write `{t}.{n}`")));
     }
 }

@@ -547,6 +547,13 @@ pub(crate) fn operand_help(
             ));
         }
     }
+    // `1u64 << n`: the result has the left type; the count converts.
+    if matches!(op, "<<" | ">>") && numeric(lhs.1) && numeric(rhs.1) && lhs.1 != rhs.1 {
+        let to = ctx.ty_name(lhs.1);
+        return Some(format!(
+            "a shift count converts to the shifted value's type: `{l} {op} ({r} as {to})`"
+        ));
+    }
     if numeric(lhs.1) && numeric(rhs.1) && lhs.1 != rhs.1 {
         let name = |t: &HirTy| ctx.ty_name(t);
         let (to_l, to_r) = match widen(ctx, lhs.1, rhs.1) {
@@ -1117,7 +1124,14 @@ pub(crate) fn lower_short_circuit(
         let rhs_h = lower_expr(ctx, rhs);
         return dispatch_user_op(ctx, op, Fixity::Infix, lhs_h, Some(rhs_h), span);
     }
+    let help = (lhs_h.ty != bool_ty)
+        .then(|| crate::lower::suggest::truthy_help(ctx, &lhs_h))
+        .flatten();
+    let since = ctx.env.sink.diagnostics.borrow().len();
     let lhs_h = coerce(ctx, &bool_ty, lhs_h, &|| "the condition".to_owned());
+    if ctx.env.sink.diagnostics.borrow().len() > since {
+        ctx.help_last(help);
+    }
     // `N > 0 && a[N - 1] == x` at `N = 0`: the right side never runs.
     let dead = u32::from(const_cond(ctx, &lhs_h) == Some(op != "&&"));
     ctx.dead += dead;

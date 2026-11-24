@@ -261,9 +261,24 @@ pub(crate) fn check_bound_names(
                     .cloned()
                     .collect()
             };
-            let help = (segs.len() == 1)
-                .then(|| names.import_help(module, keys(), |k| names.type_vis(k)))
-                .flatten();
+            // `core::ops::Index`: the trait of that name lives elsewhere.
+            let leaf = segs.last().copied().unwrap_or_default();
+            let elsewhere = || {
+                let found: Vec<&String> = names
+                    .traits
+                    .iter()
+                    .filter(|t| leaf_name(t) == leaf)
+                    .collect();
+                match found.as_slice() {
+                    [one] => Some(format!("`{leaf}` is `{one}`: write that, or `use {one};`")),
+                    _ => None,
+                }
+            };
+            let help = if segs.len() == 1 {
+                names.import_help(module, keys(), |k| names.type_vis(k))
+            } else {
+                elsewhere()
+            };
             pre_diags.push(match help {
                 Some(h) => d.with_help(h),
                 None => d,

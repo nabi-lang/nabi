@@ -390,7 +390,7 @@ pub(crate) fn lower_for_iter(
     let try_iter = ctx.lang("try_iterator_trait");
     let is_try = !has_into_iter && !try_iter.is_empty() && ctx.has_trait(&iter_h.ty, try_iter);
     if !has_into_iter && !is_try {
-        return ctx.error_expr(
+        let e = ctx.error_expr(
             Code::NOT_ITERABLE,
             span,
             format!(
@@ -400,6 +400,14 @@ pub(crate) fn lower_for_iter(
                 ctx.ty_name(&iter_h.ty)
             ),
         );
+        if iter_h.ty == HirTy::Prim(PrimTy::Str) {
+            let s = ctx.src(iter_h.span).unwrap_or("s");
+            ctx.help_last(Some(format!(
+                "a `str` is iterated by what you want of it: `{s}.chars()`, `{s}.bytes()` or \
+                 `{s}.lines()`"
+            )));
+        }
+        return e;
     }
     if is_try && ctx.try_depth == 0 && iter_h.ty != HirTy::Unknown {
         let t = ctx.ty_name(&iter_h.ty);

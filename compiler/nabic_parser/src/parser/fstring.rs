@@ -54,7 +54,11 @@ impl Parser<'_> {
         let span = self.peek_span();
         self.bump();
         if self.eat(&TokenKind::HoleEnd) {
-            self.error(Code::FSTRING_SYNTAX, span, "empty `{}` in f-string");
+            // Nabi's hole syntax in the text, not a Rust format argument.
+            #[allow(clippy::literal_string_with_formatting_args)]
+            let help = "put the value in the hole: `f\"{x}\"` (values are not passed after the \
+                        string)";
+            self.error_help(Code::FSTRING_SYNTAX, span, "empty `{}` in f-string", help);
             return None;
         }
         let expr = self.with_struct_expr(true, Self::parse_expr);

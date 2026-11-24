@@ -43,10 +43,8 @@ pub(crate) fn check_impl_rules(
             && target_package(env, i, &module).as_deref() != Some(pkg)
             && !local_type_first(env, i, tp, &module, pkg)
         {
-            env.sink
-                .diagnostics
-                .borrow_mut()
-                .push(nabic_diagnostic::NabiDiagnostic::error(
+            env.sink.diagnostics.borrow_mut().push(
+                nabic_diagnostic::NabiDiagnostic::error(
                     Code::ORPHAN_IMPL,
                     i.span,
                     format!(
@@ -55,7 +53,23 @@ pub(crate) fn check_impl_rules(
                         leaf_name(&key),
                         impl_def_display(&i.self_ty)
                     ),
-                ));
+                )
+                .with_help(format!(
+                    "wrap the type in one of this package's: `struct My{w}({t});` and \
+                     `impl {} for My{w} {{ .. }}`",
+                    leaf_name(&key),
+                    t = impl_def_display(&i.self_ty),
+                    w = leaf_name(&impl_def_display(&i.self_ty))
+                        .split(['<', '(', ' '])
+                        .next()
+                        .map(|w| {
+                            let mut c = w.chars();
+                            c.next()
+                                .map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+                        })
+                        .unwrap_or_default()
+                )),
+            );
             continue;
         }
         // The library's tiers are one package: core implements bare's

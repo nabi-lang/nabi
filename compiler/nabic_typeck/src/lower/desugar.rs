@@ -261,7 +261,7 @@ pub(crate) fn desugar_try_q(
     };
     let ret_ty = ctx.fn_ret_ty.clone();
     if optional_parts(&ret_ty).is_none() {
-        return ctx.error_expr(
+        let e = ctx.error_expr(
             Code::OPTIONAL_OPERATOR,
             span,
             format!(
@@ -270,6 +270,12 @@ pub(crate) fn desugar_try_q(
                 ctx.ty_name(&ret_ty)
             ),
         );
+        // A script's top level (or `main`) cannot return `none`: unwrap here.
+        let x = crate::lower::suggest::short_src(ctx, inner.span).unwrap_or("x");
+        ctx.help_last(Some(format!(
+            "or handle `none` here: `let v = {x} else {{ return; }};`, or `{x} ?? default`"
+        )));
+        return e;
     }
     let value_ty = without_none(&some);
     let ret = lower_return(ctx, Some(sum_none(&ret_ty, span)), span);
@@ -601,6 +607,21 @@ pub(crate) fn bind_irrefutable(
                     ctx.ty_name(&ty)
                 ),
             );
+            // `let A(x) = e;`: a test, which `let .. else` makes (spec 3.16).
+            let whole = nabic_diagnostic::Span {
+                end: span.start,
+                ..pat.span
+            };
+            let p = ctx
+                .src(whole)
+                .filter(|_| whole.file == span.file && whole.start < span.start)
+                .map(|t| t.trim_end().trim_end_matches('=').trim_end());
+            if let (Some(p), Some(v)) = (p, ctx.src(span)) {
+                ctx.help_last(Some(format!(
+                    "to test it, say what happens otherwise: `let {p} = {v} else {{ .. }};`, or \
+                     `match`"
+                )));
+            }
         }
     }
 }

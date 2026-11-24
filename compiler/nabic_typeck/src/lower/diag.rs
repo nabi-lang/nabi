@@ -48,7 +48,11 @@ impl<'a> LowerCtx<'a> {
         let mut diags = self.env.sink.diagnostics.borrow_mut();
         if diags.len() > since {
             if let Some(d) = diags.last_mut().filter(|d| d.is_error()) {
-                d.notes.push(format!("help: {help}"));
+                // One "may be none" help is enough (a mismatch already said it).
+                let none = |n: &str| n.contains(" may be none") || n.contains(" may be `none`");
+                if !(none(&help) && d.notes.iter().any(|n| none(n))) {
+                    d.notes.push(format!("help: {help}"));
+                }
             }
         }
     }

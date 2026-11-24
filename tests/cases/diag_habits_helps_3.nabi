@@ -1,0 +1,12 @@
+// expect-error: 9:14: the length of `[v; N]` must be a non-negative compile-time integer
+// expect-error: help: an array's length is fixed when it compiles; for `n` known at run time, make a list: `List::filled(n, 0)`
+// expect-error: 11:13: operator `<<` cannot be applied to `u64` and `i64`
+// expect-error: help: a shift count converts to the shifted value's type: `1u64 << (k as u64)`
+
+fn main() {
+    let n = 3usize;
+    // A runtime length, and a shift count of another type.
+    let xs = [0; n];
+    let k = 3i64;
+    let y = 1u64 << k;
+}

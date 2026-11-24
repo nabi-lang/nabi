@@ -569,6 +569,45 @@ pub(crate) fn lower_nd_literal(
     lower_expected(ctx, &call, expected)
 }
 
+/// How to make a list of `len` elements `value`: `List::filled` copies a
+/// plain value; a list or other shared value gets a new one each time,
+/// which only a loop makes.
+fn repeat_list_help(
+    ctx: &LowerCtx<'_>,
+    value: &Expr,
+    len: &nabic_ast::ConstExpr,
+) -> Option<String> {
+    let v = ctx.src(value.span)?;
+    let n = match len {
+        nabic_ast::ConstExpr::Expr(x) => ctx.src(x.span)?.to_owned(),
+        nabic_ast::ConstExpr::Literal(AstLit::Int(t)) => t.clone(),
+        nabic_ast::ConstExpr::Path(p) => p
+            .segments
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::"),
+        nabic_ast::ConstExpr::Literal(_) => return None,
+    };
+    let shared = matches!(
+        value.kind,
+        ExprKind::List(_)
+            | ExprKind::Dict(_)
+            | ExprKind::Set(_)
+            | ExprKind::Call { .. }
+            | ExprKind::MethodCall { .. }
+            | ExprKind::StructInit { .. }
+    );
+    Some(if shared {
+        format!(
+            "make a list with a new `{v}` in each place: `let xs = []; for _ in 0..{n} {{ \
+             xs.push({v}); }}` (`List::filled` would share one)"
+        )
+    } else {
+        format!("make a list: `List::filled({n}, {v})`")
+    })
+}
+
 /// `[v; N]`: `v` evaluated once, then copied into each element (one node
 /// per element up to `REPEAT_UNROLL`, a fill loop beyond). An element a
 /// bitwise copy does not duplicate gets `v.clone()` in elements `0..N-1`
@@ -584,6 +623,18 @@ pub(crate) fn lower_array_repeat(
         Some(HirTy::Array(e, _)) => (**e).clone(),
         _ => HirTy::Unknown,
     };
+    // `let xs: List<T> = [v; 3];`: `[v; N]` is a fixed array.
+    if let Some(want @ HirTy::Struct(_)) = ctx.current_expected().cloned() {
+        if ctx.ty_name(&want).starts_with("List<") {
+            let e = ctx.error_expr(
+                Code::MISMATCHED_TYPES,
+                span,
+                format!("`[v; N]` is a fixed array, not a `{}`", ctx.ty_name(&want)),
+            );
+            ctx.help_last(repeat_list_help(ctx, value, len));
+            return e;
+        }
+    }
     let v = lower_expected(ctx, value, elem_hint.clone());
     let v = if elem_hint == HirTy::Unknown {
         v
@@ -605,7 +656,16 @@ pub(crate) fn lower_array_repeat(
                     .to_owned(),
             ));
         } else if let nabic_ast::ConstExpr::Expr(x) = len {
-            ctx.help_last(crate::lower::consteval::layout_help(ctx, x));
+            // A length known at run time is a list's.
+            let help = crate::lower::consteval::layout_help(ctx, x).or_else(|| {
+                let n = ctx.src(x.span)?;
+                let make = repeat_list_help(ctx, value, len)?;
+                Some(format!(
+                    "an array's length is fixed when it compiles; for `{n}` known at run time, \
+                     {make}"
+                ))
+            });
+            ctx.help_last(help);
         }
         return e;
     };

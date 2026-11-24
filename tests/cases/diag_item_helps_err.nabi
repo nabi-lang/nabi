@@ -1,0 +1,15 @@
+// expect-error: 9:1: `impl Display for i32`: neither the trait nor the type is defined in this package (orphan rule)
+// expect-error: help: wrap the type in one of this package's: `struct MyI32(i32);` and `impl Display for MyI32 { .. }`
+// expect-error: enum `C` mixes value variants (`V = n`) with other variants
+// expect-error: help: give every variant a value (`A = 0, B = 5, C = 6`), or none
+
+// Item errors say what to write instead.
+use core::fmt::{Display, Formatter, FmtError};
+
+impl Display for i32 {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { }
+}
+
+enum C { Red, Green = 5, Blue }
+
+fn main() {}

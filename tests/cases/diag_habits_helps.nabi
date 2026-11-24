@@ -1,0 +1,20 @@
+// expect-error: 14:8: mismatched types: the condition expects `bool`, found `i64`
+// expect-error: help: Nabi has no truthiness: write `n != 0`
+// expect-error: 15:8: mismatched types: the condition expects `bool`, found `i32`
+// expect-error: help: Nabi has no truthiness: write `m != 0`
+// expect-error: 16:5: cannot iterate over a value of type `str`
+// expect-error: help: a `str` is iterated by what you want of it: `"abc".chars()`
+// expect-error: 18:13: cannot index into a value of type `(i64, i64)`
+// expect-error: help: a tuple's parts are fields: write `t.0`
+
+// Habits from other languages get an error that says what to write.
+fn main() {
+    let n = 1;
+    let m: i32 = 1;
+    if n { }
+    if m && true { }
+    for c in "abc" { }
+    let t = (1, 2);
+    let v = t[0];
+}
+

@@ -1,0 +1,8 @@
+// expect-error: 6:6: cannot find trait `core::ops::Index` (named in an impl)
+// expect-error: help: `Index` is `core::index::Index`: write that, or `use core::index::Index;`
+// expect-error: impl of `Index` for `S` is missing associated type `Output`
+
+struct S {}
+impl core::ops::Index for S {}
+
+fn main() {}
