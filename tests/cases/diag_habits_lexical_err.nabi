@@ -1,0 +1,9 @@
+// expect-error: 7:14: numeric literal cannot end with `_`
+// expect-error: help: a suffix follows the digits directly: `1u8`
+// expect-error: 8:13: char literal must contain exactly one code point
+// expect-error: help: a string uses double quotes: `"hello"`
+
+fn main() {
+    let x = 1_u8;
+    let s = 'hello';
+}

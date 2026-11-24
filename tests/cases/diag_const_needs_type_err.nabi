@@ -1,0 +1,6 @@
+// expect-error: 4:9: expected `:`, found `=`: a `const` says its type
+// expect-error: help: write it before the `=`: `const X: i64 = ..;`
+
+const X = 5;
+
+fn main() {}

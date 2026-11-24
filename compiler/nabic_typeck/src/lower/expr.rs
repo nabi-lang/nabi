@@ -411,6 +411,12 @@ fn lower_expr_inner(ctx: &mut LowerCtx<'_>, expr: &Expr) -> HirExpr {
                     if *other == HirTy::Prim(PrimTy::Str) {
                         str_index_help(ctx, arr, idx);
                     }
+                    // `t[0]` on a tuple: its parts are fields.
+                    if let (HirTy::Tuple(_), ExprKind::Literal(AstLit::Int(n))) = (other, &idx.kind)
+                    {
+                        let t = ctx.src(arr.span).unwrap_or("t");
+                        ctx.help_last(Some(format!("a tuple's parts are fields: write `{t}.{n}`")));
+                    }
                     return e;
                 }
             };

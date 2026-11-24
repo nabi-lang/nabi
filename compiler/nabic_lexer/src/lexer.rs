@@ -1494,6 +1494,28 @@ impl<'src> Lexer<'src> {
             (msg.to_owned(), start, start + unders(0))
         } else if run.ends_with('_') {
             let at = start + run.trim_end_matches('_').len();
+            // `1_u8`: the suffix follows the digits directly.
+            let rest = &self.src[self.pos..];
+            let suffix = INT_SUFFIXES
+                .iter()
+                .chain(FLOAT_SUFFIXES)
+                .filter(|s| rest.starts_with(**s))
+                .max_by_key(|s| s.len());
+            if let Some(sfx) = suffix {
+                let digits = &self.src[lit_start..at];
+                let span = self.span_at(at, self.pos);
+                let d = NabiDiagnostic::error(
+                    Code::MALFORMED_NUMBER,
+                    span,
+                    "numeric literal cannot end with `_`",
+                )
+                .with_file(self.file.clone())
+                .with_help(format!(
+                    "a suffix follows the digits directly: `{digits}{sfx}`"
+                ));
+                self.diagnostics.push(d);
+                return;
+            }
             (
                 "numeric literal cannot end with `_`".to_owned(),
                 at,
@@ -1648,11 +1670,21 @@ impl<'src> Lexer<'src> {
                             );
                         }
                     }
-                    _ => self.error_from(
-                        Code::CHAR_LITERAL_LENGTH,
-                        lit_start,
-                        "char literal must contain exactly one code point",
-                    ),
+                    (first, _) => {
+                        self.error_from(
+                            Code::CHAR_LITERAL_LENGTH,
+                            lit_start,
+                            "char literal must contain exactly one code point",
+                        );
+                        // `'hello'` (Python, JS): text is a string.
+                        if first.is_some() && prefix.is_none() {
+                            if let Some(d) = self.diagnostics.pop() {
+                                self.diagnostics.push(d.with_help(format!(
+                                    "a string uses double quotes: `\"{body}\"`"
+                                )));
+                            }
+                        }
+                    }
                 }
             }
         }

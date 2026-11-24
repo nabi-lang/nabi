@@ -525,7 +525,9 @@ pub(crate) fn check_fn_body(
             if !matches!(ret, HirTy::Unit | HirTy::Unknown) && !hir_block_diverges(&block) {
                 // `fn f() -> i32 { a + b; }`: the `;` drops the value.
                 let last = match block.stmts.last() {
-                    Some(HirStmt::Expr(e)) if e.ty == ret => ctx.src(e.span).map(|t| (e.span, t)),
+                    Some(HirStmt::Expr(e)) if e.ty == ret || literal_fits(ctx, e, &ret) => {
+                        ctx.src(e.span).map(|t| (e.span, t))
+                    }
                     _ => None,
                 };
                 if let Some((at, text)) = last {
@@ -547,6 +549,15 @@ pub(crate) fn check_fn_body(
         }
     }
     block
+}
+
+/// `1;` in `fn f() -> i32`: a number literal the return type would take.
+fn literal_fits(ctx: &LowerCtx<'_>, e: &HirExpr, ret: &HirTy) -> bool {
+    let ty = crate::lower::infer::zonk(ctx, &e.ty);
+    let (HirExprKind::Const(_), HirTy::Prim(a), HirTy::Prim(b)) = (&e.kind, &ty, ret) else {
+        return false;
+    };
+    a.is_int() && b.is_int() || a.is_float() && b.is_float()
 }
 
 /// Names `body` binds exactly once and writes exactly once as a path

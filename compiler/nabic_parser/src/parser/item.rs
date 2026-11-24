@@ -325,7 +325,7 @@ impl Parser<'_> {
             self.expected_name(s, "const name");
             return None;
         };
-        self.expect(&TokenKind::Colon, "`:`")?;
+        self.item_type_colon("const", &name)?;
         let ty = self.parse_type()?;
         self.expect(&TokenKind::Eq, "`=`")?;
         let value = self.parse_expr()?;
@@ -338,6 +338,22 @@ impl Parser<'_> {
             value,
             span: start,
         })
+    }
+
+    /// The `:` of `const NAME: T` / `static NAME: T`; `const X = 5;`
+    /// (no type) says to write one.
+    fn item_type_colon(&mut self, kw: &str, name: &str) -> Option<()> {
+        if matches!(self.peek(), TokenKind::Eq) {
+            let s = self.peek_span();
+            self.error_help(
+                Code::SYNTAX,
+                s,
+                format!("expected `:`, found `=`: a `{kw}` says its type"),
+                format!("write it before the `=`: `{kw} {name}: i64 = ..;` (or `: str`, ..)"),
+            );
+            return None;
+        }
+        self.expect(&TokenKind::Colon, "`:`").map(|_| ())
     }
 
     /// `static [mut] NAME: T = expr;` - a module-level global.
@@ -369,7 +385,7 @@ impl Parser<'_> {
             self.expected_name(s, "static name");
             return None;
         };
-        self.expect(&TokenKind::Colon, "`:`")?;
+        self.item_type_colon("static", &name)?;
         let ty = self.parse_type()?;
         let value = if self.eat(&TokenKind::Eq) {
             Some(self.parse_expr()?)

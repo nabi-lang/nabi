@@ -605,7 +605,15 @@ pub(crate) fn lower_array_repeat(
                     .to_owned(),
             ));
         } else if let nabic_ast::ConstExpr::Expr(x) = len {
-            ctx.help_last(crate::lower::consteval::layout_help(ctx, x));
+            // A length known at run time is a list's.
+            let help = crate::lower::consteval::layout_help(ctx, x).or_else(|| {
+                let (v, n) = (ctx.src(value.span)?, ctx.src(x.span)?);
+                Some(format!(
+                    "an array's length is fixed when it compiles; for `{n}` known at run time, \
+                     make a list: `List::filled({n}, {v})`"
+                ))
+            });
+            ctx.help_last(help);
         }
         return e;
     };

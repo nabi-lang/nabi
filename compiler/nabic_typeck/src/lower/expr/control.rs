@@ -242,6 +242,28 @@ pub(crate) fn lower_if(
         span,
     };
     let Some(else_e) = else_branch else {
+        // `let x: i32 = if c { 1 };`: a value is wanted, and without
+        // `else` there is none when `c` is false.
+        let wants = ctx
+            .current_expected()
+            .is_some_and(|t| !matches!(t, HirTy::Unit | HirTy::Unknown | HirTy::Never));
+        let gives = then_h
+            .trailing
+            .as_ref()
+            .is_some_and(|t| !matches!(t.ty, HirTy::Unit | HirTy::Never));
+        if wants && gives {
+            rejoin_unnarrowings(ctx, ended);
+            let e = ctx.error_expr(
+                Code::MISMATCHED_TYPES,
+                span,
+                "this `if` has no `else`, so it has no value when its condition is false"
+                    .to_owned(),
+            );
+            ctx.help_last(Some(
+                "add an `else` branch: `if c { .. } else { .. }`".to_owned(),
+            ));
+            return e;
+        }
         // No else: the if is a statement; any then-value is discarded.
         rejoin_unnarrowings(ctx, ended);
         return build(cond_h, then_h, None, HirTy::Unit);

@@ -561,7 +561,9 @@ fn has_method(ctx: &LowerCtx<'_>, ty: &HirTy, name: &str) -> bool {
 /// Nabi has no truthiness: the test Python's `if x:` means for `c`.
 pub(crate) fn truthy_help(ctx: &LowerCtx<'_>, c: &HirExpr) -> Option<String> {
     let x = ctx.src(c.span).unwrap_or("x");
-    let test = match &c.ty {
+    // An open literal (`let n = 1;`) holds a number.
+    let ty = crate::lower::infer::zonk(ctx, &c.ty);
+    let test = match &ty {
         HirTy::Sum(ms) if ms.contains(&HirTy::None) => format!("{x} != none"),
         HirTy::Prim(p) if p.is_int() => format!("{x} != 0"),
         HirTy::Prim(p) if p.is_float() => format!("{x} != 0.0"),

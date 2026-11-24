@@ -1,0 +1,6 @@
+// expect-error: 5:15: empty `{}` in f-string
+// expect-error: help: put the value in the hole: `f"{x}"`
+
+fn main() {
+    let s = f"{}";
+}
