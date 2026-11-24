@@ -340,8 +340,13 @@ fn scripts_use_their_blocks() {
     ok(&nabi(&home, &root, &["init", "--script", "app/hi.nabi"]));
     assert_eq!(
         read(&app.join("nabi.nabion")),
-        "Package {\n    name: \"hi\",\n    version: \"0.1.0\",\n    deps: { \"greet\": \
-         Dep::path(\"../greet\"), \"util\": Dep::path(\"../util\") },\n}\n"
+        format!(
+            "Package {{\n    name: \"hi\",\n    version: \"0.1.0\",\n    nabi_version: \"{}\",\n    \
+             toolchain: \"{}\",\n    deps: {{ \"greet\": Dep::path(\"../greet\"), \"util\": \
+             Dep::path(\"../util\") }},\n}}\n",
+            nabi_version(),
+            series()
+        )
     );
     assert!(!app.join("hi.nabi").exists() && !app.join("helper").exists());
     assert_eq!(read(&app.join("src/helper.nabi")), helper);

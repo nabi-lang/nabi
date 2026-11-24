@@ -572,7 +572,7 @@ impl FromStr for Float {
     fn from_str(s: str) throws (ParseError) -> Float {
         match Float::parse_decimal(s) {
             v: Float => v,
-            none => throw ParseError::new(s, 0, "invalid float literal"),
+            none => throw ParseError::new(s, pkg::str::bad_float_at(s), "invalid float literal"),
         }
     }
 }

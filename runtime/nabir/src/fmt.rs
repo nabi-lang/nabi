@@ -465,7 +465,7 @@ pub mod tests {
         assert_eq!(fmt(".2f", &int(3, 1, 32)), "<3.00");
         let float = |v: f64| move |t: NabiStr, fl: u64, co: u64| nabi_fmt_f64(t, fl, co, v, 0);
         assert_eq!(fmt("10.4", &float(core::f64::consts::PI)), "<    3.1416");
-        assert_eq!(fmt("08", &float(f64::INFINITY)), "<inf     ");
+        assert_eq!(fmt("08", &float(f64::INFINITY)), "<     inf");
         let pad = |t: NabiStr, fl: u64, co: u64| {
             let start = nabi_fmt_len(t);
             let t = nabi_fmt_str(t, s("héllo world"));

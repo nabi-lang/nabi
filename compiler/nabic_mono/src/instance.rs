@@ -1114,11 +1114,7 @@ pub(crate) fn check_call_bounds(
                         crate::lower::expr::sum_order_help()
                     )));
                 }
-                if crate::lower::expr::is_order_trait(ctx, &want.path)
-                    && matches!(concrete, HirTy::Prim(p) if p.is_float())
-                {
-                    ctx.help_last(Some(float_order_help(&ctx.display_path(&fn_def.name))));
-                }
+                float_bound_help(ctx, &want.path, concrete, &fn_def.name);
                 // `int` / `float` into a float rounds, so it is no `From`.
                 let to = ctx.ty_name(concrete);
                 let from = ctx.trait_name(&want);
@@ -1144,6 +1140,32 @@ pub(crate) fn check_call_bounds(
         }
     }
     met
+}
+
+/// A float that misses `Ord` or `Hash` (NaN): what to write instead.
+fn float_bound_help(ctx: &LowerCtx<'_>, want: &str, concrete: &HirTy, fn_name: &str) {
+    let HirTy::Prim(p) = concrete else {
+        return;
+    };
+    if !p.is_float() {
+        return;
+    }
+    if crate::lower::expr::is_order_trait(ctx, want) {
+        ctx.help_last(Some(float_order_help(&ctx.display_path(fn_name))));
+    }
+    // `Set<f64>` / `Dict<f64, _>`: NaN breaks equality, so keys go in by
+    // their bits.
+    if leaf_name(want) == "Hash" {
+        let bits = if ctx.ty_name(concrete) == "f32" {
+            32
+        } else {
+            64
+        };
+        ctx.help_last(Some(format!(
+            "floats are not `Hash`, since NaN is not equal to itself; key by the bits \
+             instead: `x.to_bits()` (a `u{bits}`)"
+        )));
+    }
 }
 
 /// Floats are not ordered (NaN), so `fn_name` needing an order gets the

@@ -1354,12 +1354,25 @@ pub(crate) fn pick_method_in<'e>(
                 ctx.ty_name(ty),
             ));
         }
+        // The call as it is written: the trait's full path (not every one
+        // is in scope), `ref` for a `ref self`, `..` for the other
+        // arguments.
+        let key = cands[0].0.unwrap_or_default();
+        let decl = ctx.env.trait_of(key).and_then(|i| i.decls.get(method));
+        let recv = match decl.and_then(|d| d.params.first()) {
+            Some(p) if p.by_ref => "ref x",
+            _ => "x",
+        };
+        let more = if decl.is_some_and(|d| d.params.len() > 1) {
+            ", .."
+        } else {
+            ""
+        };
         return Err(format!(
             "method `{method}` on `{}` is ambiguous: traits {} all provide it - call it as \
-             `Trait::{method}(x)` (e.g. `{}::{method}(x)`)",
+             `Trait::{method}(x)` (e.g. `{key}::{method}({recv}{more})`)",
             ctx.ty_name(ty),
             traits.join(", "),
-            leaf(cands[0].0.unwrap_or_default())
         ));
     }
     Ok(cands.first().map(|(_, p)| *p))

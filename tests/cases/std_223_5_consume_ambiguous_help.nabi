@@ -1,0 +1,12 @@
+// expect-error: 11:5: method `consume` on `Cursor<str>` is ambiguous: traits `core::io::AsyncBufRead`, `core::io::BufRead` all provide it - call it as `Trait::consume(x)` (e.g. `core::io::BufRead::consume(ref x, ..)`)
+// forbid-error: (e.g. `BufRead::consume(x)`)
+
+// The help writes a call that compiles: the trait's full path and
+// `ref` for a `ref self`.
+use core::io;
+
+fn main() throws {
+    let c = io::Cursor::new("abcd");
+    let _ = try c.fill_buf();
+    c.consume(1);
+}

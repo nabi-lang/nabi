@@ -541,7 +541,14 @@ impl Dir {
             return meta.len();
         }
         let dst = try self.create(to, CreateFlags { permissions: meta.permissions() })
-            catch e { try src.close() catch _ {}; throw e; };
+            catch e {
+                try src.close() catch _ {};
+                if e.kind() == IoErrorKind::IsADirectory {
+                    let t = self.shown(b);
+                    throw IoError::new(IoErrorKind::IsADirectory, f"{t}: is a directory: copy names the new file, `{t}/<name>`");
+                }
+                throw e;
+            };
         let n = unsafe { nabi_os_copy_fd(src.fd(), dst.fd()) };
         let perm = unsafe { nabi_os_fchmod(dst.fd(), meta.mode) };
         try src.close() catch _ {};

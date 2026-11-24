@@ -123,7 +123,7 @@ impl Int {
             let st = nabi_str_parse_int(s, radix, 1, 64u32, out);
             if st == 0 { return Int::from_i64(out[0]); }
             if st == 1 { throw ParseError::new(s, 0, "empty string"); }
-            if st != 3 { throw ParseError::new(s, 0, "invalid digit"); }
+            if st != 3 { throw ParseError::new(s, pkg::str::bad_digit_at(s, radix), "invalid digit"); }
             // Past `i64`: the checked digits, by halves over the powers
             // pw[j] = chunk^(2^j).
             let bs = s.as_bytes();

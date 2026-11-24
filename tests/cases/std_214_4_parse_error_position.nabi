@@ -1,0 +1,16 @@
+// expect-exit: 0
+// expect-stdout:
+// 2 1 1 2 2 0 0
+// 0 3 2 0 3
+
+// `ParseError::position` is the byte where parsing failed (spec 2.14.4).
+fn pos_i(s: str) -> usize { try s.parse::<i32>() catch e { return e.position(); }; 999 }
+
+fn pos_u(s: str) -> usize { try s.parse::<u8>() catch e { return e.position(); }; 999 }
+
+fn pos_f(s: str) -> usize { try s.parse::<f64>() catch e { return e.position(); }; 999 }
+
+fn main() {
+    println(f"{pos_i("12a")} {pos_i("1_000")} {pos_i("0x10")} {pos_i("99x9")} {pos_i("-5z")} {pos_i("")} {pos_i("99999999999")}");
+    println(f"{pos_u("-1")} {pos_f("1.5x")} {pos_f("1e")} {pos_f("abc")} {pos_f("1.2.3")}");
+}

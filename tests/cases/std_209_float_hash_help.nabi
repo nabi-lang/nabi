@@ -1,0 +1,6 @@
+// expect-error: 5:23: type `f64` does not satisfy trait bound `Hash` required by `Set::new`
+// expect-error: help: floats are not `Hash`, since NaN is not equal to itself; key by the bits instead: `x.to_bits()` (a `u64`)
+
+fn main() {
+    let s: Set<f64> = Set::new();
+}
