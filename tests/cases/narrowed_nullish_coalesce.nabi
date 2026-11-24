@@ -1,0 +1,27 @@
+// `??` on an optional local still compiles inside its narrowing.
+
+fn pick(t: i32 | none, vs: List<i32>) -> i32 {
+    let dt: i32 | none = t;
+    for v in vs {
+        if dt is none {
+            dt = v;
+        } else if dt != v {
+            let a = dt ?? v;
+            dt = a + v;
+        }
+    }
+    dt ?? 0
+}
+
+fn main() {
+    println(f"{pick(none, [1, 2, 2])}");
+    let x: str | none = "a";
+    if x != none {
+        println(x ?? "b");
+    }
+}
+
+// expect-exit: 0
+// expect-stdout:
+// 5
+// a
