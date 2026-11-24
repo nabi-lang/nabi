@@ -283,7 +283,9 @@ grep -q "SHA256SUMS.minisig does not verify" "$tmp/out" || fail "another key: $(
 [ ! -s "$tmp/gh.log" ] || fail "gh ran for a set signed with another key"
 echo "ok        a set signed with another key stops the release"
 cp "$d/SHA256SUMS" "$tmp/sums"
-sed '1s/^./0/' "$tmp/sums" > "$d/SHA256SUMS"
+# Flip the first digit: a fixed one is a no-op when the sum starts with it.
+awk 'NR == 1 { $0 = (substr($0, 1, 1) == "0" ? "1" : "0") substr($0, 2) } 1' "$tmp/sums" > "$d/SHA256SUMS"
+cmp -s "$tmp/sums" "$d/SHA256SUMS" && fail "the altered SHA256SUMS is unchanged"
 if publish 0.1.0; then
   fail "release/publish.sh --publish took an altered SHA256SUMS"
 fi
