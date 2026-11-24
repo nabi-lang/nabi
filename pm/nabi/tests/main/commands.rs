@@ -186,14 +186,35 @@ fn nabic_option_reported_as_nabi() {
     // Every command names the closest option: its own, nabi's, the
     // test harness's (spec 9.10.1).
     for (args, want) in [
-        (&["run", "--relese"][..], "`--relese`; did you mean `--release`?"),
-        (&["test", "--formt=json"], "`--formt`; did you mean `--format`?"),
-        (&["test", "--show-ouput"], "`--show-ouput`; did you mean `--show-output`?"),
-        (&["bench", "--sampls", "3"], "`--sampls`; did you mean `--samples`?"),
-        (&["check", "--offlin"], "`--offlin`; did you mean `--offline`?"),
+        (
+            &["run", "--relese"][..],
+            "`--relese`; did you mean `--release`?",
+        ),
+        (
+            &["test", "--formt=json"],
+            "`--formt`; did you mean `--format`?",
+        ),
+        (
+            &["test", "--show-ouput"],
+            "`--show-ouput`; did you mean `--show-output`?",
+        ),
+        (
+            &["bench", "--sampls", "3"],
+            "`--sampls`; did you mean `--samples`?",
+        ),
+        (
+            &["check", "--offlin"],
+            "`--offlin`; did you mean `--offline`?",
+        ),
         (&["fmt", "--chek"], "`--chek`; did you mean `--check`?"),
-        (&["run", "--featurs", "a"], "`--featurs`; did you mean `--features`?"),
-        (&["--colour", "never", "version"], "`--colour`; did you mean `--color`?"),
+        (
+            &["run", "--featurs", "a"],
+            "`--featurs`; did you mean `--features`?",
+        ),
+        (
+            &["--colour", "never", "version"],
+            "`--colour`; did you mean `--color`?",
+        ),
     ] {
         let out = nabi(&home, &app, args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
