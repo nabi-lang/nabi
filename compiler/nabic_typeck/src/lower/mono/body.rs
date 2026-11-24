@@ -304,10 +304,58 @@ pub fn lower_fn_with(
             ..nabic_ir_common::FnFacts::default()
         },
     };
+    // `-> some Iterator<Item = i32>` returning `0..3`: the open literals
+    // of the value take the item type, not their default (spec 1.6.3).
+    if let (Some(tys), Some(w)) = (ret_tys.as_deref(), opaque_numeric_item(&ctx, fn_def)) {
+        for t in tys {
+            bind_open_literals(&ctx, t, &w);
+        }
+    }
     if let Some(s) = scope {
         crate::lower::infer::close_scope(&ctx, s, &mut f, ret_tys);
     }
     f
+}
+
+/// `W` of a `-> some Tr<Item = W>` bound, when it is a number type.
+fn opaque_numeric_item(ctx: &LowerCtx<'_>, fn_def: &FnDef) -> Option<HirTy> {
+    let bounds = crate::lower::mono::opaque_bounds(fn_def)?;
+    bounds.iter().find_map(|b| {
+        let nabic_ast::TyKind::Path(p) = &b.kind else {
+            return None;
+        };
+        p.segments
+            .last()?
+            .generics
+            .iter()
+            .find_map(|g| match &g.kind {
+                nabic_ast::TyKind::Binding(name, t) if name == "Item" => {
+                    let w = ctx.resolve_ast_ty(t);
+                    matches!(&w, HirTy::Prim(p) if p.is_int() || p.is_float()).then_some(w)
+                }
+                _ => None,
+            })
+    })
+}
+
+/// Give every open literal in `t` the type `w` (of its own kind).
+fn bind_open_literals(ctx: &LowerCtx<'_>, t: &HirTy, w: &HirTy) {
+    let rec = |t: &HirTy| bind_open_literals(ctx, t, w);
+    match t {
+        HirTy::Var(_) => {
+            let same_kind = |a: PrimTy, b: &HirTy| matches!(b, HirTy::Prim(b) if a.is_int() && b.is_int() || a.is_float() && b.is_float());
+            if let Some((_, p)) = crate::lower::infer::open_literal(ctx, t) {
+                if same_kind(p, w) {
+                    crate::lower::infer::unify(ctx, t, w);
+                }
+            }
+        }
+        HirTy::Struct(id) => ctx.struct_def(*id).generic_args.iter().for_each(rec),
+        HirTy::Enum(id) => ctx.enum_def(*id).generic_args.iter().for_each(rec),
+        HirTy::Sum(ps) | HirTy::Tuple(ps) => ps.iter().for_each(rec),
+        HirTy::Array(e, _) | HirTy::GcBuf(e) => rec(e),
+        _ => {}
+    }
 }
 
 /// The `core::simd` op of `#[intrinsic("nabi.simd.OP")]`.

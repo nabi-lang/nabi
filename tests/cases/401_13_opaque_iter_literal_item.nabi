@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout: 0 1 2 1 2 0 2 4 6 8 1.5 2.5
+
+// In `-> some Iterator<Item = i32>`, the returned value's literals take
+// the item type (spec 1.6.3, 4.1.13).
+fn r() -> some Iterator<Item = i32> { 0..3 }
+
+fn l() -> some Iterator<Item = i32> { [1, 2].iter() }
+
+fn f() -> some Iterator<Item = i32> { (0..10).filter(|x| x % 2 == 0) }
+
+fn g() -> some Iterator<Item = f32> { [1.5, 2.5].iter() }
+
+fn main() {
+    for x in r() { print(f"{x} "); }
+    for x in l() { print(f"{x} "); }
+    for x in f() { print(f"{x} "); }
+    for x in g() { print(f"{x} "); }
+    println("");
+}
