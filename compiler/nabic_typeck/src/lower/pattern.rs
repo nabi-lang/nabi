@@ -613,7 +613,19 @@ fn lower_pattern_here(ctx: &mut LowerCtx<'_>, pat: &AstPattern, scrut_ty: &HirTy
                     .filter(|v| crate::lower::infer::has_var(ctx, v))
                     .collect();
                 if let [one] = open.as_slice() {
-                    crate::lower::infer::unify_member(ctx, std::slice::from_ref(&target_ty), one);
+                    // `x: i32` on `#lit | none` (`xs.get(0)` of `[1, 2]`): the
+                    // literal takes the pattern's type (spec 1.6.3).
+                    if matches!(one, HirTy::Var(_))
+                        && matches!(&target_ty, HirTy::Prim(p) if p.is_int() || p.is_float())
+                    {
+                        crate::lower::infer::unify(ctx, one, &target_ty);
+                    } else {
+                        crate::lower::infer::unify_member(
+                            ctx,
+                            std::slice::from_ref(&target_ty),
+                            one,
+                        );
+                    }
                 }
             }
             // On a plain value the type is needed now: an open literal
@@ -1320,6 +1332,30 @@ fn slice_pattern(
 }
 
 /// `Pair(x, 4)`: a tuple struct's positional fields.
+/// `S(a, ..)` / `S(.., z)` / `S(..)` against `n` fields: the one `..`
+/// becomes a `_` per field not written. `None` without a `..` that fits.
+pub(crate) fn expand_rest(args: &[AstPattern], n: usize) -> Option<Vec<AstPattern>> {
+    let mut at = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| matches!(a.kind, AstPatternKind::Rest(None)))
+        .map(|(i, _)| i);
+    let (Some(r), None) = (at.next(), at.next()) else {
+        return None;
+    };
+    let fill = n.checked_sub(args.len() - 1)?;
+    let mut out = args[..r].to_vec();
+    out.extend(std::iter::repeat_n(
+        AstPattern {
+            kind: AstPatternKind::Wildcard,
+            span: args[r].span,
+        },
+        fill,
+    ));
+    out.extend_from_slice(&args[r + 1..]);
+    Some(out)
+}
+
 fn tuple_struct_pattern(
     ctx: &mut LowerCtx<'_>,
     segs: &[&str],
@@ -1366,6 +1402,8 @@ fn tuple_struct_pattern(
         );
         return HirPattern::Wildcard;
     }
+    let expanded = expand_rest(args, def.fields.len());
+    let args = expanded.as_deref().unwrap_or(args);
     if args.len() != def.fields.len() {
         ctx.emit_error(
             Code::PATTERN_ARITY,

@@ -506,7 +506,13 @@ pub fn read<P: AsPath>(path: P) throws (IoError) -> List<u8> {
 /// The whole file as text; `InvalidData` if it is not UTF-8.
 pub fn read_to_str<P: AsPath>(path: P) throws (IoError) -> str {
     let f = try open(path);
-    let r = try f.read_to_str() catch e { try f.close() catch _ {}; throw e; };
+    let r = try f.read_to_str() catch e {
+        try f.close() catch _ {};
+        // Every other `fs` error names its path; this one comes from
+        // the text, not the OS.
+        if e.kind() == IoErrorKind::InvalidData { throw IoError::new(IoErrorKind::InvalidData, f"{f.path}: {e}"); }
+        throw e;
+    };
     try f.close();
     r
 }

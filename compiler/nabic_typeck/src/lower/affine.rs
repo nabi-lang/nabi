@@ -1137,7 +1137,7 @@ impl<'c, 'a, 'e> Walk<'c, 'a, 'e> {
                 "help: closing {aty} can fail, so it is not closed for you: bind it before the \
                  loop and close it after: `let it = ..; try for x in it {{ .. }} try it.close();`"
             )
-        } else if root.named {
+        } else if root.named && root.name != "_" {
             format!(
                 "help: closing {aty} can fail, so it is not closed for you: add `try {}.close();` \
                  before it leaves its scope, or bind it with `using {} = .. {{ .. }}`",

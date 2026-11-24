@@ -484,10 +484,13 @@ pub(pkg) const fn fstr_num<T: Display>(t: str, v: T, flags: u64, counts: u64) ->
     f.t
 }
 
-/// A dynamic spec's packed words; panics when malformed, or when
-/// `text_only` and it has a number's type letter.
+/// A dynamic spec's packed words; panics when malformed (at the hole),
+/// or when `text_only` and it has a number's type letter.
 #[lang("fstr_pack_fn")]
+#[track_caller]
 pub(pkg) const fn fstr_pack(spec: str, text_only: bool) -> (u64, u64) {
+    let why = unsafe { nabi_fmt_spec_error(spec) };
+    if !why.is_empty() { panic(why); }
     unsafe {
         let out: GcBuf<u64> = buf_new(2);
         nabi_fmt_pack(spec, if text_only { 1u32 } else { 0u32 }, out);
@@ -499,6 +502,7 @@ pub(pkg) const fn fstr_pack(spec: str, text_only: bool) -> (u64, u64) {
 /// padded as text; else its `Display` takes the precision, sign, type
 /// letter and grouping, and the width pads the text.
 #[lang("fstr_text_any_fn")]
+#[track_caller]
 pub(pkg) const fn fstr_text_any<T: Display + Debug>(t: str, v: T, spec: str) -> str {
     let (flags, counts) = fstr_pack(spec, false);
     let start = unsafe { nabi_fmt_len(t) };

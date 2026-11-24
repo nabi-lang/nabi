@@ -1,0 +1,10 @@
+// expect-error: 9:10: this closure takes 2 parameters, but 1 is passed here: `(str, i32)`
+// expect-error: help: the one argument is a tuple: destructure it, `|(k, v)| ..`
+// forbid-error: cannot infer the type of closure parameter
+
+// A closure with the wrong number of parameters is one error.
+fn each(f: fn((str, i32))) { f(("a", 1)); }
+
+fn main() {
+    each(|k, v| println(f"{k} {v}"));
+}

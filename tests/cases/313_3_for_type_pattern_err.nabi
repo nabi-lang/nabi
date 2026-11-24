@@ -1,0 +1,9 @@
+// expect-error: 8:9: the pattern `x: i32` can't always match a `i32 | none`, and a `for` or `let` pattern must
+// expect-error: help: test each value instead: `for v in xs { if let x: i32 = v { .. } }`
+
+// A `for` pattern must always match; a type pattern on an optional
+// element is a test (spec 3.13.3).
+fn main() {
+    let xs: List<i32 | none> = [1, none];
+    for x: i32 in xs { }
+}

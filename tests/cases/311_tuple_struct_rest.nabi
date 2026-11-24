@@ -1,0 +1,25 @@
+// expect-exit: 0
+// expect-stdout:
+// any
+// one
+// 1 1 3
+
+// `..` in a tuple struct pattern stands for the fields not written, in
+// `match` and `let`, as for tuple variants (spec 3.11).
+struct Pair(i32, i32);
+struct T3(i32, str, i32);
+
+fn main() {
+    let q = Pair(1, 2);
+    match q {
+        Pair(..) => println("any"),
+    }
+    let Pair(a, ..) = q;
+    let t = T3(1, "m", 3);
+    let T3(x, .., z) = t;
+    match t {
+        T3(1, ..) => println("one"),
+        T3(..) => println("other"),
+    }
+    println(f"{a} {x} {z}");
+}

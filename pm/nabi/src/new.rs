@@ -115,23 +115,13 @@ pub(crate) fn cmd_new(g: &Global, cmd: &str, args: &[String]) -> Result<i32, Str
         }
     }
     if manifest::find(&dir).is_none() {
-        let value = Value::record(
-            Some("Package"),
-            vec![
-                ("name", Value::str(&name)),
-                ("version", Value::str("0.1.0")),
-                (
-                    "nabi_version",
-                    Value::str(VERSION.split(['-', '+']).next().unwrap_or(VERSION)),
-                ),
-                // Stays on this series when a newer one is the default.
-                (
-                    "toolchain",
-                    Value::str(toolchain::series(VERSION).unwrap_or_else(|| VERSION.to_owned())),
-                ),
-                ("deps", Value::new(Kind::Dict(Vec::new()))),
-            ],
-        );
+        let mut fields = vec![
+            ("name", Value::str(&name)),
+            ("version", Value::str("0.1.0")),
+        ];
+        fields.extend(version_fields());
+        fields.push(("deps", Value::new(Kind::Dict(Vec::new()))));
+        let value = Value::record(Some("Package"), fields);
         let path = dir.join(MANIFEST);
         std::fs::write(&path, nabic_nabion::to_string(&value) + "\n")
             .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -140,17 +130,7 @@ pub(crate) fn cmd_new(g: &Global, cmd: &str, args: &[String]) -> Result<i32, Str
     if !ignore.exists() {
         std::fs::write(&ignore, "target/\n").map_err(|e| format!("{}: {e}", ignore.display()))?;
     }
-    // Its own git repository, unless already inside one or git is missing.
-    let in_repo = Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(&dir)
-        .output();
-    if in_repo.is_ok_and(|o| !o.status.success()) {
-        let _ = Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&dir)
-            .status();
-    }
+    git_init(&dir);
     if !g.quiet {
         let what = match (lib, bin) {
             (true, true) => "library and executable",
@@ -158,25 +138,58 @@ pub(crate) fn cmd_new(g: &Global, cmd: &str, args: &[String]) -> Result<i32, Str
             _ => "executable",
         };
         term::status("Created", &format!("{what} package ({})", dir.display()));
-        // What to type next, under the message. Windows PowerShell 5.1
-        // has no `&&`: one command per line there.
-        let then = if bin { "nabi run" } else { "nabi test" };
-        let d = dir.display().to_string();
-        let cd = match d.as_str() {
-            "." => None,
-            d if d.contains(char::is_whitespace) => Some(format!("cd \"{d}\"")),
-            d => Some(format!("cd {d}")),
-        };
-        let lines = match cd {
-            None => vec![then.to_owned()],
-            Some(cd) if cfg!(windows) => vec![cd, then.to_owned()],
-            Some(cd) => vec![format!("{cd} && {then}")],
-        };
-        for l in lines {
-            eprintln!("{:>12} {l}", "");
-        }
+        next_hint(&dir, if bin { "nabi run" } else { "nabi test" });
     }
     Ok(0)
+}
+
+/// `nabi_version` and the series pin a new manifest starts with.
+fn version_fields() -> [(&'static str, Value); 2] {
+    [
+        (
+            "nabi_version",
+            Value::str(VERSION.split(['-', '+']).next().unwrap_or(VERSION)),
+        ),
+        // Stays on this series when a newer one is the default.
+        (
+            "toolchain",
+            Value::str(toolchain::series(VERSION).unwrap_or_else(|| VERSION.to_owned())),
+        ),
+    ]
+}
+
+/// `dir` as its own git repository, unless already inside one or git is
+/// missing.
+fn git_init(dir: &Path) {
+    let in_repo = Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(dir)
+        .output();
+    if in_repo.is_ok_and(|o| !o.status.success()) {
+        let _ = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir)
+            .status();
+    }
+}
+
+/// What to type next, under the `Created` line. Windows `PowerShell` 5.1
+/// has no `&&`: one command per line there.
+fn next_hint(dir: &Path, then: &str) {
+    let d = dir.display().to_string();
+    let cd = match d.as_str() {
+        "." | "" => None,
+        d if d.contains(char::is_whitespace) => Some(format!("cd \"{d}\"")),
+        d => Some(format!("cd {d}")),
+    };
+    let lines = match cd {
+        None => vec![then.to_owned()],
+        Some(cd) if cfg!(windows) => vec![cd, then.to_owned()],
+        Some(cd) => vec![format!("{cd} && {then}")],
+    };
+    for l in lines {
+        eprintln!("{:>12} {l}", "");
+    }
 }
 
 /// `nabi init --script <file.nabi>`: turn the script's directory into a
@@ -229,8 +242,16 @@ pub(crate) fn init_script(g: &Global, file: &Path) -> Result<i32, String> {
     let mut fields = vec![
         ("name", Value::str(&name)),
         ("version", Value::str("0.1.0")),
-        ("deps", Value::new(Kind::Dict(deps.collect()))),
     ];
+    // A pin the script's block had stays; else this toolchain's series.
+    for (k, v) in version_fields() {
+        let kept = match k {
+            "toolchain" => t.ctx.manifest.toolchain.clone(),
+            _ => t.ctx.manifest.nabi_version.clone(),
+        };
+        fields.push((k, kept.map_or(v, |x| Value::str(&x))));
+    }
+    fields.push(("deps", Value::new(Kind::Dict(deps.collect()))));
     if !t.ctx.manifest.native.is_empty() {
         let natives = t.ctx.manifest.native.iter().map(|d| {
             let mut s = d.source.clone();
@@ -262,6 +283,7 @@ pub(crate) fn init_script(g: &Global, file: &Path) -> Result<i32, String> {
     if !ignore.exists() {
         write(&ignore, "target/\n")?;
     }
+    git_init(dir);
     if !g.quiet {
         term::status(
             "Created",
@@ -271,6 +293,9 @@ pub(crate) fn init_script(g: &Global, file: &Path) -> Result<i32, String> {
                 dir.display()
             ),
         );
+        // The directory as written, not the absolute one.
+        let shown = file.parent().filter(|p| !p.as_os_str().is_empty());
+        next_hint(shown.unwrap_or_else(|| Path::new(".")), "nabi run");
     }
     Ok(0)
 }

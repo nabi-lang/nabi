@@ -1,0 +1,10 @@
+// expect-exit: 101
+// expect-stderr: thread 'main' panicked at tests/cases/std_210_dynamic_spec_panic_location.nabi:9:16:
+// expect-stderr: invalid format spec `q`: unknown format type (expected one of `d b o x X f e E g s ? %`)
+// expect-stdout:
+
+// A malformed dynamic spec panics at its hole, like every other panic.
+fn main() {
+    let spec = "q";
+    println(f"{5:{spec}}");
+}

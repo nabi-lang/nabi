@@ -1,0 +1,8 @@
+// expect-error: 7:17: `_` holds a `File` that is never closed
+// expect-error: help: closing a `File` can fail, so it is not closed for you: bind it with `let x = ..;` and add `try x.close();`
+// forbid-error: try _.close()
+
+// `_` is not a name: the help binds one.
+fn main() throws {
+    let _ = try std::fs::File::open("x");
+}

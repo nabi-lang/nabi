@@ -1352,13 +1352,70 @@ pub trait FromStr {
     fn from_str(s: str) throws (Err) -> Self;
 }
 
+/// Where `s` stops being a number in `radix` (after one leading sign):
+/// the byte a parse error names.
+pub(pkg) const fn bad_digit_at(s: str, radix: u32) -> usize {
+    let n = s.len();
+    let i = 0usize;
+    if n > 0 && (s.byte(0) == b'+' || s.byte(0) == b'-') { i = 1; }
+    while i < n {
+        let b = s.byte(i);
+        let d = if b >= b'0' && b <= b'9' {
+            (b - b'0') as u32
+        } else if b >= b'a' && b <= b'z' {
+            (b - b'a') as u32 + 10u32
+        } else if b >= b'A' && b <= b'Z' {
+            (b - b'A') as u32 + 10u32
+        } else {
+            99u32
+        };
+        if d >= radix { return i; }
+        i += 1;
+    }
+    0
+}
+
+/// Past the decimal digits of `s` from byte `i`.
+const fn skip_digits(s: str, i: usize) -> usize {
+    let j = i;
+    while j < s.len() && s.byte(j) >= b'0' && s.byte(j) <= b'9' { j += 1; }
+    j
+}
+
+/// Past one `+` / `-` of `s` at byte `i`.
+const fn skip_sign(s: str, i: usize) -> usize {
+    if i < s.len() && (s.byte(i) == b'+' || s.byte(i) == b'-') { i + 1 } else { i }
+}
+
+/// Where `s` stops being a decimal float (`-1.5e3`): the byte a parse
+/// error names, 0 when the whole text has the shape.
+pub(pkg) const fn bad_float_at(s: str) -> usize {
+    let n = s.len();
+    let start = skip_sign(s, 0);
+    let i = skip_digits(s, start);
+    let digits = i > start;
+    if i < n && s.byte(i) == b'.' {
+        let j = skip_digits(s, i + 1);
+        digits = digits || j > i + 1;
+        i = j;
+    }
+    if !digits { return start; }
+    if i < n && (s.byte(i) == b'e' || s.byte(i) == b'E') {
+        let j = skip_sign(s, i + 1);
+        let k = skip_digits(s, j);
+        if k == j { return j; }
+        i = k;
+    }
+    if i == n { 0 } else { i }
+}
+
 /// `s` as a decimal integer of `bits` bits (its bits as `i64`).
 const fn int_of(s: str, signed: i32, bits: u32) throws (ParseError) -> i64 {
     unsafe {
         let out: GcBuf<i64> = buf_new(1);
         let st = nabi_str_parse_int(s, 10u32, signed, bits, out);
         if st == 1 { throw ParseError::new(s, 0, "empty string"); }
-        if st == 2 { throw ParseError::new(s, 0, "invalid digit"); }
+        if st == 2 { throw ParseError::new(s, bad_digit_at(s, 10u32), "invalid digit"); }
         if st == 3 { throw ParseError::new(s, 0, "number out of range"); }
         out[0]
     }
@@ -1372,7 +1429,7 @@ const fn float_of(s: str) throws (ParseError) -> f64 {
     unsafe {
         let out: GcBuf<f64> = buf_new(1);
         let st = nabi_str_parse_float(s, out);
-        if st == 2 { throw ParseError::new(s, 0, "invalid float literal"); }
+        if st == 2 { throw ParseError::new(s, bad_float_at(s), "invalid float literal"); }
         if st == 3 { throw ParseError::new(s, 0, "number out of range"); }
         out[0]
     }
@@ -1384,7 +1441,7 @@ pub(pkg) const fn narrow_of(s: str, kind: u32) throws (ParseError) -> u32 {
     unsafe {
         let out: GcBuf<u32> = buf_new(1);
         let st = nabi_str_parse_narrow(s, kind, out);
-        if st == 2 { throw ParseError::new(s, 0, "invalid float literal"); }
+        if st == 2 { throw ParseError::new(s, bad_float_at(s), "invalid float literal"); }
         if st == 3 { throw ParseError::new(s, 0, "number out of range"); }
         out[0]
     }

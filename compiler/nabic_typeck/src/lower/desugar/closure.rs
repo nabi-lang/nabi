@@ -133,6 +133,44 @@ pub(crate) fn lower_closure_expr(
         }
         _ => (None, None),
     };
+    // `|k, v|` where one `(K, V)` comes: one error that says to
+    // destructure, not one per parameter and use.
+    if let Some(want) = expected_param_tys.as_ref() {
+        let n = params.iter().filter(|p| !p.variadic).count();
+        if n != want.len() && !want.contains(&HirTy::Unknown) {
+            let shown: Vec<String> = want
+                .iter()
+                .map(|t| format!("`{}`", ctx.ty_name(t)))
+                .collect();
+            let s = |k: usize| if k == 1 { "" } else { "s" };
+            let msg = format!(
+                "this closure takes {n} parameter{}, but {} {} passed here: {}",
+                s(n),
+                want.len(),
+                if want.len() == 1 { "is" } else { "are" },
+                shown.join(", ")
+            );
+            let e = ctx.error_expr(Code::WRONG_ARGUMENT_COUNT, span, msg);
+            let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+            let help = match want.as_slice() {
+                [HirTy::Tuple(ts)] if ts.len() == n => Some(format!(
+                    "the one argument is a tuple: destructure it, `|({})| ..`",
+                    names.join(", ")
+                )),
+                _ => Some(format!(
+                    "take {} parameter{}: `|{}| ..`",
+                    want.len(),
+                    s(want.len()),
+                    (0..want.len())
+                        .map(|i| format!("a{i}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            };
+            ctx.help_last(help);
+            return e;
+        }
+    }
     // An expected `fn(..) throws (E) -> T`: the body's value is a `T`; an
     // unknown `E` (a `rethrows` parameter) is inferred like no `E`.
     let mut expected_err = None;

@@ -81,6 +81,7 @@ pub(crate) const EVALUABLE: &[&str] = &[
     "nabi_fmt_pad",
     "nabi_fmt_pack",
     "nabi_fmt_spec_parse",
+    "nabi_fmt_spec_error",
     "nabi_f64_floor",
     "nabi_f64_ceil",
     "nabi_f64_round",
@@ -533,6 +534,15 @@ pub(crate) fn run_extern(name: &str, args: &[Value]) -> Result<Value, Ext> {
             put_bits(out, 0, flags)?;
             put_bits(out, 1, counts)?;
             Value::Unit
+        }
+        // What is wrong with a spec, empty when it parses.
+        ("nabi_fmt_spec_error", [s]) => {
+            let src = str_of(s)?;
+            let mut w = String::new();
+            if let Err(why) = fmt_text::spec_words(src) {
+                fmt_text::bad_spec(&mut w, src, why);
+            }
+            Value::Str(w.into())
         }
         ("nabi_fmt_spec_parse", [s, out]) => {
             let src = str_of(s)?;

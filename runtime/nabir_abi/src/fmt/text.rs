@@ -284,7 +284,7 @@ fn pad(w: &mut impl Text, spec: &FmtSpec, start: usize, mid: usize, numeric: boo
 /// How a number's body is written.
 #[derive(Clone, Copy, Default)]
 struct Body {
-    /// Pads like text (inf / NaN).
+    /// inf / NaN: no digit grouping or `0` fill.
     text: bool,
     /// Uppercase hex digits (`X`).
     upper: bool,
@@ -323,7 +323,16 @@ fn number<T: Text>(
         }
     }
     w.put(how.suffix);
-    pad(w, spec, start, mid, !how.text);
+    // inf / NaN align as numbers (right by default) but take no `0` fill.
+    if how.text && spec.zero {
+        let plain = FmtSpec {
+            zero: false,
+            ..*spec
+        };
+        pad(w, &plain, start, mid, true);
+    } else {
+        pad(w, spec, start, mid, true);
+    }
 }
 
 /// The spec's separator between groups of the leading digits written
@@ -462,8 +471,9 @@ pub const FLOAT_DEBUG: u32 = 2;
 pub const FLOAT_F16: u32 = 4;
 pub const FLOAT_BF16: u32 = 8;
 
-/// `nabi_fmt_f64`: a float (`mode`: `FLOAT_*` bits); inf / NaN pad like
-/// text. A binary / octal / hex spec is the panic message.
+/// `nabi_fmt_f64`: a float (`mode`: `FLOAT_*` bits); inf / NaN align as
+/// numbers without `0` fill. A binary / octal / hex spec is the panic
+/// message.
 pub fn float_number(
     w: &mut impl Text,
     spec: &FmtSpec,
