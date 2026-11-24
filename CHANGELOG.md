@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.5 (2026-11-24)
+
+<!-- begin summary -->
+Summary: Fixes the 0.1.4 regression that stopped the `table` package from building.
+<!-- end summary -->
+
+<!-- begin highlights -->
+### Highlights
+
+- In 0.1.4, `x ?? d` inside a branch where `x is none` or `x != none` had narrowed `x` failed with E0064, which 0.1.3 accepted. The `table` package hits this, so it and every project that depends on it failed to build. It compiles again; update with `nabi toolchain update`.
+<!-- end highlights -->
+
+### Fixed
+
+- `x ?? d` compiles again inside a branch where `x is none` or `x != none` narrowed `x`, so the `table` package builds on 0.1.5 (#54)
+
+<!-- silent: #53 -->
+
 ## 0.1.4 (2026-11-24)
 
 <!-- begin summary -->

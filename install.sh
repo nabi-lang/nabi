@@ -39,7 +39,7 @@
 # short runs nothing.
 set -eu
 
-version="${NABI_VERSION:-0.1.4}"
+version="${NABI_VERSION:-0.1.5}"
 # The release key, keys/release.pub (key id B33E6FE61BE5314C).
 release_key="RWRMMeUb5m8+s0rEtzbR47dmyrMdlGyGQSvWUn/Ob5QYh0GHgs1GvJEs"
 dist="${NABI_DIST:-https://github.com/nabi-lang/nabi/releases}"
