@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.1.4 (2026-11-24)
+
+<!-- begin summary -->
+Summary: Pattern and inference fixes, and errors that say what to write instead.
+<!-- end summary -->
+
+<!-- begin highlights -->
+### Highlights
+
+- An f-string or print hole whose type cannot be inferred, such as a recursive call, is now an error; it used to print nothing. Holes are also formatted left to right.
+- `..` works in every tuple and tuple struct pattern (`(a, ..)`, `(h, ..rest)`, `Pair(a, ..)`) in `match`, `if let` and `let`.
+- `x is none` narrows like `x == none`, and a catch-all arm after `none =>` has the remaining type.
+- Errors for habits from other languages (truthiness, `for` over a `str`, tuple indexing, `'text'`, a keyword as a name, `self::f`, refutable `let`, `?` in a `()` function) say what to write instead, and a mistyped option of any `nabi` command names the closest one.
+<!-- end highlights -->
+
+### Fixed
+
+- `nix profile install github:nabi-lang/nabi` installs the current release (#18)
+- Tuple rest patterns (`(a, ..)`, `(h, ..rest)`) work in `match` and `if let`, not only `let` (#22)
+- A keyword used as a name gives E0021 with the `r#name` help for every keyword (#22)
+- `self::f` reports that paths start at the name and suggests `f` or `pkg::f` (#22)
+- A bare type pattern (`i32 =>`) is no longer warned as an unused variable (#22)
+- An f-string or print hole whose type cannot be inferred is an error instead of printing nothing (#45)
+- F-string holes are formatted left to right, so a later hole that changes a value no longer changes an earlier one (#45)
+- `x is none` narrows `x` like `x == none` (#45)
+- A plain value passed to a `T | none` parameter infers `T` (#45)
+- A catch-all binding after a `none =>` arm has the remaining type (`i32`, not `i32 | none`) (#45)
+- `..` works in tuple struct patterns (`Pair(a, ..)`) in `match` and `let` (#46)
+- A closure with the wrong number of parameters is one error, suggesting `|(k, v)|` when the one argument is a tuple (#46)
+- A type pattern (`while let x: i32 = it.next()`) fixes the type of an unsuffixed literal (#46)
+- A refutable type pattern in `for` or `let` explains that it must always match (#46)
+- `ParseError::position` is the byte where parsing failed (#46)
+- Inf and NaN are right-aligned under a width, like other numbers (#46)
+- A malformed dynamic format spec panics with its source location (#46)
+- Clearer help for ambiguous `consume`, `let _ = File::open(..)`, `Set<f64>`, `fs::read_to_str` on bad UTF-8 and `fs::copy` into a directory (#46)
+- `nabi init --script` writes `nabi_version` and the toolchain pin, runs `git init` and prints the next command (#46)
+- A mistyped option of any `nabi` command names the closest one, including `run`, `test`, `bench`, `check` and the global options (#47)
+- `nabi version` and options before the command report unknown options instead of ignoring them (#47)
+- `nabi run x.nabi arg` says how to pass the argument to the program (#47)
+- In `-> some Iterator<Item = i32>`, literals of the returned value (`0..3`, `[1, 2].iter()`) are `i32` (#49)
+- Errors for common habits from other languages say what to write instead (truthiness, `for` over a `str`, tuple indexing, single-quoted strings, `f"{}"`, untyped `const`, `1_u8`, a dropped last value, `if` without `else`, run-time array lengths) (#49)
+- The help for a shift count of another type converts the count, not the shifted value (#49)
+- Refutable `let`, chained `if let`, `?` in a function returning `()`, an empty `try`, the orphan rule, mixed value enums, a missing `await`, a wrong trait path and `[v; N]` for a `List` get help that says what to write (#49)
+
+<!-- silent: #19 #1 #21 #23 #48 #51 -->
+
 ## 0.1.3 (2026-11-22)
 
 <!-- begin summary -->
