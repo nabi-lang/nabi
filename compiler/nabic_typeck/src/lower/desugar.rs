@@ -310,6 +310,20 @@ pub(crate) fn desugar_nullish_coalesce(
     span: nabic_diagnostic::Span,
 ) -> HirExpr {
     let Some((none_idx, some)) = optional_parts(&lhs.ty) else {
+        // An optional local narrowed by `x != none` / `x is none` keeps
+        // taking `??`, as before narrowing: it is the value itself.
+        if let HirExprKind::Local(l) = lhs.kind {
+            if ctx
+                .narrowed
+                .get(&l)
+                .is_some_and(|(_, t)| optional_parts(t).is_some())
+            {
+                let ty = lhs.ty.clone();
+                let rhs_h = lower_expected(ctx, rhs, ty.clone());
+                let _ = coerce(ctx, &ty, rhs_h, &|| "the `??` default".to_owned());
+                return lhs;
+            }
+        }
         let rhs_h = lower_expected(ctx, rhs, HirTy::Unknown);
         if lhs.ty == HirTy::Unknown || rhs_h.ty == HirTy::Unknown {
             return poison(span);
