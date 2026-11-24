@@ -33,8 +33,15 @@ pub fn suggest_flag(cmd: &str, flag: &str) -> String {
         .iter()
         .filter(|(k, _)| cmd.is_empty() || *k == cmd || k.starts_with(&sub))
         .flat_map(|(_, v)| v);
-    let cands: Vec<&str> = own.chain(&spec.global).map(String::as_str).collect();
-    cli::did_you_mean(flag, cands, &[])
+    let front = cli::front_end_flags(cmd);
+    let cands: Vec<&str> = own
+        .chain(&spec.global)
+        .chain(&front)
+        .map(String::as_str)
+        .collect();
+    // `--formt=json`: the name alone is what is misspelled.
+    let name = flag.split('=').next().unwrap_or(flag);
+    cli::did_you_mean(name, cands, &[])
 }
 
 /// A usage error (exit 2), named as the program the user ran, and where

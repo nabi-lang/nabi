@@ -107,6 +107,7 @@ pub fn main_with(args: Vec<String>) -> i32 {
 /// everything before them must be UTF-8.
 pub fn main_with_os(args: Vec<std::ffi::OsString>) -> i32 {
     nabic_core::tmp::sweep_once(&["nabi-install-", "nabi-prebuild-"]);
+    cli::set_flag_source(flags_of);
     let mut g = Global {
         argv: args.clone(),
         start: std::env::current_dir().ok(),
@@ -267,6 +268,14 @@ pub fn main_with_os(args: Vec<std::ffi::OsString>) -> i32 {
     if rest[i] == "--" {
         return run(&g, "repl", &rest[..i], &rest[i..]);
     }
+    // An option before the command that no command takes is a typo (and
+    // may have made its value look like the command: `--colour never`).
+    if let Some(bad) = unknown_before(&rest[..i]) {
+        let known = all_flags();
+        let name = bad.split('=').next().unwrap_or(bad);
+        let hint = cli::did_you_mean(name, known.iter().map(String::as_str), &[]);
+        return usage(&format!("unknown option `{name}`{hint}"));
+    }
     let (cmd, post) = (&rest[i], &rest[i + 1..]);
     let before_dashes = post.iter().take_while(|a| *a != "--");
     if before_dashes
@@ -413,6 +422,21 @@ fn run(g: &Global, cmd: &str, pre: &[String], post: &[String]) -> i32 {
         }
     }
     let r = match cmd {
+        // `--format` is its one option (`-v` / `-q` were taken above).
+        "version"
+            if post
+                .iter()
+                .take_while(|a| *a != "--")
+                .any(|a| a.starts_with('-') && !a.starts_with("--format")) =>
+        {
+            let bad = post
+                .iter()
+                .find(|a| a.starts_with('-') && !a.starts_with("--format"));
+            Err(format!(
+                "unknown option `{}`",
+                bad.map_or("", String::as_str)
+            ))
+        }
         "version" => json_format(post, cmd).map(|json| {
             print!("{}", version(g, json));
             0
@@ -522,13 +546,62 @@ fn usage_of(cmd: &str, msg: &str) -> i32 {
             .chain(&spec.global)
             .map(String::as_str)
             .collect();
-        msg.push_str(&cli::did_you_mean(&flag, cands, &[]));
+        // `--formt=json`: the name alone is what is misspelled.
+        let name = flag.split('=').next().unwrap_or(&flag);
+        msg.push_str(&cli::did_you_mean(name, cands, &[]));
     }
     if help::find(cmd).is_none() {
         return usage(&msg);
     }
     eprintln!("nabi: {msg}\nrun `nabi help {cmd}` for usage");
     2
+}
+
+/// Every flag nabi or nabic takes, global or of some command.
+pub(crate) fn all_flags() -> Vec<String> {
+    let spec = completion_spec();
+    let mut out: Vec<String> = spec.global.clone();
+    out.extend(spec.flags.iter().flat_map(|(_, v)| v.iter().cloned()));
+    out.extend(cli::nabic_spec().global);
+    for c in ["test", "bench"] {
+        out.extend(flags_of(c));
+    }
+    out
+}
+
+/// The first of `opts` (before the command) that no command takes.
+fn unknown_before(opts: &[String]) -> Option<&str> {
+    let known = all_flags();
+    opts.iter()
+        .map(String::as_str)
+        .filter(|a| a.starts_with('-') && *a != "-" && *a != "--")
+        .find(|a| {
+            let name = a.split('=').next().unwrap_or(a);
+            // `-O2`, `-Cfoo`: a short flag with its value attached.
+            let short = name.len() > 2 && !name.starts_with("--");
+            !known
+                .iter()
+                .any(|k| k == name || (short && name.starts_with(k.as_str())))
+        })
+}
+
+/// The flags `nabi <cmd>` takes, for nabic's "did you mean" when it
+/// parses a command nabi hands it.
+pub(crate) fn flags_of(cmd: &str) -> Vec<String> {
+    let spec = completion_spec();
+    let sub = format!("{cmd} ");
+    let mut out: Vec<String> = spec
+        .flags
+        .iter()
+        .filter(|(k, _)| *k == cmd || k.starts_with(&sub))
+        .flat_map(|(_, v)| v.iter().cloned())
+        .chain(spec.global.iter().cloned())
+        .collect();
+    // `nabi test` / `bench` hand their own options to the harness.
+    for (head, _) in help::runner_options(cmd).map_or(&[][..], |(_, rows)| rows) {
+        out.extend(head.split(['=', ' ']).next().map(str::to_owned));
+    }
+    out
 }
 
 /// What nabi's command line takes, read from its help; the commands nabi

@@ -45,8 +45,15 @@ pub(crate) fn run(raw: Vec<String>, tail: Vec<OsString>, lsp: Option<Deps>) -> i
         term::set_choice(a.color);
         nabic_interface::set_report_depth(a.json, term::depth(Stream::Stderr));
         if let Some(extra) = a.positional.get(1).filter(|_| takes_one(&a.cmd)) {
+            // The program's arguments go after `--` (or after a script).
+            let hint = match (a.cmd.as_str(), a.positional.first()) {
+                ("run", Some(p)) => format!(
+                    "; to pass it to the program, write `nabi run {p} -- {extra}` or `nabi {p} {extra}`"
+                ),
+                _ => String::new(),
+            };
             usage_error(&format!(
-                "unexpected argument `{extra}`: `{}` takes one path",
+                "unexpected argument `{extra}`: `{}` takes one path{hint}",
                 a.cmd
             ));
         }
