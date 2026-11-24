@@ -1,0 +1,11 @@
+// expect-error: 8:16: `if let` does not chain with `&&`
+// expect-error: help: nest the test: `if let .. = .. { if x > 0 { .. } }`
+// forbid-error: cannot find value `x`
+
+// `let` conditions do not chain (spec 3.10.6): one error, how to nest.
+fn main() {
+    let a: i32 | none = 1;
+    if let x = a && x > 0 {
+        println(f"{x}");
+    }
+}

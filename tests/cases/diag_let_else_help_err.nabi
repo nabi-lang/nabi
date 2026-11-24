@@ -1,0 +1,10 @@
+// expect-error: 9:9: this pattern can't destructure a value of type `E` here
+// expect-error: help: to test it, say what happens otherwise: `let E::A(x) = e else { .. };`, or `match`
+
+// A refutable `let` names `let .. else` (spec 3.16).
+enum E { A(i32), B }
+
+fn main() {
+    let e = E::A(1);
+    let E::A(x) = e;
+}

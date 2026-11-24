@@ -1,0 +1,11 @@
+// expect-error: 9:18: mismatched types: `let x` expects `i32`, found `AsyncFuture<i32>`
+// expect-error: help: `get()` is a future, not its value; did you forget `await`? `await get()`
+// expect-error: 10:31: `[v; N]` is a fixed array, not a `List<List<i32>>`
+// expect-error: help: make a list with a new `[]` in each place: `let xs = []; for _ in 0..3 { xs.push([]); }`
+
+async fn get() -> i32 { 1 }
+
+async fn main() {
+    let x: i32 = get();
+    let xs: List<List<i32>> = [[]; 3];
+}

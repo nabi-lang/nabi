@@ -342,6 +342,7 @@ impl Parser<'_> {
                     let (pat, destructure) = self.parse_let_cond_pattern()?;
                     self.expect(&TokenKind::Eq, "`=`")?;
                     let scrutinee = self.parse_head()?;
+                    let scrutinee = self.unchain_let(scrutinee, "while");
                     let mut body_block = self.parse_block()?;
                     body_block.stmts.splice(0..0, destructure);
                     let body_span = body_block.span;
@@ -423,6 +424,7 @@ impl Parser<'_> {
                     let (pat, destructure) = self.parse_let_cond_pattern()?;
                     self.expect(&TokenKind::Eq, "`=`")?;
                     let scrutinee = self.parse_head()?;
+                    let scrutinee = self.unchain_let(scrutinee, "if");
                     let mut then_block = self.parse_block()?;
                     then_block.stmts.splice(0..0, destructure);
                     let then_span = then_block.span;
@@ -739,6 +741,18 @@ impl Parser<'_> {
                         "an item or `use` in a function body is visible only in its block; \
                          remove `pub`",
                     ),
+                    // `if let x = a && let y = b`: no chains (spec 3.10.6).
+                    TokenKind::Let
+                        if matches!(
+                            self.prev_kind(),
+                            Some(TokenKind::AmpAmp | TokenKind::PipePipe)
+                        ) =>
+                    {
+                        Some(
+                            "`let` conditions do not chain: nest them, `if let x = a { if let y = \
+                             b { .. } }`",
+                        )
+                    }
                     TokenKind::ColonColon => Some(
                         "a path starts with a name: write `pkg::a::b` for an item of this \
                          package, from its root, or `::std::a` for the standard library's",
@@ -1461,5 +1475,30 @@ impl Parser<'_> {
             },
             span,
         }
+    }
+}
+
+impl Parser<'_> {
+    /// `if let x = a && x > 0`: `let` conditions do not chain (spec
+    /// 3.10.6). Said once; the `let` keeps the left side.
+    fn unchain_let(&mut self, scrutinee: Expr, kw: &str) -> Expr {
+        let ExprKind::OpInfix { op, lhs, rhs } = &scrutinee.kind else {
+            return scrutinee;
+        };
+        if op != "&&" && op != "||" {
+            return scrutinee;
+        }
+        let rest = nabic_ast::print::print_expr(rhs);
+        self.error_help(
+            Code::SYNTAX,
+            scrutinee.span,
+            format!("`{kw} let` does not chain with `{op}`"),
+            if kw == "while" {
+                format!("test it first in the body: `while let .. = .. {{ if !({rest}) {{ break; }} .. }}`")
+            } else {
+                format!("nest the test: `if let .. = .. {{ if {rest} {{ .. }} }}`")
+            },
+        );
+        (**lhs).clone()
     }
 }

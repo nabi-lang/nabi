@@ -543,6 +543,21 @@ pub(crate) fn closure_for_fn(ctx: &LowerCtx<'_>, want: &HirTy, have: &HirTy, dep
 /// optional where its value is wanted, or a collection of other elements.
 pub(crate) fn mismatch_help(ctx: &LowerCtx<'_>, slot: &HirTy, v: &HirExpr) {
     let src = suggest::short_src(ctx, v.span);
+    // `let x: i32 = fetch();` of an `async fn`: its future, not its value.
+    let future = |t: &HirTy| {
+        matches!(t, HirTy::Struct(_))
+            && matches!(
+                crate::lower::expr::pick_method(ctx, t, "poll", None),
+                Ok(Some(_))
+            )
+    };
+    if future(&v.ty) && !future(slot) {
+        let s = src.unwrap_or("f()");
+        ctx.help_last(Some(format!(
+            "`{s}` is a future, not its value; did you forget `await`? `await {s}`"
+        )));
+        return;
+    }
     if suggest::some_part(&v.ty).as_ref() == Some(slot) {
         // `try?` over an optional nests.
         if let Some(s) = src.filter(|s| {

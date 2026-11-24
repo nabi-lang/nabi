@@ -933,6 +933,9 @@ pub(crate) fn lower_try(
                 Code::UNNEEDED_TRY,
                 "this `try` covers no throwing call".to_owned(),
             );
+            ctx.help_last(Some(
+                "drop the `try`, or move the throwing call into it".to_owned(),
+            ));
         }
     };
     // `try! xs.pop()`: no throwing call, an optional value.

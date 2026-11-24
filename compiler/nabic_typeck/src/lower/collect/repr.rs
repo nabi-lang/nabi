@@ -330,6 +330,9 @@ pub(crate) fn assign_discriminants(env: &Env<'_>, decls: &[(EnumId, &AstEnumDef)
                  a value enum has only value variants",
                 decl.name
             ));
+            ctx.help_last(Some(
+                "give every variant a value (`A = 0, B = 5, C = 6`), or none".to_owned(),
+            ));
             continue;
         }
         let tag_ty = ctx.enum_def(id).repr.int.unwrap_or(PrimTy::I32);

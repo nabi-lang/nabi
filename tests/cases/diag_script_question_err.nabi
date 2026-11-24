@@ -1,0 +1,6 @@
+// expect-error: 6:9: `?` propagates `none`, but the enclosing function returns `()`
+// expect-error: help: or handle `none` here: `let v = x else { return; };`, or `x ?? default`
+
+// A script's top level returns nothing: handle `none` where it is.
+let x: i32 | none = 1;
+let y = x?;
