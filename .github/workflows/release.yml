@@ -684,6 +684,19 @@ jobs:
               ;;
           esac
 
+  # The same files on dist.nabi-lang.org for NABI_DIST (release-mirror.yml).
+  # The release is already public; a failure here leaves it as it is.
+  mirror:
+    name: Mirror the downloads
+    needs: [smoke]
+    if: ${{ !cancelled() && inputs.mode == 'release' && needs.smoke.result == 'success' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-mirror.yml
+    with:
+      version: ${{ inputs.version }}
+    secrets: inherit
+
   # The furthest state reached goes into the record; a failure is noted as
   # blocked with the jobs that failed. A finished rehearsal is closed.
   finish:
