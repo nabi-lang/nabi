@@ -522,11 +522,11 @@ It is the Cloudflare R2 bucket `nabi-dist` with `dist.nabi-lang.org` as
 its custom domain. `release.yml` fills it after the smoke test
 (`release-mirror.yml`, `scripts/release/mirror.sh`): version files are
 cached for a year, `latest/download/nabi-version` not at all and written
-last, and a prerelease leaves `latest/` alone. Dispatch
+last, and only the release GitHub marks latest writes `latest/`. Dispatch
 `release-mirror.yml` with a version to mirror an older release again. The
 job runs in environment `mirror` (no reviewer) and needs the variable
 `R2_ACCOUNT_ID` and the secrets `R2_ACCESS_KEY_ID` and
-`R2_SECRET_ACCESS_KEY` (an R2 API token, `cf-token-nabi-dist`, with Object
+`R2_SECRET_ACCESS_KEY` (an R2 API token, `cf-token-r2write-gh-nabi-mirror`, with Object
 Read & Write on `nabi-dist` only); without them it is skipped.
 
 ## Building an archive by hand
