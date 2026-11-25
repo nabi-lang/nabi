@@ -1,6 +1,6 @@
 name: Release / Mirror the downloads
 
-# Copy a published release to dist.nabi-lang.org (scripts/release/mirror.sh),
+# Copy a published release to releases.nabi-lang.org (scripts/release/mirror.sh),
 # where NABI_DIST can point when GitHub is slow or blocked. release.yml
 # calls it after the smoke test; dispatch it by hand to mirror an older
 # release again. Skipped until the mirror environment has its R2 secrets.
@@ -24,7 +24,7 @@ defaults:
 
 jobs:
   mirror:
-    name: Mirror to dist.nabi-lang.org
+    name: Mirror to releases.nabi-lang.org
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: mirror

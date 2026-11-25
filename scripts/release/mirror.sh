@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copy a published release to the download mirror (dist.nabi-lang.org,
+# Copy a published release to the download mirror (releases.nabi-lang.org,
 # a Cloudflare R2 bucket) in GitHub releases' layout, so NABI_DIST can
 # point there:
 #   download/v<version>/<every asset>
@@ -10,7 +10,7 @@
 # Environment: GH_TOKEN, R2_ACCOUNT_ID, AWS_ACCESS_KEY_ID and
 # AWS_SECRET_ACCESS_KEY (an R2 API token with write access to the bucket),
 # NABI_DIST_BUCKET (default nabi-dist), NABI_DIST_URL (default
-# https://dist.nabi-lang.org), checked after the upload. Uploading the
+# https://releases.nabi-lang.org), checked after the upload. Uploading the
 # same release again rewrites the same objects.
 set -eu
 
@@ -22,7 +22,7 @@ die() {
 [ $# -eq 1 ] || die "usage: scripts/release/mirror.sh <version>"
 version=$1
 bucket=${NABI_DIST_BUCKET:-nabi-dist}
-url=${NABI_DIST_URL:-https://dist.nabi-lang.org}
+url=${NABI_DIST_URL:-https://releases.nabi-lang.org}
 [ -n "${R2_ACCOUNT_ID:-}" ] || die "R2_ACCOUNT_ID is not set"
 endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
 

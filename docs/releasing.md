@@ -98,7 +98,7 @@ failure, `blocked` with the failed jobs.
 | `tag` | TAGGED | the one approval (environment `release`); the SBOM, `SHA256SUMS` and its signature with the release key (Signing, below), checked; then the App creates the annotated tag; a tag already on the commit is kept, one on another commit stops the run | environment `rehearsal`: no reviewer, signs with a key made for the run, checks the tag is free and the App token mints |
 | `publish` | PUBLISHED | build provenance and SBOM attestations, then `release/publish.sh --publish`: draft, check, tag check, public; a public release with every asset is left alone | `release/publish.sh --rehearse`: a draft without a tag, checked against the run's key, deleted |
 | `smoke` | SMOKED | installs `vX.Y.Z` with `install-nabi` on Linux, macOS and Windows; `latest/download/nabi-version` names it | installs the build run's archives |
-| `mirror` | | `release-mirror.yml`: the same assets on `dist.nabi-lang.org` (Download mirror, below); a failure leaves the release as it is | skipped |
+| `mirror` | | `release-mirror.yml`: the same assets on `releases.nabi-lang.org` (Download mirror, below); a failure leaves the release as it is | skipped |
 | `finish`, `cleanup` | | writes the furthest state, or `blocked`, and comments | closes the record, deletes `rehearse/X.Y.Z` |
 
 `packages` `none` builds archives without the official packages
@@ -510,15 +510,15 @@ Once `release.yml` reached SMOKED (its record says so):
 
 ## Download mirror
 
-`dist.nabi-lang.org` serves every release in GitHub releases' layout
+`releases.nabi-lang.org` serves every release in GitHub releases' layout
 (`download/v<version>/<asset>`, `latest/download/nabi-version`), for
 places where GitHub is slow or blocked. `install.sh`, `install.ps1` and
 `nabi toolchain update` read from it with
-`NABI_DIST=https://dist.nabi-lang.org`; every archive is still checked
+`NABI_DIST=https://releases.nabi-lang.org`; every archive is still checked
 against the signed `SHA256SUMS`, so the mirror is trusted no more than
 GitHub is.
 
-It is the Cloudflare R2 bucket `nabi-dist` with `dist.nabi-lang.org` as
+It is the Cloudflare R2 bucket `nabi-dist` with `releases.nabi-lang.org` as
 its custom domain. `release.yml` fills it after the smoke test
 (`release-mirror.yml`, `scripts/release/mirror.sh`): version files are
 cached for a year, `latest/download/nabi-version` not at all and written

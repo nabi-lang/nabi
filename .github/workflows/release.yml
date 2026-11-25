@@ -684,7 +684,7 @@ jobs:
               ;;
           esac
 
-  # The same files on dist.nabi-lang.org for NABI_DIST (release-mirror.yml).
+  # The same files on releases.nabi-lang.org for NABI_DIST (release-mirror.yml).
   # The release is already public; a failure here leaves it as it is.
   mirror:
     name: Mirror the downloads
