@@ -3,7 +3,7 @@
 # a Cloudflare R2 bucket) in GitHub releases' layout, so NABI_DIST can
 # point there:
 #   download/v<version>/<every asset>
-#   latest/download/nabi-version   (final releases only, written last)
+#   latest/download/nabi-version   (the latest release only, written last)
 #
 #   scripts/release/mirror.sh <version>
 #
@@ -31,7 +31,9 @@ trap 'rm -rf "$tmp"' EXIT
 
 gh release download "v$version" --dir "$tmp/v$version"
 [ -s "$tmp/v$version/SHA256SUMS" ] || die "v$version has no SHA256SUMS asset"
-pre=$(gh release view "v$version" --json isPrerelease --jq .isPrerelease)
+# Only the release GitHub calls latest moves latest/: mirroring an older
+# one again must not roll it back.
+latest=$(gh release view --json tagName --jq .tagName)
 
 s3() {
   aws s3 "$@" --endpoint-url "$endpoint" --region auto --only-show-errors
@@ -45,8 +47,8 @@ s3 cp --recursive "$tmp/v$version" "s3://$bucket/download/v$version/" \
 curl -fsSL "$url/download/v$version/SHA256SUMS" | cmp -s - "$tmp/v$version/SHA256SUMS" ||
   die "$url/download/v$version/SHA256SUMS differs from the release's"
 
-if [ "$pre" = true ]; then
-  echo "release/mirror.sh: v$version mirrored (a prerelease: latest/ unchanged)"
+if [ "$latest" != "v$version" ]; then
+  echo "release/mirror.sh: v$version mirrored (latest is $latest: latest/ unchanged)"
   exit 0
 fi
 s3 cp "$tmp/v$version/nabi-version" "s3://$bucket/latest/download/nabi-version" \
