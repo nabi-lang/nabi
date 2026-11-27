@@ -215,7 +215,11 @@ impl<'a> LowerCtx<'a> {
     /// Attach `help` to the diagnostic just emitted.
     pub fn help_last(&self, help: Option<String>) {
         if let Some(h) = help {
-            self.with_last(|d| d.notes.push(format!("help: {h}")));
+            // Named like the message: `Mass`, not its `Quantity<..>`.
+            self.with_last(|d| {
+                d.notes.push(format!("help: {h}"));
+                self.name_aliases(d);
+            });
         }
     }
 

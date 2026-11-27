@@ -1,0 +1,24 @@
+// expect-error: operator `+` cannot be applied to `Q<f64, 0, 1>` and `Q<f64, 1, 0>`
+// expect-error: `Q<f64, 0, 1>` and `Q<f64, 1, 0>` are two different types (other const parameters of `Q`)
+// forbid-error: both sides need one element type
+
+// Types that differ only in const parameters: the help says they are
+// two types, not that an element type should change.
+
+use core::ops::Add;
+
+struct Q<T, const L: i32, const M: i32> { v: T; }
+
+impl<T: core::num::Num, const L: i32, const M: i32> Add for Q<T, L, M> {
+    type Output = Q<T, L, M>;
+    fn add(self, o: Q<T, L, M>) -> Q<T, L, M> { Q { v: self.v + o.v } }
+}
+
+type Mass = Q<f64, 0, 1>;
+type Length = Q<f64, 1, 0>;
+
+fn main() {
+    let m: Mass = Q { v: 1.0 };
+    let l: Length = Q { v: 2.0 };
+    let s = m + l;
+}

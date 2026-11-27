@@ -1,0 +1,39 @@
+// expect-error: the right operand of `+` expects `Won`, found `Usd`
+
+// Values from two suffixes are two types: they do not add.
+
+use core::ops::Add;
+use core::fmt::{Display, Formatter, FmtError};
+
+struct Won { v: i64; }
+struct Usd { cents: i64; }
+
+#[literal(number "won")]
+fn won(v: i64) -> Won { Won { v: v } }
+
+#[literal(number "usd")]
+fn usd(v: f64) -> Usd { Usd { cents: (v * 100.0).round() as i64 } }
+
+impl Add for Won {
+    type Output = Won;
+    fn add(self, o: Won) -> Won { Won { v: self.v + o.v } }
+}
+
+impl Add for Usd {
+    type Output = Usd;
+    fn add(self, o: Usd) -> Usd { Usd { cents: self.cents + o.cents } }
+}
+
+impl Display for Won {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"₩{self.v}") }
+}
+
+impl Display for Usd {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"${self.cents / 100}.{self.cents % 100:02}")
+    }
+}
+
+fn main() {
+    let x = 12000won + 19.99usd;
+}
