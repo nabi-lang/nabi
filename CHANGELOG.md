@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.6 (2026-11-27)
+
+<!-- begin summary -->
+Summary: Clearer errors for mixing units, and the `units` package 0.1.1 bundled.
+<!-- end summary -->
+
+<!-- begin highlights -->
+### Highlights
+
+- `10kg + 3m` now says that `Mass` and `Length` are two different types, instead of suggesting a `Quantity<f64, 0, 1, 0, 0, 0, 0, 0>` to write. Help notes name types by the aliases the message uses.
+- The bundled `units` package is 0.1.1: converting to `g`, `cm`, `mm` or `ms` is exact where the value allows, so `10.54kg → g` is `10540 g`.
+<!-- end highlights -->
+
+### Fixed
+
+- Adding two values whose types differ only in const parameters (`10kg + 3m`) no longer suggests changing an element type; the help says they are different types (#60)
+
+<!-- silent: #56 #57 #59 -->
+
 ## 0.1.5 (2026-11-24)
 
 <!-- begin summary -->
