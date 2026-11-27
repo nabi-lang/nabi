@@ -1,22 +1,28 @@
-// Number suffixes a program defines (`won`, `usd`) give values of its own
+// Number suffixes a program defines (`won`, `usd`, `cny`) give values of its own
 // types, with their own operators and printing.
 // expect-exit: 0
 // expect-stdout:
 // ₩16500
 // $25.00
 // ₩51500
+// ¥35.00
+// ¥212.50
 
 use core::ops::Add;
 use core::fmt::{Display, Formatter, FmtError};
 
 struct Won { v: i64; }
 struct Usd { cents: i64; }
+struct Cny { fen: i64; }
 
 #[literal(number "won")]
 fn won(v: i64) -> Won { Won { v: v } }
 
 #[literal(number "usd")]
 fn usd(v: f64) -> Usd { Usd { cents: (v * 100.0).round() as i64 } }
+
+#[literal(number "cny")]
+fn cny(v: f64) -> Cny { Cny { fen: (v * 100.0).round() as i64 } }
 
 impl Add for Won {
     type Output = Won;
@@ -28,6 +34,11 @@ impl Add for Usd {
     fn add(self, o: Usd) -> Usd { Usd { cents: self.cents + o.cents } }
 }
 
+impl Add for Cny {
+    type Output = Cny;
+    fn add(self, o: Cny) -> Cny { Cny { fen: self.fen + o.fen } }
+}
+
 impl Display for Won {
     fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"₩{self.v}") }
 }
@@ -37,8 +48,16 @@ impl Display for Usd {
         try f.write_str(f"${self.cents / 100}.{self.cents % 100:02}")
     }
 }
+
+impl Display for Cny {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"¥{self.fen / 100}.{self.fen % 100:02}")
+    }
+}
+
 impl Usd {
     fn to_won(self, rate: i64) -> Won { Won { v: self.cents * rate / 100 } }
+    fn to_cny(self, rate: f64) -> Cny { Cny { fen: (self.cents as f64 * rate).round() as i64 } }
 }
 
 fn main() {
@@ -47,4 +66,7 @@ fn main() {
     let book = 19.99usd + 5.01usd;
     println(book);
     println(lunch + book.to_won(1400));
+    let tea = 28.5cny + 6.5cny;
+    println(tea);
+    println(tea + book.to_cny(7.1));
 }
