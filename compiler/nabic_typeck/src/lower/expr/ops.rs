@@ -1462,7 +1462,7 @@ pub(crate) fn dispatch_user_op_lit(
                      no `impl {shown}<{rn}> for {ty_name}`"
                 ),
             );
-            ctx.help_last(rhs_mismatch_help(ctx, &lhs, r, &rt));
+            ctx.help_last(rhs_mismatch_help(ctx, &lhs, r, &rt, (&ty_name, &rn)));
             return e;
         }
         let e = ctx.error_expr(
@@ -1517,6 +1517,7 @@ fn rhs_mismatch_help(
     lhs: &HirExpr,
     rhs: &HirExpr,
     rt: &HirTy,
+    (ln, rn): (&str, &str),
 ) -> Option<String> {
     let HirTy::Struct(id) = crate::lower::infer::zonk(ctx, &lhs.ty) else {
         return None;
@@ -1526,7 +1527,21 @@ fn rhs_mismatch_help(
     let lsrc = crate::lower::suggest::short_src(ctx, lhs.span);
     let rsrc = crate::lower::suggest::short_src(ctx, rhs.span);
     if let HirTy::Struct(r) = rt {
-        if enum_base_name(&ctx.struct_def(*r).name) == enum_base_name(&d.name) {
+        let rd = ctx.struct_def(*r);
+        if enum_base_name(&rd.name) == enum_base_name(&d.name) {
+            // Same element types, other const parameters (`Mass` and
+            // `Length`, both a `Quantity<f64, ..>`): no element type
+            // to change, they are two types.
+            let types_match = d.generic_args.len() == rd.generic_args.len()
+                && d.generic_args.iter().zip(&rd.generic_args).all(|(a, b)| {
+                    matches!(a, HirTy::Const(..)) && matches!(b, HirTy::Const(..)) || a == b
+                });
+            if types_match {
+                return Some(format!(
+                    "`{ln}` and `{rn}` are two different types (other const parameters of \
+                     `{leaf}`)"
+                ));
+            }
             return crate::lower::compat::same_elem_help(ctx, &lhs.ty, rsrc);
         }
     }
