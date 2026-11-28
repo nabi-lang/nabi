@@ -439,6 +439,65 @@ pub(crate) extern "C" fn on_signal(sig: libc::c_int) {
     }
 }
 
+/// Held across each look-then-set of a termination signal's action, so
+/// [`flush_on_kill`] never replaces a handler the program installs.
+#[cfg(unix)]
+static ACTION: nabir_common::sys::Lock = nabir_common::sys::Lock::new();
+
+/// The signals whose default action ends the process quietly.
+#[cfg(unix)]
+const ENDS: [libc::c_int; 3] = [libc::SIGHUP, libc::SIGINT, libc::SIGTERM];
+
+/// Flush stdout, then die of `sig` as if it had never been caught, so
+/// the exit status still says which signal it was.
+#[cfg(unix)]
+extern "C" fn on_end(sig: libc::c_int) {
+    crate::stdio::flush_in_signal();
+    // SAFETY: async-signal-safe calls on locals.
+    unsafe {
+        let mut sa: libc::sigaction = core::mem::zeroed();
+        sa.sa_sigaction = libc::SIG_DFL;
+        libc::sigemptyset(&mut sa.sa_mask);
+        libc::sigaction(sig, &sa, ptr::null_mut());
+        let mut set: libc::sigset_t = core::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, sig);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, ptr::null_mut());
+        libc::raise(sig);
+        libc::_exit(128 + sig);
+    }
+}
+
+/// Flush stdout when `SIGHUP`, `SIGINT` or `SIGTERM` ends the process.
+/// Only a signal still at its default action gets the handler: one the
+/// program ignores or handles is left alone, and a later
+/// `nabi_os_signal_install` replaces it.
+#[cfg(unix)]
+pub(crate) fn flush_on_kill() {
+    ACTION.lock();
+    for sig in ENDS {
+        // SAFETY: zeroed `sigaction`s with the fields set below are valid.
+        unsafe {
+            let mut old: libc::sigaction = core::mem::zeroed();
+            if libc::sigaction(sig, ptr::null(), &mut old) < 0 || old.sa_sigaction != libc::SIG_DFL
+            {
+                continue;
+            }
+            let mut sa: libc::sigaction = core::mem::zeroed();
+            sa.sa_sigaction = on_end as *const () as libc::sighandler_t;
+            libc::sigemptyset(&mut sa.sa_mask);
+            for s in ENDS {
+                libc::sigaddset(&mut sa.sa_mask, s);
+            }
+            libc::sigaction(sig, &sa, ptr::null_mut());
+        }
+    }
+    ACTION.unlock();
+}
+
+#[cfg(target_os = "wasi")]
+pub(crate) const fn flush_on_kill() {}
+
 /// Route signal `sig` to the signal pipe (`process::on_signal`). The first
 /// call creates the pipe; `*read_end` gets its read end (blocking,
 /// close-on-exec) on that call, -1 after. 0 or `-errno` (`EINVAL` for
@@ -473,8 +532,12 @@ pub extern "C" fn nabi_os_signal_install(sig: i32, read_end: *mut u8) -> i32 {
         sa.sa_sigaction = on_signal as *const () as libc::sighandler_t;
         sa.sa_flags = libc::SA_RESTART;
         libc::sigemptyset(&mut sa.sa_mask);
-        if libc::sigaction(sig, &sa, ptr::null_mut()) < 0 {
-            return -errno();
+        ACTION.lock();
+        let r = libc::sigaction(sig, &sa, ptr::null_mut());
+        let e = errno();
+        ACTION.unlock();
+        if r < 0 {
+            return -e;
         }
     }
     0

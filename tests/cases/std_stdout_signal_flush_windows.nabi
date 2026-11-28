@@ -1,0 +1,32 @@
+// only-os: windows
+// needs: process fs
+// expect-exit: 0
+// expect-stdout:
+// raised: [up] exit 3
+
+// Stdout to a file is block-buffered, and `raise(Signal::Interrupt)`
+// with no handler ends the process through the CRT, which skips
+// `atexit`: the runtime writes the buffer out first. (Console events
+// take the same path, from the runtime's console control handler.)
+use core::io::IoError;
+use std::env;
+use std::fs;
+use std::fs::File;
+use std::process;
+use std::process::{Command, Signal, Stdio};
+
+fn main() throws (IoError) {
+    let args = env::args();
+    if args.len() > 1 {
+        println("up");
+        try process::raise(Signal::Interrupt);
+        println("survived");
+        return;
+    }
+    let out = env::temp_dir() / "nabi_signal_flush_windows.txt";
+    let st = try Command::new(args[0]).arg("child")
+        .stdout(Stdio::File(try File::create(out))).status();
+    let text = (try fs::read_to_str(out)).trim().replace("\r\n", "|").replace("\n", "|");
+    try fs::remove_file(out);
+    println(f"raised: [{text}] exit {st.code() ?? -1}");
+}

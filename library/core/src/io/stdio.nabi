@@ -16,7 +16,9 @@ impl Debug for Stdin {
 }
 
 /// Standard output, through the runtime's buffer shared with `print`:
-/// flushed at a newline on a terminal, when full, and at exit.
+/// flushed at a newline on a terminal, when full, at exit, and when a
+/// `SIGTERM` / `SIGINT` / `SIGHUP` (Windows: Ctrl-C, Ctrl-Break, console
+/// close) the program does not handle ends the process.
 pub struct Stdout {}
 
 impl Debug for Stdout {

@@ -505,6 +505,21 @@ pub(crate) unsafe extern "system" fn on_ctrl(ev: DWORD) -> win::BOOL {
     i32::from(deliver(event_signal(ev)))
 }
 
+/// Flush stdout on a console event, then pass it on: to a later
+/// handler that routes it, else the default one, which ends the
+/// process.
+unsafe extern "system" fn flush_ctrl(_ev: DWORD) -> win::BOOL {
+    crate::stdio::flush_in_signal();
+    0
+}
+
+/// Flush stdout when Ctrl-C, Ctrl-Break or a console close ends the
+/// process.
+pub(crate) fn flush_on_kill() {
+    // SAFETY: the handler is a plain function.
+    unsafe { win::SetConsoleCtrlHandler(Some(flush_ctrl), 1) };
+}
+
 /// Route `sig` (2 `SIGINT`: Ctrl-C, 21 `SIGBREAK`: Ctrl-Break, 1
 /// `SIGHUP`: console close / logoff / shutdown) to the signal pipe. The
 /// first call creates the pipe; `*read_end` gets its read end on that
@@ -545,6 +560,8 @@ pub extern "C" fn nabi_os_raise(sig: i32) -> i32 {
     if deliver(sig) {
         return 0;
     }
+    // The CRT's default actions end the process without `atexit`.
+    crate::stdio::flush_in_signal();
     // SAFETY: plain CRT call.
     if unsafe { libc::raise(sig) } != 0 {
         -win::ERROR_INVALID_PARAMETER
