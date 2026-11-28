@@ -54,7 +54,7 @@ pub struct Parser<'a> {
     /// `while` / `for` heads so the `{` opens the body.
     struct_expr_allowed: bool,
     /// In a match guard, outside any bracket: `->` there ends the guard
-    /// (a mistyped `=>`) instead of being `→`.
+    /// (a mistyped `=>`) instead of calling a bound `->`.
     arrow_ends_guard: bool,
     /// One struct literal allowed at the start of a block head, already
     /// reported (E0013), so the rest of the head parses as written.
@@ -424,7 +424,7 @@ impl<'a> Parser<'a> {
 
     /// Run `f` with `struct_expr_allowed` = `allowed`, restoring it even
     /// when `f` bails out with `None`. `allowed` is a bracket's inside,
-    /// where a guard's `->` is `→` again.
+    /// where a guard's `->` is an operator again.
     fn with_struct_expr<T>(&mut self, allowed: bool, f: impl FnOnce(&mut Self) -> T) -> T {
         let prev = std::mem::replace(&mut self.struct_expr_allowed, allowed);
         let guard = self.arrow_ends_guard;

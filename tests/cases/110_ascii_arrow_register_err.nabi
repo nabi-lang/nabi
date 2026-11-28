@@ -1,9 +1,8 @@
-// expect-error: `->` is the fixed spelling of `→` between two values: the parser reads `a -> b` as `a → b`
-// expect-error: help: register `→` instead (`#[infix("→", like = "|")]`): `a → b` and `a -> b` both call it
+// expect-error: `->` is not a built-in operator token; for `#[infix]`, a new token needs `like = "<existing token>"`
 
-// `->` cannot be bound: it already spells `→`.
+// `->` has no level of its own: binding it needs `like`.
 trait Convert {
-    #[infix("->", like = "|")]
+    #[infix("->")]
     fn convert_to(self, rhs: Self) -> Self;
 }
 

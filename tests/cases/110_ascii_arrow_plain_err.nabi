@@ -1,7 +1,7 @@
 // expect-error: 6:15: expected `;`, found `->`
-// expect-error: help: `->` starts a return type (`fn f() -> T`); between two values it is `→`, which no trait in scope registers
+// expect-error: help: `->` starts a return type (`fn f() -> T`); between two values it needs a trait in scope with `#[infix("->", like = "|")]`
 
-// `->` between two values, with no `→` in scope.
+// `->` between two values, with no trait binding it.
 fn main() {
     let x = 1 -> 2;
 }

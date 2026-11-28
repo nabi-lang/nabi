@@ -1,13 +1,13 @@
 // expect-error: 17:34: expected `=>`, found `->`
 // expect-error: help: match arms are written `pattern => value`
 
-// In a guard, outside brackets, `->` is a mistyped `=>` even with `→`
-// in scope.
+// In a guard, outside brackets, `->` is a mistyped `=>` even with a
+// bound `->` in scope.
 struct Cm { v: i64; }
 struct In;
 
 trait Convert<Rhs> {
-    #[infix("→", like = "|")]
+    #[infix("->", like = "|")]
     fn convert_to(self, unit: Rhs) -> i64;
 }
 
