@@ -151,10 +151,11 @@ pub(crate) fn fmt_summary(a: &Args, total: usize, changed: usize, errors: usize)
 
 /// The operator tokens the files of the package `dir` lex: its own and
 /// the exported ones of the dependencies resolvable offline from
-/// `nabi.lock` (none for files outside a package).
-fn package_ops(dir: &Path) -> Vec<String> {
+/// `nabi.lock` (none for files outside a package); with why the
+/// dependencies could not be read, when they could not.
+fn package_ops(dir: &Path) -> (Vec<String>, Option<String>) {
     let Some(root) = nabic_interface::package_root(dir) else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     let mut session = nabic_interface::Session::new();
     let opts = crate::resolve::Options {
@@ -166,7 +167,11 @@ fn package_ops(dir: &Path) -> Vec<String> {
     };
     let graph = crate::delegate::load_dir(&root)
         .and_then(|ctx| crate::resolve::resolve(&crate::home(), &ctx, &opts));
-    for p in graph.map(|g| g.packages).unwrap_or_default() {
+    let (packages, unread) = match graph {
+        Ok(g) => (g.packages, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    for p in packages {
         for n in std::iter::once(&p.code).chain(&p.aliases) {
             session.add_extern(crate::manifest::code_name(n), p.root.clone());
         }
@@ -176,14 +181,14 @@ fn package_ops(dir: &Path) -> Vec<String> {
         .map(|f| root.join(f))
         .filter(|p| p.is_file())
         .collect();
-    session.operator_tokens(&roots)
+    (session.operator_tokens(&roots), unread)
 }
 
 /// `nabi fmt [path..]`: see `fmt_roots` and `fmt_files`.
 pub(crate) fn cmd_fmt(a: &Args) {
     let files = fmt_files(a, &fmt_roots(a));
     let (mut changed, mut errors) = (0, 0);
-    let mut ops: std::collections::HashMap<Option<PathBuf>, Vec<String>> =
+    let mut ops: std::collections::HashMap<Option<PathBuf>, (Vec<String>, Option<String>)> =
         std::collections::HashMap::new();
     for f in &files {
         let src = match std::fs::read_to_string(f) {
@@ -192,11 +197,18 @@ pub(crate) fn cmd_fmt(a: &Args) {
         };
         let dir = f.parent().unwrap_or_else(|| Path::new("."));
         let pkg = nabic_interface::package_root(dir);
-        let ops = ops.entry(pkg).or_insert_with(|| package_ops(dir));
+        let (ops, unread) = ops.entry(pkg).or_insert_with(|| package_ops(dir));
         let formatted = match nabic_tools::fmt::format_file_with(f, &src, ops) {
             Ok(s) => s,
             Err(e) if e.starts_with("error[") => {
                 eprintln!("{e}");
+                // A dependency's operator is unknown while its source is
+                // not there: say so once, and how to get it.
+                if let Some(why) = unread.take().filter(|_| e.contains("registers it")) {
+                    term::note(&format!(
+                        "the dependencies' operators could not be read ({why}); run `nabi build` once, then `nabi fmt` again"
+                    ));
+                }
                 errors += 1;
                 continue;
             }

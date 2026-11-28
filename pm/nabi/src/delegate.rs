@@ -399,8 +399,45 @@ pub(crate) fn tool(g: &Global, cmd: &str, pre: &[String], post: &[String]) -> Re
         let me = std::env::current_exe().ok();
         nabic_core::set_handoff("NABI", me.as_deref().map(Path::as_os_str));
     }
+    if cmd == "fmt" && !g.offline {
+        fetch_for_fmt(g, post);
+    }
     let deps = (cmd == "lsp").then(|| lsp_deps(g, pre, post));
     Ok(crate::tools::run(inv.args, inv.tail, deps))
+}
+
+/// `nabi fmt` lexes a package with its dependencies' operators, read from
+/// the cache: fetch the sources missing there, as a build would, before
+/// the first build. Never changes `nabi.lock`; a package that cannot be
+/// resolved is left to fmt, which says what it could not read.
+fn fetch_for_fmt(g: &Global, post: &[String]) {
+    let mut paths: Vec<&str> = post
+        .iter()
+        .take_while(|a| *a != "--")
+        .filter(|a| !a.starts_with('-'))
+        .map(String::as_str)
+        .collect();
+    if paths.is_empty() {
+        paths.push(".");
+    }
+    let mut seen = Vec::new();
+    for p in paths {
+        let Some(dir) = package_dir(Path::new(p)) else {
+            continue;
+        };
+        if seen.contains(&dir) {
+            continue;
+        }
+        let opts = Options {
+            locked: true,
+            dev: true,
+            ..options(g)
+        };
+        if let Ok(ctx) = load_dir(&dir) {
+            let _ = resolve::resolve(&home(), &ctx, &opts);
+        }
+        seen.push(dir);
+    }
 }
 
 /// The language server's dependencies of directory `dir`: its package's
