@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.8 (2026-11-28)
+
+<!-- begin summary -->
+Summary: The `units` package 0.1.2 bundled, which converts with `->` (`5km -> mi`).
+<!-- end summary -->
+
+<!-- silent: #67 -->
+
 ## 0.1.7 (2026-11-28)
 
 <!-- begin summary -->
