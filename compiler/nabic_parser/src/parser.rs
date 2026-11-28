@@ -53,6 +53,9 @@ pub struct Parser<'a> {
     /// Whether `Path { .. }` is a struct literal here; off in `if` /
     /// `while` / `for` heads so the `{` opens the body.
     struct_expr_allowed: bool,
+    /// In a match guard, outside any bracket: `->` there ends the guard
+    /// (a mistyped `=>`) instead of being `→`.
+    arrow_ends_guard: bool,
     /// One struct literal allowed at the start of a block head, already
     /// reported (E0013), so the rest of the head parses as written.
     head_struct_lit: bool,
@@ -329,6 +332,7 @@ impl<'a> Parser<'a> {
             file: file.into(),
             diagnostics: Vec::new(),
             struct_expr_allowed: true,
+            arrow_ends_guard: false,
             head_struct_lit: false,
             stmt_head: false,
             type_sum_allowed: true,
@@ -419,11 +423,23 @@ impl<'a> Parser<'a> {
     }
 
     /// Run `f` with `struct_expr_allowed` = `allowed`, restoring it even
-    /// when `f` bails out with `None`.
+    /// when `f` bails out with `None`. `allowed` is a bracket's inside,
+    /// where a guard's `->` is `→` again.
     fn with_struct_expr<T>(&mut self, allowed: bool, f: impl FnOnce(&mut Self) -> T) -> T {
         let prev = std::mem::replace(&mut self.struct_expr_allowed, allowed);
+        let guard = self.arrow_ends_guard;
+        self.arrow_ends_guard = guard && !allowed;
         let r = f(self);
         self.struct_expr_allowed = prev;
+        self.arrow_ends_guard = guard;
+        r
+    }
+
+    /// A match guard: `n if n > 2 -> 1` reads `->` as a mistyped `=>`.
+    fn parse_guard(&mut self) -> Option<Expr> {
+        let prev = std::mem::replace(&mut self.arrow_ends_guard, true);
+        let r = self.parse_expr();
+        self.arrow_ends_guard = prev;
         r
     }
 

@@ -1,0 +1,18 @@
+// expect-error: 17:34: expected `=>`, found `->`
+// expect-error: help: match arms are written `pattern => value`
+
+// In a guard, outside brackets, `->` is a mistyped `=>` even with `→`
+// in scope.
+struct Cm { v: i64; }
+struct In;
+
+trait Convert<Rhs> {
+    #[infix("→", like = "|")]
+    fn convert_to(self, unit: Rhs) -> i64;
+}
+
+impl Convert<In> for Cm { fn convert_to(self, u: In) -> i64 { self.v * 10 } }
+
+fn main() {
+    let a = match 3 { n if n > 2 -> 1, _ => 0 };
+}

@@ -203,6 +203,21 @@ impl Parser<'_> {
                 )
                 .with_fix(at, "+ ", "join them with `+`");
         }
+        // `->` where no return type can start: between two values it is
+        // `→`, so say whether a trait in scope registers that.
+        if matches!(found, TokenKind::Arrow) && !matches!(kind, TokenKind::FatArrow) {
+            let d = d.with_span(here, "`->` is not an operator here");
+            return if self.ext.level("→", Fixity::Infix).is_some() {
+                d.with_help(
+                    "`->` starts a return type (`fn f() -> T`), or is `→` between two values",
+                )
+            } else {
+                d.with_help(
+                    "`->` starts a return type (`fn f() -> T`); between two values it is `→`, \
+                     which no trait in scope registers",
+                )
+            };
+        }
         match kind {
             TokenKind::Semi if prev.is_some_and(|p| p.line < here.line || here.is_dummy()) => {
                 let at = self.after_prev();

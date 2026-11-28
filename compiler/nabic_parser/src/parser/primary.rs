@@ -271,7 +271,7 @@ impl Parser<'_> {
                         let marks = (p.pending_stmts.len(), p.lifted.len());
                         let pat = p.parse_pattern()?;
                         let guard = if p.eat(&TokenKind::If) {
-                            Some(p.parse_expr()?)
+                            Some(p.parse_guard()?)
                         } else {
                             None
                         };
