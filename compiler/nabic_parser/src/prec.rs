@@ -489,6 +489,21 @@ fn fixed_elsewhere(attr: &Attribute, symbol: &str, fixity: Fixity) -> Option<Nab
     .filter(|(f, _)| fixed_prec(symbol, *f).is_some())
     .map(|(_, s)| s)
     .collect();
+    // `a -> b` already reads as `a → b`, as `a ≤ b` reads as `a <= b`.
+    if symbol == "->" && fixity == Fixity::Infix {
+        return Some(
+            meta_err(
+                attr,
+                "`->` is the fixed spelling of `→` between two values: the parser reads \
+                 `a -> b` as `a → b`"
+                    .to_owned(),
+            )
+            .with_help(
+                "register `→` instead (`#[infix(\"→\", like = \"|\")]`): `a → b` and `a -> b` \
+                 both call it",
+            ),
+        );
+    }
     let has = if forms.is_empty() {
         "it is syntax, not an operator".to_owned()
     } else {

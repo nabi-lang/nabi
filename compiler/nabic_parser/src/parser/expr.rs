@@ -924,7 +924,7 @@ impl Parser<'_> {
             (TokenKind::Pipe, Fixity::Infix) => "|".into(),
             // `->` between two values is the ASCII spelling of `→`, as
             // `<=` is of `≤`; it only binds when a trait registers `→`.
-            (TokenKind::Arrow, Fixity::Infix) => "→".into(),
+            (TokenKind::Arrow, Fixity::Infix) if !self.arrow_ends_guard => "→".into(),
             (TokenKind::Caret, Fixity::Infix) => "^".into(),
             (TokenKind::Shl, Fixity::Infix) => "<<".into(),
             (TokenKind::Shr, Fixity::Infix) => ">>".into(),

@@ -1,0 +1,10 @@
+// expect-error: `->` is the fixed spelling of `→` between two values: the parser reads `a -> b` as `a → b`
+// expect-error: help: register `→` instead (`#[infix("→", like = "|")]`): `a → b` and `a -> b` both call it
+
+// `->` cannot be bound: it already spells `→`.
+trait Convert {
+    #[infix("->", like = "|")]
+    fn convert_to(self, rhs: Self) -> Self;
+}
+
+fn main() {}
