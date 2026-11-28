@@ -1,0 +1,51 @@
+// Searching one file and painting its matches.
+
+use core::io::IoError;
+use regex::Regex;
+use std::fs;
+use std::path::Path;
+
+/// A NUL byte this early means the file is not text (as git and ripgrep do).
+const SNIFF: usize = 8192;
+
+/// One matching line: its 1-based number, its text and the byte ranges
+/// that matched.
+pub struct Line {
+    pub number: usize;
+    pub text: str;
+    pub spans: List<Range<usize>>;
+}
+
+/// The matching lines of one file.
+pub struct Found {
+    pub path: Path;
+    pub lines: List<Line>;
+}
+
+/// The lines of `path` that `re` matches; `none` for a binary file.
+pub fn file(re: Regex, path: Path) throws (IoError) -> Found | none {
+    let bytes = try fs::read(path);
+    if bytes[:bytes.len().min(SNIFF)].contains(0u8) {
+        return none;
+    }
+    let lines = str::from_utf8_lossy(bytes)
+        .lines()
+        .enumerate()
+        .map(|(i, text)| Line { number: i + 1, text, spans: re.find_iter(text).map(|m| m.range()).collect() })
+        .filter(|l| !l.spans.is_empty())
+        .collect();
+    Found { path, lines }
+}
+
+/// `line.text` with each match in bold red.
+pub fn paint(line: Line) -> str {
+    let out = StrBuf::new();
+    let at = 0usize;
+    for r in line.spans {
+        out.push_str(line.text[at:r.start]);
+        out.push_str(f"\x1b[1;31m{line.text[r.start:r.end]}\x1b[0m");
+        at = r.end;
+    }
+    out.push_str(line.text[at:]);
+    out.to_str()
+}

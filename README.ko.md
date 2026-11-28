@@ -70,6 +70,8 @@ nabi test
 nabi jupyter install  # Jupyter / VS Code용 Nabi 커널
 ```
 
+완성된 프로그램(병렬 grep, REST 서버, 채팅 서버, 인터프리터, C 연동 등)은 [examples/](examples)에 있습니다.
+
 ## 소스에서 빌드하기
 
 빌드에는 `rust-toolchain.toml`에 고정된 Rust 툴체인이 설치된 rustup과, Rust가

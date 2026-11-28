@@ -1,0 +1,44 @@
+//! Source spans and the one error type every stage throws.
+
+/// Where a token or node sits: 1-based line and column, and its width,
+/// all counted in characters.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Span {
+    pub line: usize;
+    pub col: usize;
+    pub len: usize;
+}
+
+/// A lexing, parsing or runtime error, pointing at the code it is about.
+#[derive(Clone)]
+pub struct LangError {
+    pub msg: str;
+    pub span: Span;
+}
+
+impl LangError {
+    pub fn new(msg: str, span: Span) -> LangError { LangError { msg: msg, span: span } }
+
+    /// The error as a compiler would print it: location, message, the
+    /// offending source line and a caret under the span.
+    pub fn render(self, src: str, file: str) -> str {
+        let s = self.span;
+        let text = src.lines().nth(s.line - 1) ?? "";
+        let num = f"{s.line}";
+        let pad = " ".repeat(num.len());
+        let marks = "^".repeat(s.len.max(1));
+        f"{file}:{s.line}:{s.col}: error: {self.msg}\n{pad} |\n{num} | {text}\n{pad} | {" ".repeat(s.col - 1)}{marks}"
+    }
+}
+
+impl Display for LangError {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(f"{self.span.line}:{self.span.col}: {self.msg}")
+    }
+}
+
+impl Debug for LangError {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"LangError({self})") }
+}
+
+impl Error for LangError {}

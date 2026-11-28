@@ -219,14 +219,14 @@ jobs:
               relevant=$(while IFS= read -r f; do
                 [ -n "$f" ] || continue
                 case $f in
-                docs/* | *.md | LICENSE* | assets/* | .gitignore | .github/ISSUE_TEMPLATE/* | .github/dependabot.yml | .github/CODEOWNERS | .github/workflows/*) ;;
+                docs/* | examples/* | *.md | LICENSE* | assets/* | .gitignore | .github/ISSUE_TEMPLATE/* | .github/dependabot.yml | .github/CODEOWNERS | .github/workflows/*) ;;
                 *)
                   echo relevant
                   break
                   ;;
                 esac
               done <<< "$changed")
-              [ -z "$relevant" ] && skip="inert change (docs / CI config only)"
+              [ -z "$relevant" ] && skip="inert change (docs / examples / CI config only)"
             fi
             [ -z "$skip" ] || {
               hosts="" jobs=""

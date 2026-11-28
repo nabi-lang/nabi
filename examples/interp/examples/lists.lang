@@ -1,0 +1,31 @@
+# map, filter and reduce, written in the language itself.
+fn map(xs, f) {
+    let out = []
+    let i = 0
+    while i < len(xs) { push(out, f(xs[i])); i = i + 1 }
+    out
+}
+
+fn filter(xs, keep) {
+    let out = []
+    let i = 0
+    while i < len(xs) {
+        if keep(xs[i]) { push(out, xs[i]) }
+        i = i + 1
+    }
+    out
+}
+
+fn reduce(xs, acc, f) {
+    let i = 0
+    while i < len(xs) { acc = f(acc, xs[i]); i = i + 1 }
+    acc
+}
+
+let xs = range(10)
+let squares = map(xs, fn(x) { x * x })
+let even = filter(squares, fn(x) { x % 2 == 0 })
+print("squares:", squares)
+print("even:", even)
+print("sum:", reduce(even, 0, fn(a, b) { a + b }))
+print("words:", map(["nabi", "is", "a", "butterfly"], fn(w) { len(w) }))

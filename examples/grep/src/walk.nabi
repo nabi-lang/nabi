@@ -1,0 +1,31 @@
+// Directory walk. Hidden directories and `target/` are pruned before
+// they are read, so a big build tree costs nothing.
+
+use core::io::IoError;
+use std::fs;
+use std::path::Path;
+
+/// The files under `root`, or `root` itself when it is a file. Each path
+/// that cannot be read is reported to `fail` and the walk goes on.
+pub fn files(root: str, fail: fn(str)) -> List<Path> {
+    let out: List<Path> = [];
+    let meta = try fs::metadata(root) catch e: IoError {
+        fail(f"{e}");
+        return out;
+    };
+    if meta.is_dir() { visit(Path::new(root), out, fail); } else { out.push(Path::new(root)); }
+    out
+}
+
+fn visit(dir: Path, out: List<Path>, fail: fn(str)) {
+    try for e in fs::read_dir(dir) {
+        if e.is_dir() {
+            if !pruned(e.file_name()) { visit(e.path(), out, fail); }
+        } else if e.is_file() {
+            out.push(e.path());
+        }
+    } catch e: IoError { fail(f"{e}") }
+}
+
+/// Directories never searched.
+fn pruned(name: str) -> bool { name.starts_with(".") || name == "target" }

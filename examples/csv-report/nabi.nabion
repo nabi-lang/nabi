@@ -1,0 +1,12 @@
+Package {
+    name: "csv-report",
+    version: "0.1.0",
+    nabi_version: "0.1.8",
+    toolchain: "0.1",
+    deps: {
+        "csv": Dep::version("^0.1.0"),
+        "stats": Dep::version("^0.1.1"),
+        "table": Dep::version("^0.1.4"),
+        "json": Dep::version("^0.1.0"),
+    },
+}

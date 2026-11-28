@@ -1,0 +1,70 @@
+name: CI / Examples
+
+# The packages in examples/ against the release install.sh names: each one
+# builds, is formatted, lints clean and passes its tests, on every host
+# family. Weekly too, so a package update that breaks one shows up.
+on:
+  push:
+    branches: [main]
+    paths: [examples/**, install.sh, install.ps1, .github/workflows/examples.yml]
+  pull_request:
+    paths: [examples/**, install.sh, install.ps1, .github/workflows/examples.yml]
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  examples:
+    name: Check the examples (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-26, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install nabi
+        if: runner.os != 'Windows'
+        env:
+          NABI_NO_MODIFY_PATH: "1"
+        run: |
+          sh install.sh
+          echo "$HOME/.nabi/bin" >> "$GITHUB_PATH"
+      - name: Install nabi (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          NABI_NO_MODIFY_PATH: "1"
+        run: |
+          ./install.ps1
+          "$env:USERPROFILE\.nabi\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      # Each package on its own, so one failure does not hide the others.
+      - name: Build, format, lint and test each example
+        shell: bash
+        run: |
+          nabi --version
+          failed=""
+          for dir in examples/*/; do
+            name=$(basename "$dir")
+            echo "::group::$name"
+            ok=1
+            (cd "$dir" && nabi build) || ok=0
+            (cd "$dir" && nabi fmt --check) || ok=0
+            (cd "$dir" && nabi lint) || ok=0
+            if [ -d "$dir/tests" ] || grep -rqs '#\[test\]' "$dir/src"; then
+              (cd "$dir" && nabi test) || ok=0
+            fi
+            echo "::endgroup::"
+            [ "$ok" = 1 ] || failed="$failed $name"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::examples failing:$failed"
+            exit 1
+          fi

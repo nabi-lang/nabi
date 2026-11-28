@@ -1,0 +1,51 @@
+// Command-line parsing. Flags may come anywhere; `--` ends them.
+
+/// Usage line printed with every usage error.
+pub const USAGE: str = "usage: grep [-i] [-c] [-l] <pattern> [path..]";
+
+/// What the command line asked for.
+pub struct Opts {
+    pub pattern: str;
+    pub paths: List<str>;
+    pub ignore_case: bool;
+    pub count: bool;
+    pub names: bool;
+}
+
+/// A command line that does not make sense.
+#[derive(Debug)]
+pub struct UsageError {
+    pub message: str;
+}
+
+impl Display for UsageError {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message) }
+}
+
+impl Error for UsageError {}
+
+/// Parse the arguments after the program name.
+pub fn parse(args: List<str>) throws (UsageError) -> Opts {
+    let pattern: str | none = none;
+    let paths: List<str> = [];
+    let (ignore_case, count, names, flags) = (false, false, false, true);
+    for a in args {
+        match a {
+            "-i" if flags => ignore_case = true,
+            "-c" if flags => count = true,
+            "-l" if flags => names = true,
+            "--" if flags => flags = false,
+            _ if flags && a.starts_with("-") && a != "-" => throw UsageError {
+                message: f"unknown flag `{a}`; the flags are -i, -c and -l (write `-- {a}` to search for it)",
+            },
+            _ if pattern is none => pattern = a,
+            _ => paths.push(a),
+        }
+    }
+    let pattern = pattern ?? throw UsageError { message: "missing pattern; write one first, as in `grep 'fn \\w+' src`" };
+    if count && names {
+        throw UsageError { message: "-c and -l do not mix; pick one" };
+    }
+    let paths = if paths.is_empty() { ["."] } else { paths };
+    Opts { pattern, paths, ignore_case, count, names }
+}

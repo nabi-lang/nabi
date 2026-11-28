@@ -51,6 +51,8 @@ nabi test
 nabi jupyter install  # 用于 Jupyter / VS Code 的 Nabi 内核
 ```
 
+完整的程序（并行 grep、REST 服务器、聊天服务器、解释器、C 互操作等）在 [examples/](examples) 中。
+
 ## 从源码构建
 
 构建需要 rustup（含 `rust-toolchain.toml` 中固定的 Rust 工具链），以及 Rust 本身使用的 C 编译器和链接器；下面的运行时步骤还需要 `curl`、`python3` 和支持 xz 的 `tar`（它会为 `llvm-ar` 添加 rustup 的 `llvm-tools` 组件）。

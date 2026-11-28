@@ -69,6 +69,8 @@ nabi test
 nabi jupyter install  # Nabi kernel for Jupyter / VS Code
 ```
 
+Whole programs (a parallel grep, a REST server, a chat server, an interpreter, C interop and more) are in [examples/](examples).
+
 ## Building from source
 
 Building needs rustup with the Rust toolchain pinned in `rust-toolchain.toml`

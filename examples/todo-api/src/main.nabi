@@ -1,0 +1,209 @@
+//! A JSON REST API over an in-memory todo list.
+//!
+//! Routes: `GET /todos`, `POST /todos`, `GET /todos/<id>`,
+//! `PATCH /todos/<id>`, `DELETE /todos/<id>`.
+
+use http::{Body, HttpError, Method, Request, Response, StatusCode};
+use json::JsonError;
+
+/// Largest request body read, in bytes.
+const MAX_BODY: usize = 64 * 1024;
+
+/// A stored todo.
+#[derive(json::Json)]
+struct Todo {
+    id: u64;
+    title: str;
+    done: bool = false;
+}
+
+/// The body of `POST /todos`.
+#[derive(json::Json)]
+struct NewTodo {
+    title: str;
+}
+
+/// The body of `PATCH /todos/<id>`: members left out stay as they are.
+#[derive(json::Json)]
+struct TodoPatch {
+    title: str | none;
+    done: bool | none;
+}
+
+/// The body of every error response.
+#[derive(json::Json)]
+struct ErrorBody {
+    error: str;
+}
+
+/// What a request asks for.
+enum Route {
+    List,
+    Create,
+    Show(u64),
+    Update(u64),
+    Remove(u64),
+}
+
+/// Why a request failed. Each kind maps to one status code.
+#[derive(Debug)]
+enum ApiError {
+    BadRequest(str),
+    NotFound,
+    /// The methods the path does take, for `Allow`.
+    MethodNotAllowed(str),
+}
+
+impl Display for ApiError {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(match self {
+            ApiError::BadRequest(why) => why,
+            ApiError::NotFound => "not found",
+            ApiError::MethodNotAllowed(_) => "method not allowed",
+        })
+    }
+}
+
+impl Error for ApiError {}
+
+/// The todo list, shared by every request. Copies share the same list.
+struct Store {
+    todos: Mutex<Dict<u64, Todo>>;
+    next_id: Atomic<u64>;
+}
+
+impl Store {
+    fn new() -> Store {
+        Store { todos: Mutex::new(Dict::new()), next_id: Atomic::new(1u64) }
+    }
+
+    /// Every todo, oldest first.
+    fn list(self) -> List<Todo> {
+        let out: List<Todo> = List::new();
+        using g = self.todos.lock() {
+            for t in g.get().values() { out.push(t); }
+        }
+        out
+    }
+
+    fn get(self, id: u64) -> Todo | none {
+        using g = self.todos.lock() { return g.get().get(id); }
+    }
+
+    fn add(self, title: str) -> Todo {
+        let t = Todo { id: self.next_id.fetch_add(1u64), title: title };
+        using g = self.todos.lock() { _ = g.get().insert(t.id, t); }
+        t
+    }
+
+    /// Apply `p` to todo `id`; `none` if there is no such todo.
+    fn update(self, id: u64, p: TodoPatch) -> Todo | none {
+        using g = self.todos.lock() {
+            let t = g.get().get(id)?;
+            let new = Todo { id: id, title: p.title ?? t.title, done: p.done ?? t.done };
+            _ = g.get().insert(id, new);
+            return new;
+        }
+    }
+
+    fn remove(self, id: u64) -> bool {
+        using g = self.todos.lock() { return g.get().remove(id) is Todo; }
+    }
+}
+
+/// Map a method and path to a route.
+fn route(method: Method, path: str) throws (ApiError) -> Route {
+    if path == "/todos" {
+        return match method.as_str() {
+            "GET" => Route::List,
+            "POST" => Route::Create,
+            _ => throw ApiError::MethodNotAllowed("GET, POST"),
+        };
+    }
+    let rest = path.strip_prefix("/todos/") ?? { throw ApiError::NotFound; };
+    let id = try rest.parse::<u64>() catch _ { throw ApiError::NotFound; };
+    match method.as_str() {
+        "GET" => Route::Show(id),
+        "PATCH" => Route::Update(id),
+        "DELETE" => Route::Remove(id),
+        _ => throw ApiError::MethodNotAllowed("GET, PATCH, DELETE"),
+    }
+}
+
+/// Read the request body as a `T`.
+async fn read_json<T: json::FromJson>(req: Request) throws (ApiError) -> T {
+    let text = try await req.body.text(MAX_BODY) catch e: HttpError {
+        throw ApiError::BadRequest(f"cannot read body: {e}");
+    };
+    try json::from_str::<T>(text) catch e: JsonError {
+        throw ApiError::BadRequest(f"invalid JSON body: {e}");
+    }
+}
+
+/// `title` trimmed; empty titles are rejected.
+fn check_title(title: str) throws (ApiError) -> str {
+    let t = title.trim();
+    if t.is_empty() { throw ApiError::BadRequest("title must not be empty"); }
+    t
+}
+
+/// `body` as a JSON response with `status`.
+fn json_response<T: json::ToJson>(status: StatusCode, body: T) -> Response {
+    Response::new(status)
+        .header("content-type", "application/json")
+        .with_body(Body::from_str(json::to_str(body) + "\n"))
+}
+
+/// `e` as `{ "error": .. }` with its status code.
+fn error_response(e: ApiError) -> Response {
+    let body = ErrorBody { error: f"{e}" };
+    match e {
+        ApiError::BadRequest(_) => json_response(StatusCode::BAD_REQUEST, body),
+        ApiError::NotFound => json_response(StatusCode::NOT_FOUND, body),
+        ApiError::MethodNotAllowed(allow) => json_response(StatusCode::METHOD_NOT_ALLOWED, body).header("allow", allow),
+    }
+}
+
+/// Route `req` and run it against `store`.
+async fn dispatch(store: Store, req: Request) throws (ApiError) -> Response {
+    match try route(req.method, req.uri.path) {
+        Route::List => json_response(StatusCode::OK, store.list()),
+        Route::Create => {
+            let n = try await read_json::<NewTodo>(req);
+            json_response(StatusCode::CREATED, store.add(try check_title(n.title)))
+        },
+        Route::Show(id) => json_response(StatusCode::OK, store.get(id) ?? { throw ApiError::NotFound; }),
+        Route::Update(id) => {
+            let p = try await read_json::<TodoPatch>(req);
+            if let title: str = p.title { p.title = try check_title(title); }
+            json_response(StatusCode::OK, store.update(id, p) ?? { throw ApiError::NotFound; })
+        },
+        Route::Remove(id) => {
+            if !store.remove(id) { throw ApiError::NotFound; }
+            Response::new(StatusCode::NO_CONTENT)
+        },
+    }
+}
+
+/// Serve one request and log it to stderr, which is unbuffered.
+async fn handle(store: Store, req: Request) -> Response {
+    let start = Instant::now();
+    let (method, path) = (req.method, req.uri.path);
+    let resp = try await dispatch(store, req) catch e: ApiError { error_response(e) };
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    eprintln(f"{method.as_str()} {path} {resp.status.as_u16()} {ms:.2}ms");
+    resp
+}
+
+/// Serve on 127.0.0.1, port 8080 or `PORT`.
+async fn main() throws {
+    let raw = (try? std::env::var("PORT")) ?? "8080";
+    let port = try raw.parse::<u16>() catch _ {
+        eprintln(f"todo-api: PORT is not a port number: {raw:?}");
+        std::process::exit(2);
+    };
+    let addr = f"127.0.0.1:{port}";
+    let store = Store::new();
+    eprintln(f"listening on http://{addr}");
+    try await http::serve(addr, |req: Request| handle(store, req));
+}

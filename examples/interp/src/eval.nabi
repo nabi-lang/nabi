@@ -1,0 +1,316 @@
+//! A tree-walking evaluator. Scopes are chained dicts; a function value
+//! keeps the scope it was made in, which is all a closure is.
+
+use pkg::ast::{Kind, Node, Op};
+use pkg::error::{LangError, Span};
+
+const BUILTINS: [str; 5] = ["print", "len", "push", "str", "range"];
+
+/// Each `Op`'s spelling, in declaration order.
+const SYMBOLS: [str; 13] = ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "and", "or"];
+
+/// Deepest call nesting before the script is stopped.
+const MAX_DEPTH: usize = 500;
+
+/// A runtime value.
+#[derive(Clone)]
+pub enum Value {
+    Nil,
+    Num(f64),
+    Str(str),
+    Bool(bool),
+    /// Shared: copies of a list value see each other's changes.
+    List(List<Value>),
+    Fn(Closure),
+    Builtin(str),
+}
+
+/// A function value: its code and the scope it closes over.
+#[derive(Clone)]
+pub struct Closure {
+    name: str | none;
+    params: List<str>;
+    body: Node;
+    env: Env;
+}
+
+/// One scope. `up` holds the enclosing scope, if any: a list, because
+/// a struct cannot contain itself by value.
+#[derive(Clone)]
+pub struct Env {
+    vars: Dict<str, Value>;
+    up: List<Env>;
+}
+
+impl Env {
+    pub fn new() -> Env { Env { vars: Dict::new(), up: [] } }
+
+    fn child(self) -> Env { Env { vars: Dict::new(), up: [self] } }
+
+    fn get(self, name: str) -> Value | none {
+        if let v: Value = self.vars.get(name) { return v; }
+        if self.up.is_empty() { none } else { self.up[0].get(name) }
+    }
+
+    /// Rebind an existing variable in the nearest scope that has it.
+    fn set(self, name: str, v: Value) -> bool {
+        if self.vars.contains_key(name) {
+            self.vars.insert(name, v);
+            return true;
+        }
+        !self.up.is_empty() && self.up[0].set(name, v)
+    }
+}
+
+impl Value {
+    /// The value's type, for messages.
+    pub fn kind(self) -> str {
+        match self {
+            Value::Nil => "nil",
+            Value::Num(_) => "number",
+            Value::Str(_) => "string",
+            Value::Bool(_) => "bool",
+            Value::List(_) => "list",
+            Value::Fn(_) | Value::Builtin(_) => "function",
+        }
+    }
+
+    /// `nil` and `false` are false; everything else is true.
+    pub fn truthy(self) -> bool {
+        match self {
+            Value::Nil | Value::Bool(false) => false,
+            _ => true,
+        }
+    }
+
+    /// The value as `print` shows it; strings inside lists are quoted.
+    pub fn show(self, quoted: bool) -> str {
+        match self {
+            Value::Nil => "nil",
+            Value::Num(n) => if n == n.floor() && n.abs() < 1e15 { f"{n as i64}" } else { f"{n}" },
+            Value::Str(s) => if quoted { f"{s:?}" } else { s },
+            Value::Bool(b) => f"{b}",
+            Value::List(xs) => "[" + xs.iter().map(|x| x.show(true)).collect::<List<str>>().join(", ") + "]",
+            Value::Fn(c) => f"<fn {c.name ?? "anonymous"}>",
+            Value::Builtin(name) => f"<builtin {name}>",
+        }
+    }
+}
+
+/// `==` in the language: lists compare by contents, functions never equal.
+fn equal(a: Value, b: Value) -> bool {
+    match (a, b) {
+        (Value::Nil, Value::Nil) => true,
+        (Value::Num(x), Value::Num(y)) => x == y,
+        (Value::Str(x), Value::Str(y)) => x == y,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::List(xs), Value::List(ys)) => {
+            if xs.len() != ys.len() { return false; }
+            for i in 0..xs.len() {
+                if !equal(xs[i], ys[i]) { return false; }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// A `return` on its way out of a function body.
+struct Ret {
+    value: Value;
+}
+
+/// What evaluating a node can throw: a real error, or a `return`.
+type Flow = LangError | Ret;
+
+/// An interpreter session; globals persist across `run` calls.
+pub struct Interp {
+    globals: Env;
+    /// Where `print` writes each line.
+    out: fn(str);
+    depth: Cell<usize>;
+}
+
+impl Interp {
+    pub fn new(out: fn(str)) -> Interp {
+        let globals = Env::new();
+        for name in BUILTINS { globals.vars.insert(name, Value::Builtin(name)); }
+        Interp { globals, out, depth: Cell::new(0) }
+    }
+
+    /// Run `src`, which starts at line `first` of the input, in the
+    /// global scope; the value of its last statement.
+    pub fn run(self, src: str, first: usize = 1) throws (LangError) -> Value {
+        let prog = try pkg::parser::parse(src, first);
+        // Top-level statements run in the globals themselves, not a
+        // child scope, so a REPL line can see the lines before it.
+        let last = Value::Nil;
+        for s in prog.kids {
+            // The parser rejects `return` outside functions, so no `Ret`
+            // reaches here.
+            last = try self.eval(s, self.globals) catch e: LangError { throw e; } catch _: Ret { unreachable() };
+        }
+        last
+    }
+
+    fn eval(self, n: Node, env: Env) throws (Flow) -> Value {
+        let k = n.kids;
+        match n.kind {
+            Kind::Num(x) => Value::Num(x),
+            Kind::Str(s) => Value::Str(s),
+            Kind::Bool(b) => Value::Bool(b),
+            Kind::Nil => Value::Nil,
+            Kind::Var(name) => env.get(name) ?? throw LangError::new(f"undefined variable `{name}`", n.span),
+            Kind::List => {
+                let xs: List<Value> = [];
+                for e in k { xs.push(try self.eval(e, env)); }
+                Value::List(xs)
+            }
+            Kind::Neg => match try self.eval(k[0], env) {
+                Value::Num(x) => Value::Num(-x),
+                v => throw LangError::new(f"cannot negate a {v.kind()}", n.span),
+            },
+            Kind::Not => Value::Bool(!(try self.eval(k[0], env)).truthy()),
+            Kind::Binary(Op::And) => {
+                let a = try self.eval(k[0], env);
+                if a.truthy() { try self.eval(k[1], env) } else { a }
+            }
+            Kind::Binary(Op::Or) => {
+                let a = try self.eval(k[0], env);
+                if a.truthy() { a } else { try self.eval(k[1], env) }
+            }
+            Kind::Binary(op) => try binary(op, try self.eval(k[0], env), try self.eval(k[1], env), n.span),
+            Kind::Assign(name) => {
+                let v = try self.eval(k[0], env);
+                if !env.set(name, v) { throw LangError::new(f"`{name}` is not defined; write `let {name} = ..`", n.span); }
+                v
+            }
+            Kind::Index => {
+                let (xs, i) = try self.item(n, env);
+                xs[i]
+            }
+            Kind::SetIndex => {
+                let (xs, i) = try self.item(n, env);
+                let v = try self.eval(k[2], env);
+                xs[i] = v;
+                v
+            }
+            Kind::Call => {
+                let f = try self.eval(k[0], env);
+                let args: List<Value> = [];
+                for a in k[1:] { args.push(try self.eval(a, env)); }
+                try self.call(f, args, n.span)
+            }
+            Kind::Let(name) => {
+                let v = try self.eval(k[0], env);
+                env.vars.insert(name, v);
+                Value::Nil
+            }
+            Kind::Fn(name, params) => Value::Fn(Closure { name, params, body: k[0], env }),
+            Kind::If => {
+                if (try self.eval(k[0], env)).truthy() {
+                    try self.eval(k[1], env)
+                } else if k.len() == 3 {
+                    try self.eval(k[2], env)
+                } else {
+                    Value::Nil
+                }
+            }
+            Kind::While => {
+                while (try self.eval(k[0], env)).truthy() { _ = try self.eval(k[1], env); }
+                Value::Nil
+            }
+            Kind::Block => {
+                let inner = env.child();
+                let last = Value::Nil;
+                for s in k { last = try self.eval(s, inner); }
+                last
+            }
+            Kind::Return => {
+                let v = if k.is_empty() { Value::Nil } else { try self.eval(k[0], env) };
+                throw Ret { value: v };
+            }
+        }
+    }
+
+    /// The list and checked index of an `Index` / `SetIndex` node.
+    fn item(self, n: Node, env: Env) throws (Flow) -> (List<Value>, usize) {
+        let target = try self.eval(n.kids[0], env);
+        let index = try self.eval(n.kids[1], env);
+        let Value::List(xs) = target else { throw LangError::new(f"cannot index a {target.kind()}", n.span); };
+        let Value::Num(i) = index else { throw LangError::new(f"list index must be a number, not a {index.kind()}", n.span); };
+        if i < 0.0 || i != i.floor() || i >= xs.len() as f64 {
+            throw LangError::new(f"index {index.show(false)} is out of range for a list of {xs.len()}", n.span);
+        }
+        (xs, i as usize)
+    }
+
+    fn call(self, f: Value, args: List<Value>, span: Span) throws (Flow) -> Value {
+        let c = match f {
+            Value::Fn(c) => c,
+            Value::Builtin(name) => return try self.builtin(name, args, span),
+            v => throw LangError::new(f"cannot call a {v.kind()}", span),
+        };
+        if args.len() != c.params.len() {
+            let name = c.name ?? "function";
+            throw LangError::new(f"`{name}` takes {c.params.len()} arguments, got {args.len()}", span);
+        }
+        let depth = self.depth.get();
+        if depth >= MAX_DEPTH { throw LangError::new(f"calls nested deeper than {MAX_DEPTH}", span); }
+        let env = c.env.child();
+        for i in 0..args.len() { env.vars.insert(c.params[i], args[i]); }
+        self.depth.set(depth + 1);
+        try self.eval(c.body, env) catch r: Ret { r.value } finally { self.depth.set(depth); }
+    }
+
+    fn builtin(self, name: str, args: List<Value>, span: Span) throws (LangError) -> Value {
+        match (name, args.len()) {
+            ("print", _) => {
+                (self.out)(args.iter().map(|a| a.show(false)).collect::<List<str>>().join(" "));
+                Value::Nil
+            },
+            ("len", 1) => match args[0] {
+                Value::List(xs) => Value::Num(xs.len() as f64),
+                Value::Str(s) => Value::Num(s.chars().count() as f64),
+                v => throw LangError::new(f"`len` wants a list or string, not a {v.kind()}", span),
+            },
+            ("push", 2) => match args[0] {
+                Value::List(xs) => {
+                    xs.push(args[1]);
+                    Value::List(xs)
+                }
+                v => throw LangError::new(f"`push` wants a list, not a {v.kind()}", span),
+            },
+            ("str", 1) => Value::Str(args[0].show(false)),
+            ("range", 1) => match args[0] {
+                Value::Num(n) => Value::List((0..(n.max(0.0) as i64)).map(|i| Value::Num(i as f64)).collect()),
+                v => throw LangError::new(f"`range` wants a number, not a {v.kind()}", span),
+            },
+            _ => throw LangError::new(f"wrong number of arguments to `{name}`", span),
+        }
+    }
+}
+
+/// `a op b` for every operator but the short-circuiting `and` / `or`.
+fn binary(op: Op, a: Value, b: Value, span: Span) throws (LangError) -> Value {
+    match (op, a, b) {
+        (Op::Eq, _, _) => Value::Bool(equal(a, b)),
+        (Op::Ne, _, _) => Value::Bool(!equal(a, b)),
+        (Op::Add, Value::Str(x), _) => Value::Str(x + b.show(false)),
+        (_, Value::Num(x), Value::Num(y)) => match op {
+            Op::Add => Value::Num(x + y),
+            Op::Sub => Value::Num(x - y),
+            Op::Mul => Value::Num(x * y),
+            Op::Div | Op::Rem => {
+                if y == 0.0 { throw LangError::new("division by zero", span); }
+                Value::Num(if op == Op::Div { x / y } else { x % y })
+            }
+            Op::Lt => Value::Bool(x < y),
+            Op::Le => Value::Bool(x <= y),
+            Op::Gt => Value::Bool(x > y),
+            Op::Ge => Value::Bool(x >= y),
+            Op::Eq | Op::Ne | Op::And | Op::Or => unreachable(),
+        },
+        _ => throw LangError::new(f"cannot apply `{SYMBOLS[op as usize]}` to a {a.kind()} and a {b.kind()}", span),
+    }
+}

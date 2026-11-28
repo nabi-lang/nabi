@@ -1,0 +1,117 @@
+//! The Moon about the Earth for a year: an adaptive DOP853 run of the
+//! two-body problem, checked against Kepler's third law and by the
+//! drift of the orbital energy, drawn to `orbit.svg`.
+//!
+//! Inputs and outputs are `units` quantities; the integrator sees the
+//! problem scaled to the perigee distance and its natural time unit, so
+//! the state is a plain `Vector<f64>` of order one.
+
+use core::array::{Matrix, Vector, concat, linspace};
+use ode::{Direction, Event, Method};
+use units::constants::G;
+use units::kinds::{Energy, Length, Mass, Time, Velocity};
+use units::symbols::{d, km, m};
+
+/// Masses and perigee distance of the Moon's orbit.
+const EARTH: Mass = 5.9722e24kg;
+const MOON: Mass = 7.342e22kg;
+const PERIGEE: Length = 363300km;
+
+/// How long to follow the orbit.
+const SPAN: Time = 365.25d;
+
+/// Scaled two-body problem, state `[q, p]`: `q' = p`, `p' = -q / |q|³`.
+fn kepler(_t: f64, y: Vector<f64>) -> Vector<f64> {
+    let (q, p) = (y[0:2], y[2:4]);
+    let r = q[0].hypot(q[1]);
+    concat([p, q .* (-1.0 / r.powi(3))])
+}
+
+/// Radial velocity `q·p`: zero at each apsis, falling through apogee.
+fn radial(_t: f64, y: Vector<f64>) -> f64 { y[0] * y[2] + y[1] * y[3] }
+
+/// Scaled energy `|p|²/2 - 1/|q|` of each column of a `[4, n]` state.
+fn energy(s: Matrix<f64>) -> Vector<f64> {
+    let (x, y, vx, vy) = (s[0, :], s[1, :], s[2, :], s[3, :]);
+    0.5 .* (vx .* vx .+ vy .* vy) .- 1.0 ./ (x .* x .+ y .* y) .** 0.5
+}
+
+/// Mean distance at the event hits `ys` (`hits x 4`), in scaled units.
+fn mean_radius(ys: Matrix<f64>) -> f64 { ((ys[:, 0] .* ys[:, 0] .+ ys[:, 1] .* ys[:, 1]) .** 0.5).mean() }
+
+fn main() throws {
+    let speed: Velocity = 1.082km / 1s; // at perigee
+    let mu = G * (EARTH + MOON);
+    let reduced: Mass = EARTH * MOON / (EARTH + MOON);
+
+    // Scale: lengths in perigees, times in sqrt(rp³/mu). The √ only
+    // compiles because m³ / (m³/s²) is s².
+    let lu: Length = PERIGEE;
+    let tu: Time = √(lu.powi::<3>() / mu);
+    let vu: Velocity = lu / tu;
+
+    let y0: Vector<f64> = [1.0, 0.0, 0.0, (speed / vu).value];
+    let events = [
+        Event { f: |_t: f64, y: Vector<f64>| -> f64 { y[1] }, direction: Direction::Rising },
+        Event { f: radial, direction: Direction::Falling },
+        Event { f: radial, direction: Direction::Rising },
+    ];
+    let end = (SPAN / tu).value;
+    let sol = try ode::solve_ivp(kepler, 0.0..end, y0, method: Method::Dop853, rtol: 1e-11, atol: 1e-13, events: events);
+    if !sol.status.success() { panic(f"integration stopped: {sol.status}"); }
+
+    // Energy at every step end, relative to the start.
+    let e = energy(sol.y);
+    let drift = (e .- e[0]) ./ e[0].abs();
+    let worst = drift.map(|v| v.abs()).max() ?? 0.0;
+
+    // Period from the upward crossings of the x axis.
+    let ups = sol.t_events[0];
+    let period: Time = tu * (ups[ups.len() - 1] - ups[0]) / (ups.len() - 1) as f64;
+
+    // Kepler's third law from the initial state alone: vis-viva for a,
+    // then T = 2π sqrt(a³/mu).
+    let a: Length = 1.0 / (2.0 / PERIGEE - speed.squared() / mu);
+    let third_law: Time = 2.0 * f64::PI * √(a.powi::<3>() / mu);
+
+    let far: Length = lu * mean_radius(sol.y_events[1]);
+    let near: Length = lu * mean_radius(sol.y_events[2]);
+    let total: Energy = reduced * vu.squared() * e[0];
+
+    println(f"Moon about Earth, {(SPAN -> d):.2}, DOP853 at rtol 1e-11");
+    println(f"  steps               {sol.t.len() - 1} ({sol.nfev} evaluations)");
+    println(f"  orbits              {(SPAN / period).value:.2}");
+    println(f"  period, measured    {(period -> d):.4}");
+    println(f"  period, Kepler III  {(third_law -> d):.4}");
+    println(f"  semi-major axis     {(a -> km):.0}");
+    println(f"  perigee             {(near -> km):.0}");
+    println(f"  apogee              {(far -> km):.0}");
+    println(f"  eccentricity        {((far - near) / (far + near)).value:.5}");
+    println(f"  orbital energy      {total:.4e}");
+    println(f"  max energy drift    {worst:.2e}");
+
+    // One orbit, densely sampled, for the drawing.
+    let one = (sol.sol)(linspace(0.0, (third_law / tu).value, 400));
+    let path: Length<Matrix<f64>> = m.array(one[0:2, :]) .* lu.value_in(m);
+    try draw(path.values_in(km) ./ 1e3, sol.t .* tu.value_in(d), drift);
+    println("wrote orbit.svg");
+}
+
+/// The orbit (`xy`, `[2, n]` in 10³ km) beside the energy drift over
+/// `days`.
+fn draw(xy: Matrix<f64>, days: Vector<f64>, drift: Vector<f64>) throws {
+    let (x, y) = (xy[0, :], xy[1, :]);
+    let path = plot::axes()
+        .line(x, y).label("Moon")
+        .scatter([0.0], [0.0]).label("Earth").size(10.0)
+        .scatter([x[0]], [0.0]).label("perigee").marker(plot::Marker::Diamond)
+        .scatter([x.min() ?? 0.0], [0.0]).label("apogee").marker(plot::Marker::Square)
+        .aspect(1.0).legend(plot::Loc::Outside)
+        .xlabel("$x$ [$10^3$ km]").ylabel("$y$ [$10^3$ km]")
+        .title("Orbit relative to the Earth");
+    let check = plot::line(days, drift)
+        .hline(0.0).dash(plot::Dash::Dotted)
+        .xlabel("time [d]").ylabel("$(E - E_0) / |E_0|$")
+        .title("Energy drift, DOP853");
+    try (path | check).title("Earth-Moon two-body problem").size(960.0, 440.0).save("orbit.svg");
+}

@@ -1,0 +1,100 @@
+// A small `wc`: count the lines, words and bytes of files (or stdin). The
+// command line is parsed by `#[derive(Args)]` from `args`.
+
+mod args;
+
+use pkg::args::Args;
+use core::io;
+use core::io::IoError;
+use std::env;
+use std::fs;
+use std::process;
+
+/// What the command line asked for.
+#[derive(Args, Inspect, Debug)]
+struct Opts {
+    #[arg(short = "l", help = "print the line count")]
+    lines: bool;
+    #[arg(short = "w", help = "print the word count")]
+    words: bool;
+    #[arg(short = "c", help = "print the byte count")]
+    bytes: bool;
+    #[arg(short = "m", help = "count only lines containing this")]
+    matching: str | none;
+    #[arg(short = "L", help = "also count lines longer than this")]
+    longer: i64 | none;
+    #[arg(short = "r", help = "also print the reading time")]
+    read_time: bool;
+    #[arg(help = "words per minute for --read-time")]
+    wpm: f64 = 238.0;
+    #[arg(help = "name of the total row")]
+    total: str = "total";
+    #[arg(help = "print the parsed options and exit")]
+    dump: bool;
+    #[arg(help = "files to count; stdin when none")]
+    files: List<str>;
+}
+
+/// Counts of one input.
+struct Count {
+    lines: i64 = 0;
+    words: i64 = 0;
+    bytes: i64 = 0;
+    long: i64 = 0;
+}
+
+let o = try Opts::parse(env::args()) catch e { e.exit() };
+if o.dump {
+    // Reflection: the field table `#[derive(Inspect)]` keeps.
+    println(f"{Opts::type_name()} ({Opts::fields().len()} fields)");
+    for f in Opts::fields() { println(f"  {f.name}: {f.type_name}"); }
+    println(f"{o:?}");
+    return;
+}
+let all = !(o.lines || o.words || o.bytes);
+let sum = Count {};
+let inputs = if o.files.is_empty() { ["-"] } else { o.files };
+let failed = false;
+for name in inputs {
+    let text = try read(name) catch e {
+        eprintln(f"{args::program()}: {e}");
+        failed = true;
+        continue;
+    };
+    let c = count(o, text);
+    sum = Count { lines: sum.lines + c.lines, words: sum.words + c.words, bytes: sum.bytes + c.bytes, long: sum.long + c.long };
+    show(o, all, c, name);
+}
+if inputs.len() > 1 { show(o, all, sum, o.total); }
+if failed { process::exit(1); }
+
+/// The whole of `name`; `-` is stdin.
+fn read(name: str) throws (IoError) -> str {
+    if name != "-" { return try fs::read_to_str(name); }
+    let out = "";
+    while let l: str = try io::read_line() { out = out + l + "\n"; }
+    out
+}
+
+/// Count `text`, as `o` asks.
+fn count(o: Opts, text: str) -> Count {
+    let c = Count { bytes: text.len() as i64 };
+    for l in text.lines() {
+        if let m: str = o.matching { if !l.contains(m) { continue; } }
+        c.lines += 1;
+        c.words += l.split_whitespace().count() as i64;
+        if let n: i64 = o.longer { if l.char_count() as i64 > n { c.long += 1; } }
+    }
+    c
+}
+
+/// Print one row of counts.
+fn show(o: Opts, all: bool, c: Count, name: str) {
+    let cols: List<str> = [];
+    if all || o.lines { cols.push(f"{c.lines:>7}"); }
+    if all || o.words { cols.push(f"{c.words:>7}"); }
+    if all || o.bytes { cols.push(f"{c.bytes:>7}"); }
+    if o.longer is i64 { cols.push(f"{c.long:>7}"); }
+    if o.read_time { cols.push(f"{c.words as f64 / o.wpm:>6.1}m"); }
+    println(f"{cols.join(" ")} {name}");
+}

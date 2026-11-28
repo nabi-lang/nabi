@@ -1,0 +1,7 @@
+Package {
+    name: "interp",
+    version: "0.1.0",
+    nabi_version: "0.1.8",
+    toolchain: "0.1",
+    deps: {},
+}

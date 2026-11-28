@@ -1,0 +1,213 @@
+//! `csv-report <file.csv> [--json]`: sales totals by region, by month
+//! and by product, and statistics of order value. Rows that do not
+//! validate are reported to stderr with their line and left out.
+
+use csv::FromRecord;
+use std::env;
+use std::fs;
+use table::{asc, col, count, desc, sum, SortKey, Table, TableError};
+
+/// Regions a row may name.
+const REGIONS: List<str> = ["North", "South", "East", "West"];
+
+/// One row as written in the file.
+#[derive(csv::Csv, Clone, Debug)]
+struct Order {
+    date: str;
+    region: str;
+    product: str;
+    units: i64;
+    price: f64;
+}
+
+/// One validated order, a row of the report's table.
+#[derive(table::Record, Clone, Debug)]
+struct Sale {
+    month: str;
+    region: str;
+    product: str;
+    units: i64;
+    price: f64;
+}
+
+/// A row left out of the report, and why.
+#[derive(json::Json, Clone, Debug)]
+struct Reject {
+    line: usize;
+    reason: str;
+}
+
+/// Totals of one group: a region, a month or a product.
+#[derive(json::Json, Clone, Debug)]
+struct Group {
+    key: str;
+    orders: i64;
+    units: i64;
+    revenue: f64;
+    share: f64;
+}
+
+/// Order value (units times price) statistics.
+#[derive(json::Json, Clone, Debug)]
+struct Summary {
+    orders: usize;
+    total: f64;
+    mean: f64;
+    median: f64;
+    std: f64;
+    p90: f64;
+    min: f64;
+    max: f64;
+}
+
+/// The whole report, as printed or written as JSON.
+#[derive(json::Json, Clone, Debug)]
+struct Report {
+    file: str;
+    rejected: List<Reject>;
+    by_region: List<Group>;
+    by_month: List<Group>;
+    top_products: List<Group>;
+    order_value: Summary;
+}
+
+/// `o` checked and turned into a `Sale`; the message says what is wrong.
+fn validate(o: Order) throws (str) -> Sale {
+    let d = table::Date::parse(o.date) else {
+        throw f"`{o.date}` is not a date; write YYYY-MM-DD";
+    };
+    if !REGIONS.contains(o.region) {
+        throw f"unknown region `{o.region}`; use one of {REGIONS.join(", ")}";
+    }
+    if o.product.is_empty() { throw "the product is empty"; }
+    if o.units <= 0 { throw f"units must be positive, found {o.units}"; }
+    if !(o.price > 0.0 && o.price.is_finite()) { throw f"price must be positive, found {o.price}"; }
+    Sale { month: f"{d.year()}-{d.month():02}", region: o.region, product: o.product, units: o.units, price: o.price }
+}
+
+/// The valid sales read from `src`, and the rows left out. A broken
+/// file (an unclosed quote, bad UTF-8, a missing column) stops the read.
+fn load<R: Read>(src: R) throws (csv::CsvError | str) -> (List<Sale>, List<Reject>) {
+    // Flexible: a short or long row is a reject, not the end of the file.
+    let r = csv::Dialect::new().flexible(true).trim(csv::Trim::All).reader(src);
+    let h = try r.headers();
+    let missing: List<str> = Order::columns().iter().filter(|c| h.index(c) is none).collect();
+    if !missing.is_empty() { throw f"the header lacks {missing.join(", ")}"; }
+    let cols = csv::Columns::of(Order::columns(), h);
+    let rec = csv::Record::new();
+    let sales: List<Sale> = [];
+    let rejects: List<Reject> = [];
+    while try r.read(ref rec) {
+        let line = rec.line();
+        if rec.len() != h.len() {
+            rejects.push(Reject { line, reason: f"{rec.len()} fields, the header has {h.len()}" });
+            continue;
+        }
+        let s = try Order::from_record(rec, cols) |> validate catch e: csv::CsvError {
+            rejects.push(Reject { line, reason: f"field `{e.field}`: {e.msg}" });
+            continue;
+        } catch e: str {
+            rejects.push(Reject { line, reason: e });
+            continue;
+        };
+        sales.push(s);
+    }
+    (sales, rejects)
+}
+
+/// Totals of `t` grouped by column `key`, in `order`, at most `limit`.
+fn groups(t: Table, key: str, order: SortKey, limit: usize) throws (TableError) -> List<Group> {
+    let total = stats::sum(try t.f64("value"));
+    let g = try (try t.group_by([key])).agg([count(), sum("units"), sum("value")]).sort([order]);
+    g.head(limit).rows().iter().map(|r| {
+        let revenue = r.f64("value_sum") ?? 0.0;
+        Group { key: r.str(key), orders: r.i64("count") ?? 0, units: r.i64("units_sum") ?? 0, revenue, share: revenue / total }
+    }).collect()
+}
+
+/// The report on `sales`.
+fn report(file: str, sales: List<Sale>, rejected: List<Reject>) throws -> Report {
+    let t = try table::record_table(sales).with_column("value", col("units") .* col("price"));
+    let v = try t.f64("value");
+    let s = stats::describe(v);
+    Report {
+        file,
+        rejected,
+        by_region: try groups(t, "region", desc("value_sum"), usize::MAX),
+        by_month: try groups(t, "month", asc("month"), usize::MAX),
+        top_products: try groups(t, "product", desc("value_sum"), 5),
+        order_value: Summary {
+            orders: s.n,
+            total: stats::sum(v),
+            mean: s.mean,
+            median: s.median,
+            std: s.std,
+            p90: try v |> stats::quantile(90pct),
+            min: s.min,
+            max: s.max,
+        },
+    }
+}
+
+/// Prints `rows` under `title`, the first column left-aligned and the
+/// rest right-aligned, each as wide as its widest cell.
+fn grid(title: str, head: List<str>, rows: List<List<str>>) {
+    let w = List::from_fn(head.len(), |k| rows.iter().map(|r| r[k].chars().count()).fold(head[k].chars().count(), |a, b| a.max(b)));
+    let line = |cells: List<str>| -> str {
+        List::from_fn(cells.len(), |k| if k == 0 { f"{cells[k]:<{w[k]}}" } else { f"{cells[k]:>{w[k]}}" }).join("  ")
+    };
+    println(f"\n{title}");
+    println(line(head));
+    println(w.iter().map(|n| "-".repeat(n)).collect::<List<str>>().join("  "));
+    for r in rows { println(line(r)); }
+}
+
+/// Prints groups `gs` as a table keyed by `key`.
+fn print_groups(title: str, key: str, gs: List<Group>) {
+    let rows = gs.iter().map(|g| [g.key, f"{g.orders}", f"{g.units}", f"{g.revenue:,.2}", f"{g.share:.1%}"]).collect();
+    grid(title, [key, "orders", "units", "revenue", "share"], rows);
+}
+
+/// Prints `r` as text.
+fn print_report(r: Report) {
+    println(f"{r.file}: {r.order_value.orders} orders, {r.rejected.len()} rejected");
+    print_groups("Revenue by region", "region", r.by_region);
+    print_groups("Revenue by month", "month", r.by_month);
+    print_groups("Top products", "product", r.top_products);
+    let s = r.order_value;
+    let stat = [("total", s.total), ("mean", s.mean), ("median", s.median), ("std dev", s.std), ("90th percentile", s.p90), ("min", s.min), ("max", s.max)];
+    grid("Order value", ["statistic", "value"], stat.iter().map(|(k, x)| [k, f"{x:,.2}"]).collect());
+}
+
+/// Exit status: 0 on a report, 1 when the file cannot be read, 2 on
+/// bad arguments.
+fn main() -> i32 {
+    let args: List<str> = env::args().skip(1).collect();
+    let as_json = args.iter().any(|a| a == "--json");
+    let bad = args.iter().any(|a| a.starts_with("-") && a != "--json");
+    let files: List<str> = args.iter().filter(|a| !a.starts_with("-")).collect();
+    if bad || files.len() != 1 {
+        eprintln("usage: csv-report <file.csv> [--json]");
+        return 2;
+    }
+    let path = files[0];
+    let file = try fs::open(path) catch e {
+        eprintln(f"error: {e}");
+        return 1;
+    };
+    let (sales, rejects) = try load(file) catch e {
+        eprintln(f"error: {path}: {e}");
+        return 1;
+    };
+    for x in rejects { eprintln(f"{path}:{x.line}: skipped: {x.reason}"); }
+    if sales.is_empty() {
+        eprintln(f"error: {path}: no valid rows");
+        return 1;
+    }
+    let r = try report(path, sales, rejects) catch e {
+        eprintln(f"error: {e}");
+        return 1;
+    };
+    if as_json { println(json::to_pretty(r)); } else { print_report(r); }
+    0
+}

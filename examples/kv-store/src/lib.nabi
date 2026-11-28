@@ -1,0 +1,256 @@
+//! A persistent key-value store: an append-only log of checksummed
+//! records, an in-memory index rebuilt on open, and compaction.
+//!
+//! A record, integers little-endian:
+//!
+//! ```text
+//! crc32: u32 | kind: u8 | key_len: u32 | value_len: u32 | key | value
+//! ```
+//!
+//! `crc32` covers every byte after it. `kind` is `PUT`, or `DEL` for a
+//! tombstone (no value). Each append is synced before it returns, so only
+//! the last record can be torn; `open` cuts the log at the first record
+//! that is short or fails its check.
+
+mod crc;
+
+use pkg::crc::crc32;
+use core::io::{IoError, Seek, SeekFrom};
+use std::fs::{Access, CreateFlags, File};
+
+/// Bytes before the key: crc, kind and the two lengths.
+const HEAD: usize = 13;
+/// Record kinds: a value, or a tombstone.
+const PUT: u8 = 1u8;
+const DEL: u8 = 2u8;
+
+/// Largest key or value, in bytes.
+pub const MAX_LEN: usize = 1 << 24;
+
+/// Why a store operation failed.
+#[derive(Debug)]
+pub enum StoreError {
+    /// The OS refused a read, write, sync or rename.
+    Io(IoError),
+    /// A key that is empty or longer than `MAX_LEN`.
+    BadKey(str),
+    /// A value of this many bytes, over `MAX_LEN`.
+    TooLarge(usize),
+}
+
+impl Display for StoreError {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        try f.write_str(match self {
+            StoreError::Io(e) => f"{e}",
+            StoreError::BadKey(k) => f"bad key {k:?}: keys are 1 to {MAX_LEN} bytes",
+            StoreError::TooLarge(n) => f"value is {n} bytes; the limit is {MAX_LEN}",
+        })
+    }
+}
+
+impl Error for StoreError {}
+
+/// Where a live value sits in the log.
+#[derive(Clone, Copy)]
+struct Slot {
+    at: u64;
+    len: usize;
+}
+
+/// One decoded record; `val` indexes the buffer it came from.
+struct Record {
+    kind: u8;
+    key: str;
+    val: usize;
+    len: usize;
+    end: usize;
+}
+
+/// What `Store::stats` reports.
+pub struct Stats {
+    /// Live keys.
+    pub keys: usize;
+    /// Records in the log, superseded ones included.
+    pub records: usize;
+    /// Log size in bytes.
+    pub bytes: u64;
+    /// Bytes of torn tail cut off when the log was opened.
+    pub recovered: u64;
+}
+
+/// An open store. Dropping it closes the log.
+pub struct Store {
+    path: str;
+    log: File;
+    index: Dict<str, Slot>;
+    records: usize;
+    size: u64;
+    recovered: u64;
+}
+
+impl Store {
+    /// Open the log at `path`, creating it when missing, and rebuild the
+    /// index. A torn final record is cut off.
+    pub fn open(path: str) throws (StoreError) -> Store {
+        let log = try open_log(path);
+        let s = Store { path: path, log: log, index: Dict::new(), records: 0, size: 0u64, recovered: 0u64 };
+        try s.replay() catch e: IoError { throw StoreError::Io(e); };
+        s
+    }
+
+    /// The value of `key`, or `none`.
+    pub fn get(self, key: str) throws (StoreError) -> str | none {
+        let slot = self.index.get(key)?;
+        let buf: List<u8> = List::filled(slot.len, 0u8);
+        try {
+            _ = try self.log.seek(SeekFrom::Start(slot.at));
+            try self.log.read_exact(buf);
+        } catch e: IoError { throw StoreError::Io(e); };
+        str::from_utf8_lossy(buf)
+    }
+
+    /// Set `key` to `value`.
+    pub fn set(ref self, key: str, value: str) throws (StoreError) {
+        if value.len() > MAX_LEN { throw StoreError::TooLarge(value.len()); }
+        try self.append(PUT, key, value);
+    }
+
+    /// Delete `key`; whether it was there.
+    #[discardable]
+    pub fn del(ref self, key: str) throws (StoreError) -> bool {
+        if !self.index.contains_key(key) { return false; }
+        try self.append(DEL, key, "");
+        true
+    }
+
+    /// The live keys, sorted.
+    pub fn keys(self) -> List<str> {
+        let out: List<str> = self.index.keys().collect();
+        out.sort();
+        out
+    }
+
+    /// Counts of keys, records and bytes.
+    pub fn stats(self) -> Stats {
+        Stats { keys: self.index.len(), records: self.records, bytes: self.size, recovered: self.recovered }
+    }
+
+    /// Rewrite the live keys to a new log and rename it over the old one.
+    /// A crash midway leaves either log whole.
+    pub fn compact(ref self) throws (StoreError) {
+        let out: List<u8> = List::new();
+        for k in self.keys() {
+            out.extend(encode(PUT, k, try self.get(k) ?? ""));
+        }
+        // Windows may refuse to replace an open file: close it first.
+        try self.log.close() catch e: IoError { throw StoreError::Io(e); };
+        try std::fs::write_atomic(self.path, out) catch e: IoError {
+            self.log = try open_log(self.path);
+            throw StoreError::Io(e);
+        };
+        self.log = try open_log(self.path);
+        try self.replay() catch e: IoError { throw StoreError::Io(e); };
+    }
+
+    /// Write one record and sync it, then update the index.
+    fn append(ref self, kind: u8, key: str, value: str) throws (StoreError) {
+        if key.is_empty() || key.len() > MAX_LEN { throw StoreError::BadKey(key); }
+        let rec = encode(kind, key, value);
+        try {
+            try self.log.write_all(rec);
+            try self.log.sync_data();
+        } catch e: IoError {
+            // Drop a partial write so later records stay reachable.
+            try truncate(self.path, self.size) catch _ {};
+            throw StoreError::Io(e);
+        };
+        if kind == PUT {
+            _ = self.index.insert(key, Slot { at: self.size + (HEAD + key.len()) as u64, len: value.len() });
+        } else {
+            _ = self.index.remove(key);
+        }
+        self.records += 1;
+        self.size += rec.len() as u64;
+    }
+
+    /// Rebuild the index from the log; cut what follows the last good
+    /// record.
+    fn replay(ref self) throws (IoError) {
+        self.index.clear();
+        self.records = 0;
+        _ = try self.log.seek(SeekFrom::Start(0u64));
+        let data = try self.log.read_to_end();
+        let at = 0usize;
+        while let r: Record = decode(data[:], at) {
+            if r.kind == PUT {
+                _ = self.index.insert(r.key, Slot { at: r.val as u64, len: r.len });
+            } else {
+                _ = self.index.remove(r.key);
+            }
+            self.records += 1;
+            at = r.end;
+        }
+        self.size = at as u64;
+        self.recovered = (data.len() - at) as u64;
+        if self.recovered > 0u64 { try truncate(self.path, self.size); }
+    }
+}
+
+impl Drop for Store {
+    fn drop(ref self) {
+        try self.log.close() catch _ {};
+    }
+}
+
+/// The log at `path`, for reading and appending.
+fn open_log(path: str) throws (StoreError) -> File {
+    try File::append(path, CreateFlags { read: true }) catch e: IoError { throw StoreError::Io(e); }
+}
+
+/// Cut the file at `path` to `len` bytes, through a handle of its own:
+/// an append-only one may not resize the file (Windows).
+fn truncate(path: str, len: u64) throws (IoError) {
+    using f = try File::open(path, Access::WriteOnly) {
+        try f.set_len(len);
+        try f.sync_all();
+    }
+}
+
+/// One record, checksum first.
+fn encode(kind: u8, key: str, value: str) -> List<u8> {
+    let body: List<u8> = List::with_capacity(HEAD - 4 + key.len() + value.len());
+    body.push(kind);
+    put_u32(body, key.len() as u32);
+    put_u32(body, value.len() as u32);
+    body.extend(key.as_bytes());
+    body.extend(value.as_bytes());
+    let out: List<u8> = List::with_capacity(4 + body.len());
+    put_u32(out, crc32(body[:]));
+    out.extend(body);
+    out
+}
+
+/// The record at `b[at..]`, or `none` when it is short or corrupt.
+fn decode(b: Slice<u8>, at: usize) -> Record | none {
+    if b.len() - at < HEAD { return none; }
+    let klen = u32_at(b, at + 5) as usize;
+    let vlen = u32_at(b, at + 9) as usize;
+    if klen > MAX_LEN || vlen > MAX_LEN { return none; }
+    let val = at + HEAD + klen;
+    let end = val + vlen;
+    if end > b.len() || crc32(b[at + 4:end]) != u32_at(b, at) { return none; }
+    let kind = b[at + 4];
+    if kind != PUT && kind != DEL { return none; }
+    let key = (try? str::from_utf8(b[at + HEAD:val]))?;
+    Record { kind: kind, key: key, val: val, len: vlen, end: end }
+}
+
+/// Append `n`, little-endian.
+fn put_u32(b: List<u8>, n: u32) {
+    for i in 0..4 { b.push((n >> (8 * i)) as u8); }
+}
+
+/// The little-endian `u32` at `b[i..]`.
+fn u32_at(b: Slice<u8>, i: usize) -> u32 {
+    u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
+}

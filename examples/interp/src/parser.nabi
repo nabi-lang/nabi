@@ -1,0 +1,247 @@
+//! A Pratt parser: each operator has a binding power, and `expr(min)`
+//! keeps folding operators into the left operand while they bind tighter
+//! than `min`.
+
+use pkg::ast::{Kind, Node, Op};
+use pkg::error::{LangError, Span};
+use pkg::lexer;
+use pkg::lexer::{Tok, Token};
+
+// Binding powers, loosest first. Calls and indexing bind tightest and
+// are handled before the infix table.
+const ASSIGN: u8 = 1;
+const PREFIX: u8 = 8;
+
+/// The operator `tok` stands for between two operands, and its binding
+/// power.
+fn infix(tok: Tok) -> (Op, u8) | none {
+    let s = match tok {
+        Tok::Sym(s) | Tok::Kw(s) => s,
+        _ => return none,
+    };
+    match s {
+        "or" => (Op::Or, 2),
+        "and" => (Op::And, 3),
+        "==" => (Op::Eq, 4),
+        "!=" => (Op::Ne, 4),
+        "<" => (Op::Lt, 5),
+        "<=" => (Op::Le, 5),
+        ">" => (Op::Gt, 5),
+        ">=" => (Op::Ge, 5),
+        "+" => (Op::Add, 6),
+        "-" => (Op::Sub, 6),
+        "*" => (Op::Mul, 7),
+        "/" => (Op::Div, 7),
+        "%" => (Op::Rem, 7),
+        _ => none,
+    }
+}
+
+/// Parse a whole program into one `Block` node; `src` starts at line
+/// `first` of the file.
+pub fn parse(src: str, first: usize = 1) throws (LangError) -> Node {
+    let toks: List<Token> = [];
+    try for t in lexer::tokens(src, first) {
+        toks.push(t);
+    }
+    let p = Parser { toks, pos: 0, fns: 0 };
+    let start = p.peek().span;
+    let stmts: List<Node> = [];
+    while p.peek().tok != Tok::Eof {
+        stmts.push(try p.stmt());
+    }
+    Node::new(Kind::Block, start, stmts)
+}
+
+struct Parser {
+    toks: List<Token>;
+    pos: usize;
+    /// How many function bodies enclose the current token.
+    fns: usize;
+}
+
+impl Parser {
+    fn peek(self) -> Token { self.toks[self.pos] }
+
+    fn next(ref self) -> Token {
+        let t = self.toks[self.pos];
+        if self.pos + 1 < self.toks.len() { self.pos += 1; }
+        t
+    }
+
+    /// Whether the next token is the keyword or symbol `s`.
+    fn at(self, s: str) -> bool {
+        match self.peek().tok {
+            Tok::Sym(t) | Tok::Kw(t) => t == s,
+            _ => false,
+        }
+    }
+
+    fn eat(ref self, s: str) -> bool {
+        if !self.at(s) { return false; }
+        _ = self.next();
+        true
+    }
+
+    fn expect(ref self, s: str) throws (LangError) -> Token {
+        if !self.at(s) { throw self.unexpected(f"`{s}`"); }
+        self.next()
+    }
+
+    fn unexpected(self, what: str) -> LangError {
+        let t = self.peek();
+        LangError::new(f"expected {what}, found {t.tok.describe()}", t.span)
+    }
+
+    fn ident(ref self) throws (LangError) -> str {
+        match self.peek().tok {
+            Tok::Ident(s) => {
+                _ = self.next();
+                s
+            }
+            _ => throw self.unexpected("a name"),
+        }
+    }
+
+    /// Whether `fn` starts a declaration (`fn name(..)`).
+    fn named_fn(self) -> bool {
+        match self.toks[self.pos + 1].tok {
+            Tok::Ident(_) => true,
+            _ => false,
+        }
+    }
+
+    /// A statement, with its optional `;`.
+    fn stmt(ref self) throws (LangError) -> Node {
+        let n = try self.stmt_body();
+        _ = self.eat(";");
+        n
+    }
+
+    fn stmt_body(ref self) throws (LangError) -> Node {
+        let t = self.peek();
+        if self.eat("let") {
+            let name = try self.ident();
+            _ = try self.expect("=");
+            return Node::new(Kind::Let(name), t.span, [try self.expr(0)]);
+        }
+        // `fn name(..) { .. }` is `let name = fn(..) { .. }`, named so
+        // errors and recursion can refer to it.
+        if self.at("fn") && self.named_fn() {
+            _ = self.next();
+            let name = try self.ident();
+            return Node::new(Kind::Let(name), t.span, [try self.function(name, t.span)]);
+        }
+        if self.eat("return") {
+            if self.fns == 0 { throw LangError::new("`return` outside a function", t.span); }
+            let ends = self.at(";") || self.at("}") || self.peek().tok == Tok::Eof;
+            let kids: List<Node> = if ends { [] } else { [try self.expr(0)] };
+            return Node::new(Kind::Return, t.span, kids);
+        }
+        try self.expr(0)
+    }
+
+    /// `{ stmt* }`.
+    fn block(ref self) throws (LangError) -> Node {
+        let open = try self.expect("{");
+        let stmts: List<Node> = [];
+        while !self.eat("}") {
+            if self.peek().tok == Tok::Eof { throw LangError::new("this `{` is never closed", open.span); }
+            stmts.push(try self.stmt());
+        }
+        Node::new(Kind::Block, open.span, stmts)
+    }
+
+    /// `(params) { body }`, after `fn` and its name if any.
+    fn function(ref self, name: str | none, span: Span) throws (LangError) -> Node {
+        _ = try self.expect("(");
+        let params: List<str> = [];
+        while !self.eat(")") {
+            params.push(try self.ident());
+            if !self.at(")") { _ = try self.expect(","); }
+        }
+        self.fns += 1;
+        let body = try self.block() finally { self.fns -= 1; };
+        Node::new(Kind::Fn(name, params), span, [body])
+    }
+
+    /// The rest of `if cond { .. } else ..`, after `if`.
+    fn if_rest(ref self, span: Span) throws (LangError) -> Node {
+        let kids = [try self.expr(0), try self.block()];
+        if self.eat("else") {
+            let t = self.peek();
+            kids.push(if self.eat("if") { try self.if_rest(t.span) } else { try self.block() });
+        }
+        Node::new(Kind::If, span, kids)
+    }
+
+    /// Comma-separated expressions up to `close`.
+    fn items(ref self, close: str) throws (LangError) -> List<Node> {
+        let out: List<Node> = [];
+        while !self.eat(close) {
+            out.push(try self.expr(0));
+            if !self.at(close) { _ = try self.expect(","); }
+        }
+        out
+    }
+
+    /// An expression whose operators all bind tighter than `min`.
+    fn expr(ref self, min: u8) throws (LangError) -> Node {
+        let lhs = try self.prefix();
+        loop {
+            let t = self.peek();
+            if self.eat("(") {
+                let kids = [lhs];
+                kids.extend(try self.items(")"));
+                lhs = Node::new(Kind::Call, lhs.span, kids);
+            } else if self.eat("[") {
+                let index = try self.expr(0);
+                _ = try self.expect("]");
+                lhs = Node::new(Kind::Index, t.span, [lhs, index]);
+            } else if self.at("=") && min < ASSIGN {
+                _ = self.next();
+                // Right-associative: `a = b = 1` is `a = (b = 1)`.
+                let value = try self.expr(ASSIGN - 1);
+                lhs = match lhs.kind {
+                    Kind::Var(name) => Node::new(Kind::Assign(name), t.span, [value]),
+                    Kind::Index => Node::new(Kind::SetIndex, t.span, [lhs.kids[0], lhs.kids[1], value]),
+                    _ => throw LangError::new("can only assign to a variable or a list item", lhs.span),
+                };
+            } else if let (op, bp): (Op, u8) = infix(t.tok) {
+                if bp <= min { break; }
+                _ = self.next();
+                lhs = Node::new(Kind::Binary(op), t.span, [lhs, try self.expr(bp)]);
+            } else {
+                break;
+            }
+        }
+        lhs
+    }
+
+    /// A literal, name, prefix operator or bracketed form.
+    fn prefix(ref self) throws (LangError) -> Node {
+        if self.at("{") { return try self.block(); }
+        let t = self.next();
+        let s = t.span;
+        match t.tok {
+            Tok::Num(n) => Node::leaf(Kind::Num(n), s),
+            Tok::Str(v) => Node::leaf(Kind::Str(v), s),
+            Tok::Ident(v) => Node::leaf(Kind::Var(v), s),
+            Tok::Kw("true") => Node::leaf(Kind::Bool(true), s),
+            Tok::Kw("false") => Node::leaf(Kind::Bool(false), s),
+            Tok::Kw("nil") => Node::leaf(Kind::Nil, s),
+            Tok::Kw("fn") => try self.function(none, s),
+            Tok::Kw("if") => try self.if_rest(s),
+            Tok::Kw("while") => Node::new(Kind::While, s, [try self.expr(0), try self.block()]),
+            Tok::Sym("-") => Node::new(Kind::Neg, s, [try self.expr(PREFIX)]),
+            Tok::Sym("!") => Node::new(Kind::Not, s, [try self.expr(PREFIX)]),
+            Tok::Sym("[") => Node::new(Kind::List, s, try self.items("]")),
+            Tok::Sym("(") => {
+                let e = try self.expr(0);
+                _ = try self.expect(")");
+                e
+            }
+            _ => throw LangError::new(f"expected an expression, found {t.tok.describe()}", s),
+        }
+    }
+}
