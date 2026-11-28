@@ -347,14 +347,51 @@ pub extern "C" fn nabi_os_fsync(fd: i32, _data_only: i32) -> i32 {
     if ok == 0 { -e } else { 0 }
 }
 
+/// The access `hd` was opened with (`FileAccessInformation`), or 0.
+fn access_of(hd: HANDLE) -> u32 {
+    let mut access = 0u32;
+    // SAFETY: zeroed status block; a 4-byte FileAccessInformation (8).
+    let s = unsafe {
+        let mut iosb: win::IO_STATUS_BLOCK = zeroed();
+        win::NtQueryInformationFile(hd, &mut iosb, (&raw mut access).cast(), 4, 8)
+    };
+    if s < 0 { 0 } else { access }
+}
+
+/// Set the end of file. An append handle lacks the `FILE_WRITE_DATA`
+/// that takes (it keeps writes at the end), so its length is set through
+/// a second handle with that access, as `ftruncate` on an `O_APPEND` fd.
 #[unsafe(no_mangle)]
 pub extern "C" fn nabi_os_ftruncate(fd: i32, len: u64) -> i32 {
     let end = len as i64;
-    // SAFETY: an 8-byte `FILE_END_OF_FILE_INFO`.
-    let ok = unsafe {
-        win::SetFileInformationByHandle(h(fd), win::FileEndOfFileInfo, (&raw const end).cast(), 8)
+    let set = |hd: HANDLE| {
+        // SAFETY: an 8-byte `FILE_END_OF_FILE_INFO`.
+        let ok = unsafe {
+            win::SetFileInformationByHandle(hd, win::FileEndOfFileInfo, (&raw const end).cast(), 8)
+        };
+        if ok == 0 { fail() } else { 0 }
     };
-    if ok == 0 { fail() } else { 0 }
+    let r = set(h(fd));
+    if r != -win::ERROR_ACCESS_DENIED
+        || access_of(h(fd)) & (win::FILE_WRITE_DATA | win::FILE_APPEND_DATA)
+            != win::FILE_APPEND_DATA
+    {
+        return r;
+    }
+    // SAFETY: a fresh handle to the same file, closed by `Owned`.
+    let hd = unsafe {
+        win::ReOpenFile(
+            h(fd),
+            win::FILE_WRITE_DATA,
+            win::FILE_SHARE_READ | win::FILE_SHARE_WRITE | win::FILE_SHARE_DELETE,
+            0,
+        )
+    };
+    if hd == win::INVALID_HANDLE_VALUE {
+        return fail();
+    }
+    let hd = Owned(hd);
+    set(hd.0)
 }
 
 /// `SetFilePointerEx`; `whence` 0 start, 1 current, 2 end (the Win32

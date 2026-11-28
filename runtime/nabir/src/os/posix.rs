@@ -26,6 +26,7 @@ pub(crate) use crate::os::posix::copy::*;
 pub use crate::os::posix::crypto::*;
 #[cfg(target_os = "wasi")]
 pub(crate) use crate::os::posix::fs::start_dir;
+pub(crate) use crate::os::posix::process::flush_on_kill;
 pub use nabir_common::errno;
 
 use crate::os::openhow::How;

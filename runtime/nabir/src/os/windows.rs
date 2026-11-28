@@ -21,6 +21,7 @@ mod fs;
 mod process;
 
 pub use crate::os::windows::crypto::*;
+pub(crate) use crate::os::windows::process::flush_on_kill;
 pub use nabir_common::errno;
 
 use crate::os::openhow::How;

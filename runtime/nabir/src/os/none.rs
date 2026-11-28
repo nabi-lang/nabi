@@ -13,6 +13,9 @@ use crate::str::{NabiStr, build};
 const ENOSYS: i32 = 38;
 const ENOENT: i32 = 2;
 
+/// No signals to flush on.
+pub const fn flush_on_kill() {}
+
 /// Run a blocking call parked; `errno` survives the re-entry.
 pub fn native<R>(f: impl FnOnce() -> R) -> (R, i32) {
     crate::lane::block_begin();

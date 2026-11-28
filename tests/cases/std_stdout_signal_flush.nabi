@@ -1,0 +1,68 @@
+// only-os: macos linux
+// needs: process fs threads native-run
+// expect-exit: 0
+// expect-stdout:
+// Terminate: [up] killed by Terminate
+// Interrupt: [up] killed by Interrupt
+// Hangup: [up] killed by Hangup
+// handled: [up|handler] exit 7
+
+// Stdout to a file is block-buffered, and a `SIGTERM` / `SIGINT` /
+// `SIGHUP` the program does not handle still writes it out before the
+// process dies of the signal. A program's own `on_signal` handler runs
+// instead.
+use core::io::IoError;
+use core::time::Duration;
+use std::env;
+use std::fs;
+use std::fs::File;
+use std::path::Path;
+use std::process;
+use std::process::{Command, Signal, Stdio};
+use std::os::unix::process::ExitStatusExt;
+use std::thread;
+
+fn child(ready: str, handle: bool) throws (IoError) {
+    if handle {
+        try! process::on_signal(Signal::Terminate, || {
+            println("handler");
+            process::exit(7);
+        });
+    }
+    println("up");
+    try fs::write(ready, "");
+    thread::sleep(Duration::secs(30));
+}
+
+fn run(me: str, sig: Signal, handle: bool) throws (IoError) -> str {
+    let tmp = env::temp_dir();
+    let out = tmp / f"nabi_signal_flush_{process::id()}.txt";
+    let ready = tmp / f"nabi_signal_flush_{process::id()}.ready";
+    if fs::exists(ready) { try fs::remove_file(ready); }
+    let mode = if handle { "handle" } else { "plain" };
+    let c = try Command::new(me).args([mode, ready.as_str()])
+        .stdout(Stdio::File(try File::create(out))).spawn();
+    for _ in 0..500 { if fs::exists(ready) { break; } thread::sleep(Duration::ms(10)); }
+    try c.send_signal(sig);
+    let st = try c.wait();
+    let text = (try fs::read_to_str(out)).trim().replace("\n", "|");
+    try fs::remove_file(out);
+    try fs::remove_file(ready);
+    match st.signal() {
+        s: Signal => f"[{text}] killed by {s:?}",
+        none => f"[{text}] exit {st.code() ?? -1}",
+    }
+}
+
+fn main() throws (IoError) {
+    let args = env::args();
+    if args.len() > 2 {
+        try child(args[2], args[1] == "handle");
+        return;
+    }
+    let me = args[0];
+    for sig in [Signal::Terminate, Signal::Interrupt, Signal::Hangup] {
+        println(f"{sig:?}: {try run(me, sig, false)}");
+    }
+    println(f"handled: {try run(me, Signal::Terminate, true)}");
+}

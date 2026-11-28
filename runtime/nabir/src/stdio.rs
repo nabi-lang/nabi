@@ -1,8 +1,10 @@
 //! The standard streams. Everything nabi writes to fd 1 goes through one
 //! runtime buffer behind one lock, flushed when full, at a newline on a
-//! terminal, by `nabi_stdio_flush`, at `exit` and before a stack-overflow
-//! abort. Stderr is unbuffered: one `writev` per call, so a line never
-//! interleaves with another thread's. Stdin is one shared read buffer.
+//! terminal, by `nabi_stdio_flush`, at `exit`, before a stack-overflow
+//! abort and when a termination signal the program does not handle ends
+//! it (`os::flush_on_kill`). Stderr is unbuffered: one `writev` per
+//! call, so a line never interleaves with another thread's. Stdin is one
+//! shared read buffer.
 //!
 //! A thread that has to wait (for a lock or a syscall) does so parked
 //! (`os::native`), so a collection never waits on it; the lock holder
@@ -127,6 +129,7 @@ fn out(parts: &[&[u8]]) -> i32 {
     let g = OUT.lock();
     if !AT_EXIT.load(Ordering::Relaxed) {
         sys::atexit(flush_at_exit);
+        crate::os::flush_on_kill();
         AT_EXIT.store(true, Ordering::Relaxed);
     }
     let (data, len, _) = g.parts();
@@ -159,16 +162,38 @@ pub fn write(fd: i32, parts: &[&[u8]]) -> i32 {
     }
 }
 
-/// Flush stdout from the stack-overflow handler: only when no thread
-/// holds the lock (waiting could deadlock), never parked.
+/// Flush stdout from a signal handler (or a console control handler)
+/// before the process ends: never parked, and never waiting long for a
+/// lock holder, which may be the interrupted thread itself or stuck in
+/// a write.
 #[cfg(not(any(target_family = "wasm", target_os = "none")))]
 pub fn flush_in_signal() {
-    // Left locked: the process is about to abort.
-    if OUT.lock.try_lock() {
-        // SAFETY: the lock is held.
-        let (data, len) = unsafe { (&*OUT.data.get(), *OUT.pos.get()) };
-        write_all(1, &[&data[..len]]);
+    for _ in 0..100 {
+        if OUT.lock.try_lock() {
+            let g = Guard(&OUT);
+            let (data, len, _) = g.parts();
+            drain(data, len, false);
+            return;
+        }
+        nap();
     }
+}
+
+/// A millisecond's wait a signal handler may make.
+#[cfg(unix)]
+fn nap() {
+    let ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 1_000_000,
+    };
+    // SAFETY: `nanosleep` is async-signal-safe; `ts` is valid.
+    unsafe { libc::nanosleep(&ts, ptr::null_mut()) };
+}
+
+#[cfg(windows)]
+fn nap() {
+    // SAFETY: plain call.
+    unsafe { nabir_common::win::Sleep(1) };
 }
 
 /// `s` (then `\n` if `newline != 0`) to fd 1 or 2: 0 or `-errno`.
