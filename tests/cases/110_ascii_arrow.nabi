@@ -1,0 +1,37 @@
+// `->` between two values is the ASCII spelling of `→`, as `<=` is of
+// `≤`: it calls what `→` calls, at its level. A return type keeps `->`.
+// expect-exit: 0
+// expect-stdout:
+// 30 mm
+// 40 mm
+// 4
+
+use core::fmt::{Display, Formatter, FmtError};
+
+struct Cm { v: i64; }
+struct Mm { v: i64; }
+struct In;
+
+trait Convert<Rhs> {
+    type Output;
+    #[infix("→", like = "|")]
+    fn convert_to(self, unit: Rhs) -> Output;
+}
+
+impl Convert<In> for Cm {
+    type Output = Mm;
+    fn convert_to(self, u: In) -> Mm { Mm { v: self.v * 10 } }
+}
+
+impl Display for Mm {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(f"{self.v} mm") }
+}
+
+fn plus(a: Cm, b: Cm) -> Cm { Cm { v: a.v + b.v } }
+
+fn main() {
+    println(Cm { v: 3 } -> In);
+    println(plus(Cm { v: 3 }, Cm { v: 1 }) -> In);
+    let f = |x: i64| -> i64 { x + 1 };
+    println(f(3));
+}

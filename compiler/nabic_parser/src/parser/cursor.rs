@@ -203,18 +203,13 @@ impl Parser<'_> {
                 )
                 .with_fix(at, "+ ", "join them with `+`");
         }
-        // `q -> u` (an ASCII `→`): `->` only starts a return type.
+        // `a -> b` with no `→` in scope: `->` then only starts a return
+        // type.
         if matches!(found, TokenKind::Arrow) && !matches!(kind, TokenKind::FatArrow) {
-            let d = d.with_span(here, "`->` is not an operator");
-            return if self.ext.level("→", Fixity::Infix).is_some() {
-                d.with_help(
-                    "`->` only starts a return type (`fn f() -> T`); the operator in scope \
-                     is `→` (U+2192): write `a → b`",
-                )
-                .with_fix(here, "→", "use `→`")
-            } else {
-                d.with_help("`->` only starts a return type (`fn f() -> T`)")
-            };
+            return d.with_span(here, "`->` is not an operator here").with_help(
+                "`->` starts a return type (`fn f() -> T`); between two values it is `→`, \
+                 which no trait in scope registers",
+            );
         }
         match kind {
             TokenKind::Semi if prev.is_some_and(|p| p.line < here.line || here.is_dummy()) => {

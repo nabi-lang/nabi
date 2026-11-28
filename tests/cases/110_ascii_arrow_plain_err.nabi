@@ -1,6 +1,5 @@
-// expect-error: 7:15: expected `;`, found `->`
-// expect-error: help: `->` only starts a return type (`fn f() -> T`)
-// forbid-error: the operator in scope
+// expect-error: 6:15: expected `;`, found `->`
+// expect-error: help: `->` starts a return type (`fn f() -> T`); between two values it is `→`, which no trait in scope registers
 
 // `->` between two values, with no `→` in scope.
 fn main() {
