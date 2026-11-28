@@ -1,11 +1,11 @@
 // expect-error: 13:11: expected `=`, found `->`
-// expect-error: help: `->` starts a return type (`fn f() -> T`), or is `→` between two values
+// expect-error: help: `->` starts a return type (`fn f() -> T`), or calls the bound method between two values (`a -> b`)
 
-// `->` where no value comes before it, with `→` in scope.
+// `->` where no value comes before it, with a bound `->` in scope.
 struct Cm { v: i64; }
 
 trait Convert<Rhs> {
-    #[infix("→", like = "|")]
+    #[infix("->", like = "|")]
     fn convert_to(self, unit: Rhs) -> i64;
 }
 

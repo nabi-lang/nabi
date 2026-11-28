@@ -204,17 +204,18 @@ impl Parser<'_> {
                 .with_fix(at, "+ ", "join them with `+`");
         }
         // `->` where no return type can start: between two values it is
-        // `→`, so say whether a trait in scope registers that.
+        // an operator only where a trait binds it, so say whether one does.
         if matches!(found, TokenKind::Arrow) && !matches!(kind, TokenKind::FatArrow) {
             let d = d.with_span(here, "`->` is not an operator here");
-            return if self.ext.level("→", Fixity::Infix).is_some() {
+            return if self.ext.level("->", Fixity::Infix).is_some() {
                 d.with_help(
-                    "`->` starts a return type (`fn f() -> T`), or is `→` between two values",
+                    "`->` starts a return type (`fn f() -> T`), or calls the bound method \
+                     between two values (`a -> b`)",
                 )
             } else {
                 d.with_help(
-                    "`->` starts a return type (`fn f() -> T`); between two values it is `→`, \
-                     which no trait in scope registers",
+                    "`->` starts a return type (`fn f() -> T`); between two values it needs a \
+                     trait in scope with `#[infix(\"->\", like = \"|\")]`",
                 )
             };
         }

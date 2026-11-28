@@ -922,9 +922,6 @@ impl Parser<'_> {
             (TokenKind::QuestionQuestion, Fixity::Infix) => "??".into(),
             (TokenKind::Amp, Fixity::Infix) => "&".into(),
             (TokenKind::Pipe, Fixity::Infix) => "|".into(),
-            // `->` between two values is the ASCII spelling of `→`, as
-            // `<=` is of `≤`; it only binds when a trait registers `→`.
-            (TokenKind::Arrow, Fixity::Infix) if !self.arrow_ends_guard => "→".into(),
             (TokenKind::Caret, Fixity::Infix) => "^".into(),
             (TokenKind::Shl, Fixity::Infix) => "<<".into(),
             (TokenKind::Shr, Fixity::Infix) => ">>".into(),
@@ -951,8 +948,10 @@ impl Parser<'_> {
             (TokenKind::MathOp('√'), Fixity::Prefix) => "√".into(),
             (TokenKind::MathOp(c), Fixity::Infix) if *c != '√' => c.to_string(),
             (TokenKind::ExtOp(s), f) if self.ext.levels.contains_key(&(s.clone(), f)) => s.clone(),
-            // Binary `@` / `~`, where a trait binds it.
-            (TokenKind::At | TokenKind::Tilde, Fixity::Infix)
+            // Binary `@` / `~` / `->`, where a trait binds it; a guard's
+            // `->` outside brackets is a mistyped `=>` instead.
+            (TokenKind::Arrow, Fixity::Infix) if self.arrow_ends_guard => return None,
+            (TokenKind::At | TokenKind::Tilde | TokenKind::Arrow, Fixity::Infix)
                 if self
                     .ext
                     .levels

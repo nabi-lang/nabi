@@ -1,11 +1,10 @@
-// `->` between two values is the ASCII spelling of `→`, as `<=` is of
-// `≤`: it calls what `→` calls, at its level (that of `|`, looser than
-// `+`). Inside a guard's brackets it converts too. A return type keeps
-// `->`.
+// A trait can bind `->` between two values: `a -> b` calls the method,
+// at the level `like` gives it (that of `|`, looser than `+`). Inside a
+// guard's brackets it converts too. A return type keeps `->`.
 // expect-exit: 0
 // expect-stdout:
 // 30 mm
-// 30 mm
+// 20 mm
 // 40 mm
 // big
 // 4
@@ -19,7 +18,7 @@ struct In;
 
 trait Convert<Rhs> {
     type Output;
-    #[infix("→", like = "|")]
+    #[infix("->", like = "|")]
     fn convert_to(self, unit: Rhs) -> Output;
 }
 
@@ -39,7 +38,7 @@ impl Display for Mm {
 
 fn main() {
     println(Cm { v: 3 } -> In);
-    println(Cm { v: 3 } → In);
+    println(Cm { v: 2 } -> In);
     println(Cm { v: 3 } + Cm { v: 1 } -> In);
     let size = match 3 {
         n if (Cm { v: n } -> In).v > 20 => "big",
