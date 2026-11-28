@@ -1,0 +1,18 @@
+// expect-error: 17:25: expected `;`, found `->`
+// expect-error: help: `->` only starts a return type (`fn f() -> T`); the operator in scope is `→` (U+2192): write `a → b`
+
+// `->` where a package's `→` is meant: the error names `→`.
+struct Cm { v: i64; }
+struct Mm { v: i64; }
+
+trait Convert<Rhs> {
+    type Output;
+    #[infix("→", like = "|")]
+    fn convert_to(self, unit: Rhs) -> Output;
+}
+
+impl Convert<Mm> for Cm { type Output = Mm; fn convert_to(self, u: Mm) -> Mm { Mm { v: self.v * 10 } } }
+
+fn main() {
+    let a = Cm { v: 3 } -> Mm { v: 0 };
+}

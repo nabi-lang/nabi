@@ -1,0 +1,8 @@
+// expect-error: 7:15: expected `;`, found `->`
+// expect-error: help: `->` only starts a return type (`fn f() -> T`)
+// forbid-error: the operator in scope
+
+// `->` between two values, with no `→` in scope.
+fn main() {
+    let x = 1 -> 2;
+}
