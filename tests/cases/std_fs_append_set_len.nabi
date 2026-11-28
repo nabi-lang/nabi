@@ -1,0 +1,36 @@
+// needs: fs
+// expect-exit: 0
+// expect-stdout:
+// cut: [hel!]
+// grown: 6
+// read-only fails: true
+
+// `set_len` works on a `File::append` handle, as `ftruncate` on an
+// `O_APPEND` fd does, and later writes still go to the end. A handle
+// opened only for reading still cannot change the length.
+use core::io::{IoError, Write};
+use std::env;
+use std::fs;
+use std::fs::File;
+
+fn main() throws (IoError) {
+    let p = env::temp_dir() / "nabi_append_set_len.txt";
+    try fs::write(p, "hello");
+    let f = try File::append(p);
+    try f.write_all(" world");
+    try f.set_len(3);
+    try f.write_all("!");
+    try f.close();
+    println(f"cut: [{try fs::read_to_str(p)}]");
+
+    let f = try File::append(p);
+    try f.set_len(6);
+    try f.close();
+    println(f"grown: {(try fs::read(p)).len()}");
+
+    let f = try File::open(p);
+    let failed = try { f.set_len(0); false } catch _ { true };
+    try f.close();
+    println(f"read-only fails: {failed}");
+    try fs::remove_file(p);
+}
