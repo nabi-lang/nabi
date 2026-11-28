@@ -1049,3 +1049,42 @@ fn fetched_dependency_builds_by_version() {
     assert!(err.contains("   Compiling local (local)\n"), "{err}");
     assert!(!err.contains("checkouts"), "{err}");
 }
+
+/// `nabi fmt` before the first build: the dependency's source is not in
+/// the cache yet, so fmt fetches it to lex the operators it registers
+/// (`nabi.lock` unchanged); with `--offline` it says what it could not
+/// read and how to get it.
+#[test]
+fn fmt_fetches_dependency_operators() {
+    let root = scratch("fmt-ops");
+    let home = root.join("home");
+    let repo = root.join("ops");
+    commit(
+        &repo,
+        &[(
+            "src/lib.nabi",
+            "pub struct V { pub x: i32; }\n\npub trait Join {\n    #[infix(\"⊛\", like = \"+\")]\n    fn join(self, o: V) -> V;\n}\n\nimpl Join for V {\n    fn join(self, o: V) -> V { V { x: self.x + o.x } }\n}\n",
+        )],
+    );
+    let url = repo.display().to_string();
+    let app = root.join("app");
+    let messy = "use ops::{Join, V};\nfn main() {\n  let v = V { x: 1 } ⊛ V { x: 2 };\n  println(v.x);\n}\n";
+    write(&app.join("nabi.nabion"), APP0);
+    ok(&nabi(&home, &app, &["add", "ops", "--git", &url]));
+    let lock = read(&app.join("nabi.lock"));
+    write(&app.join("src/main.nabi"), messy);
+    // A fresh clone: nothing of the dependency in the cache.
+    fs::remove_dir_all(home.join("cache")).unwrap();
+
+    let out = nabi(&home, &app, &["--offline", "fmt"]);
+    fails(&out, "no trait in scope registers it");
+    fails(&out, "run `nabi build` once, then `nabi fmt` again");
+    assert_eq!(read(&app.join("src/main.nabi")), messy);
+
+    ok(&nabi(&home, &app, &["fmt"]));
+    assert_eq!(
+        read(&app.join("src/main.nabi")),
+        "use ops::{Join, V};\nfn main() {\n    let v = V { x: 1 } ⊛ V { x: 2 };\n    println(v.x);\n}\n"
+    );
+    assert_eq!(read(&app.join("nabi.lock")), lock);
+}
