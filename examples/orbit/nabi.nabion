@@ -1,0 +1,11 @@
+Package {
+    name: "orbit",
+    version: "0.1.0",
+    nabi_version: "0.1.8",
+    toolchain: "0.1",
+    deps: {
+        "ode": Dep::version("^0.1.1"),
+        "units": Dep::version("^0.1.2"),
+        "plot": Dep::version("^0.1.0"),
+    },
+}

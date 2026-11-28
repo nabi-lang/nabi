@@ -1,0 +1,303 @@
+// A command-line parser generated from a struct. `#[derive(Args)]` reads
+// the fields at compile time; `#[arg(short = "v", help = "..")]` on a
+// field adds its short form and help line. The field type picks the
+// shape: `bool` is a flag, `str` / `i64` / `f64` take a value, `T | none`
+// may be left out, `List<str>` takes the positionals. A field default
+// (`= expr`) is used when the option is not given.
+
+#[cfg(test)]
+mod tests;
+
+use std::env;
+use std::path::Path;
+use std::process;
+
+/// A type `#[derive(Args)]` can parse a command line into.
+pub trait Args {
+    /// One entry per field, in declaration order.
+    fn specs() -> List<Spec>;
+
+    /// Parse `argv`, program name first. `--help` throws the help text.
+    fn parse(argv: List<str>) throws (ArgsError) -> Self;
+
+    /// The `--help` text.
+    fn help() -> str { usage(Self::specs()) }
+}
+
+/// What a field looks like on the command line.
+#[derive(PartialEq)]
+pub enum Kind {
+    Flag,
+    Option,
+    Positional,
+}
+
+/// One field as `#[derive(Args)]` describes it.
+pub struct Spec {
+    pub name: str;
+    pub short: str;
+    pub help: str;
+    pub kind: Kind;
+    pub hint: str;
+    pub default: str;
+}
+
+/// What `#[arg(..)]` may set.
+pub struct Meta {
+    pub short: str = "";
+    pub help: str = "";
+}
+
+// `#[arg(short = "v", help = "..")]` reaches the derive as the tokens
+// `short = "v", help = ".."`; rebuild them as a `Meta` literal, so a
+// misspelt key is a "no field" error from the compiler.
+#[impl_macro(meta)] @macro {
+    ( @rep[sep = ","] { @k: ident = @v: expr } ) => { pkg::args::Meta { @for @k { @k: @v, } } }
+}
+
+#[impl_derive_attribute(Args, arg)]
+pub @derive {
+    impl pkg::args::Args for @Self {
+        fn specs() -> List<pkg::args::Spec> {
+            [@for_fields {
+                pkg::args::spec::<@field.type>(
+                    @field.name.as_str(),
+                    @apply_if(@has_derive_attr(arg)) { meta!(@derive_attr(arg)) }
+                    @apply_if(!@has_derive_attr(arg)) { pkg::args::Meta {} },
+                    @apply_if(@field.has_default) { f"{@field.default:?}" }
+                    @apply_if(!@field.has_default) { "" },
+                ),
+            }]
+        }
+
+        fn parse(argv: List<str>) throws (pkg::args::ArgsError) -> Self {
+            let raw = try pkg::args::scan(Self::specs(), argv);
+            @Self {
+                @for_fields {
+                    @apply_if(@field.has_default) {
+                        @field: try pkg::args::take_or::<@field.type>(raw, @field.name.as_str(), @field.default),
+                    }
+                    @apply_if(!@field.has_default) {
+                        @field: try pkg::args::take::<@field.type>(raw, @field.name.as_str()),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A value type a field can have.
+pub trait Value {
+    /// Flag, option or positional.
+    fn kind() -> Kind { Kind::Option }
+
+    /// Shown after the option in `--help`.
+    fn hint() -> str { Self::type_name() }
+
+    /// One value as written.
+    fn read(s: str) throws (ArgsError) -> Self;
+
+    /// Every value given, in order; the last one wins.
+    fn gather(vs: List<str>) throws (ArgsError) -> Self { try Self::read(vs[vs.len() - 1]) }
+
+    /// The value of an option left out.
+    fn absent() throws (ArgsError) -> Self { throw ArgsError::new("required") }
+}
+
+impl Value for bool {
+    fn kind() -> Kind { Kind::Flag }
+    fn read(_s: str) throws (ArgsError) -> bool { true }
+    fn absent() throws (ArgsError) -> bool { false }
+}
+
+impl Value for str {
+    fn read(s: str) throws (ArgsError) -> str { s }
+}
+
+impl Value for i64 {
+    fn read(s: str) throws (ArgsError) -> i64 {
+        try s.parse::<i64>() catch _ { throw ArgsError::new(f"wants a whole number, not `{s}`"); }
+    }
+}
+
+impl Value for f64 {
+    fn read(s: str) throws (ArgsError) -> f64 {
+        try s.parse::<f64>() catch _ { throw ArgsError::new(f"wants a number, not `{s}`"); }
+    }
+}
+
+impl<T: Value> Value for T | none {
+    fn kind() -> Kind { T::kind() }
+    fn hint() -> str { T::hint() }
+    fn read(s: str) throws (ArgsError) -> T | none { try T::read(s) }
+    fn absent() throws (ArgsError) -> T | none { none }
+}
+
+impl<T: Value> Value for List<T> {
+    fn kind() -> Kind { Kind::Positional }
+    fn hint() -> str { T::hint() }
+    fn read(s: str) throws (ArgsError) -> List<T> { [try T::read(s)] }
+    fn gather(vs: List<str>) throws (ArgsError) -> List<T> {
+        let out: List<T> = [];
+        for v in vs { out.push(try T::read(v)); }
+        out
+    }
+    fn absent() throws (ArgsError) -> List<T> { [] }
+}
+
+/// A command line that does not parse, or a `--help` request.
+#[derive(Debug)]
+pub struct ArgsError {
+    pub message: str;
+    pub help: bool = false;
+}
+
+impl ArgsError {
+    pub fn new(message: str) -> ArgsError { ArgsError { message: message } }
+
+    /// Print the help to stdout and exit 0, or the error to stderr and
+    /// exit 2.
+    pub fn exit(self) -> ! {
+        if self.help {
+            print(self.message);
+            process::exit(0);
+        }
+        eprintln(f"{program()}: {self.message}\ntry `{program()} --help`");
+        process::exit(2);
+    }
+}
+
+impl Display for ArgsError {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.message) }
+}
+
+impl Error for ArgsError {}
+
+/// The `Spec` of a field `name: T`.
+pub fn spec<T: Value>(name: str, m: Meta, default: str) -> Spec {
+    Spec { name: name, short: m.short, help: m.help, kind: T::kind(), hint: T::hint(), default: default }
+}
+
+/// `--top-n` for the field `top_n`.
+fn long(s: Spec) -> str { "--" + s.name.replace("_", "-") }
+
+/// Sort `argv[1..]` into the values given per field name.
+pub fn scan(specs: List<Spec>, argv: List<str>) throws (ArgsError) -> Dict<str, List<str>> {
+    let raw: Dict<str, List<str>> = Dict::new();
+    let add = [ref raw] |name: str, v: str| {
+        let vs = raw.get(name) ?? [];
+        vs.push(v);
+        raw.insert(name, vs);
+    };
+    let rest = specs.iter().find(|s| s.kind == Kind::Positional);
+    let (i, opts) = (1usize, true);
+    while i < argv.len() {
+        let a = argv[i];
+        i += 1;
+        if opts && a == "--" {
+            opts = false;
+            continue;
+        }
+        if !opts || a == "-" || !a.starts_with("-") {
+            let r = rest ?? throw ArgsError::new(f"unexpected argument `{a}`");
+            add(r.name, a);
+            continue;
+        }
+        if a == "--help" || a == "-h" {
+            throw ArgsError { message: usage(specs), help: true };
+        }
+        let key = a;
+        let inline: str | none = none;
+        if let p: (str, str) = a.split_once("=") {
+            if a.starts_with("--") { (key, inline) = p; }
+        }
+        let s = specs.iter().find(|s| s.kind != Kind::Positional && (long(s) == key || "-" + s.short == key))
+            ?? throw unknown(specs, key);
+        if s.kind == Kind::Flag {
+            if inline is str { throw ArgsError::new(f"{long(s)} takes no value"); }
+            add(s.name, "");
+            continue;
+        }
+        let v = inline ?? (argv.get(i) ?? throw ArgsError::new(f"missing value for {key}"));
+        if inline is none { i += 1; }
+        add(s.name, v);
+    }
+    raw
+}
+
+/// An unknown option, with the closest known one.
+fn unknown(specs: List<Spec>, key: str) -> ArgsError {
+    let best = specs.iter()
+        .filter(|s| s.kind != Kind::Positional)
+        .map(|s| (distance(key, long(s)), long(s)))
+        .min_by_key(|p| p.0);
+    if let (d, l): (usize, str) = best {
+        if d <= 2 { return ArgsError::new(f"unknown option {key}; did you mean {l}?"); }
+    }
+    ArgsError::new(f"unknown option {key}")
+}
+
+/// Levenshtein distance between `a` and `b`, in chars.
+fn distance(a: str, b: str) -> usize {
+    let bs: List<char> = b.chars().collect();
+    let row: List<usize> = (0..bs.len() + 1).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let prev = row[0];
+        row[0] = i + 1;
+        for j in 0..bs.len() {
+            let cur = row[j + 1];
+            row[j + 1] = if ca == bs[j] { prev } else { 1 + prev.min(cur).min(row[j]) };
+            prev = cur;
+        }
+    }
+    row[bs.len()]
+}
+
+/// The value of field `name` as a `T`.
+pub fn take<T: Value>(raw: Dict<str, List<str>>, name: str) throws (ArgsError) -> T {
+    let flag = "--" + name.replace("_", "-");
+    if let vs: List<str> = raw.get(name) {
+        return try T::gather(vs) catch e { throw ArgsError::new(f"{flag} {e}"); };
+    }
+    try T::absent() catch _ { throw ArgsError::new(f"missing required option {flag}"); }
+}
+
+/// As `take`, with `default` when the option is not given.
+pub fn take_or<T: Value>(raw: Dict<str, List<str>>, name: str, default: T) throws (ArgsError) -> T {
+    if raw.get(name) is none { return default; }
+    try take::<T>(raw, name)
+}
+
+/// The program's name, without its directory or `.exe`.
+pub fn program() -> str {
+    let argv = env::args();
+    let p = argv.get(0) ?? "prog";
+    Path::new(p).file_stem() ?? p
+}
+
+/// The help text for `specs`.
+fn usage(specs: List<Spec>) -> str {
+    let rest = specs.iter().find(|s| s.kind == Kind::Positional);
+    let tail = match rest {
+        r: Spec => f" [{r.name}..]",
+        none => "",
+    };
+    let out = f"usage: {program()} [options]{tail}\n\noptions:\n";
+    let lines: List<(str, str)> = [];
+    for s in specs {
+        if s.kind == Kind::Positional { continue; }
+        let short = if s.short.is_empty() { "    " } else { f"-{s.short}, " };
+        let arg = if s.kind == Kind::Flag { "" } else { f" <{s.hint}>" };
+        let help = if s.default.is_empty() || s.kind == Kind::Flag { s.help } else { f"{s.help} (default {s.default})".trim() };
+        lines.push((f"{short}{long(s)}{arg}", help));
+    }
+    lines.push(("-h, --help", "print this help"));
+    let w = lines.iter().map(|l| l.0.len()).max() ?? 0;
+    for (l, h) in lines {
+        out = out + f"  {l}{" ".repeat(w - l.len())}  {h}\n";
+    }
+    if let r: Spec = rest {
+        if !r.help.is_empty() { out = out + f"\n{r.name}..: {r.help}\n"; }
+    }
+    out
+}

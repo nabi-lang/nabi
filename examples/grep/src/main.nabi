@@ -1,0 +1,89 @@
+// A small ripgrep: search the files under each path for a regex, one
+// worker thread per CPU. Exit 0 on a match, 1 on none, 2 on an error.
+
+mod args;
+mod search;
+mod tty;
+mod walk;
+
+use pkg::args::{Opts, USAGE, UsageError};
+use pkg::search::Found;
+use core::io::IoError;
+use regex::{Regex, RegexBuilder, RegexError};
+use std::env;
+use std::path::Path;
+use std::thread;
+
+/// What one worker hands back.
+struct Report {
+    found: List<Found>;
+    errors: List<str>;
+}
+
+fn main() -> i32 {
+    let opts = try env::args()[1:].to_list() |> args::parse catch e: UsageError {
+        eprintln(f"grep: {e}\n{USAGE}");
+        return 2;
+    };
+    let compile = || try RegexBuilder::new(opts.pattern).case_insensitive(opts.ignore_case).build();
+    // Check the pattern once, before any thread starts.
+    _ = try compile() catch e: RegexError {
+        eprintln(f"grep: {e}");
+        return 2;
+    };
+
+    let failed = false;
+    let fail = [ref failed] |msg: str| {
+        eprintln(f"grep: {msg}");
+        failed = true;
+    };
+    let (tx, rx) = channel::<Path>();
+    let workers: List<thread::JoinHandle<Report>> = (0..task::cpu_count())
+        .map(|_| {
+            // A Regex is not Sync: each worker owns one.
+            let re = try! compile();
+            thread::spawn([move re] || work(re, rx))
+        })
+        .collect();
+    for root in opts.paths {
+        for p in walk::files(root, fail) { try! tx.send(p); }
+    }
+    tx.close();
+
+    let found: List<Found> = [];
+    for w in workers {
+        let r = try! w.join();
+        found.extend(r.found);
+        r.errors.iter().for_each(fail);
+    }
+    found.sort_by_key(|f| f.path.as_str());
+    let color = tty::color();
+    found.iter().for_each(|f| print_file(f, opts, color));
+    if failed { 2 } else if found.is_empty() { 1 } else { 0 }
+}
+
+/// Search every path the channel hands out until it closes.
+fn work(re: Regex, rx: Receiver<Path>) -> Report {
+    let r = Report { found: [], errors: [] };
+    for p in rx {
+        match try search::file(re, p) catch e: IoError { r.errors.push(f"{e}"); none } {
+            f: Found if !f.lines.is_empty() => r.found.push(f),
+            _ => {}
+        }
+    }
+    r
+}
+
+fn print_file(f: Found, opts: Opts, color: bool) {
+    let name = if color { f"\x1b[35m{f.path}\x1b[0m" } else { f"{f.path}" };
+    if opts.names {
+        println(name);
+    } else if opts.count {
+        println(f"{name}:{f.lines.len()}");
+    } else {
+        for l in f.lines {
+            let text = if color { search::paint(l) } else { l.text };
+            println(f"{name}:{l.number}:{text}");
+        }
+    }
+}

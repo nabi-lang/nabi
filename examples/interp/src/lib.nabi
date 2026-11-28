@@ -1,0 +1,12 @@
+//! A small scripting language: `lexer` makes tokens, `parser` builds an
+//! `ast`, `eval` walks it. Every stage throws `LangError`, which knows
+//! where in the source it happened.
+
+pub mod ast;
+pub mod error;
+pub mod eval;
+pub mod lexer;
+pub mod parser;
+
+pub use error::{LangError, Span};
+pub use eval::{Interp, Value};

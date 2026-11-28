@@ -51,6 +51,8 @@ nabi test
 nabi jupyter install  # 供 Jupyter / VS Code 使用的 Nabi 核心
 ```
 
+完整的程式（平行 grep、REST 伺服器、聊天伺服器、直譯器、C 互通等）在 [examples/](examples) 中。
+
 ## 從原始碼建置
 
 建置需要 rustup（含 `rust-toolchain.toml` 中固定的 Rust 工具鏈），以及 Rust 本身使用的 C 編譯器與連結器；下方的執行環境步驟還需要 `curl`、`python3` 與支援 xz 的 `tar`（它會為 `llvm-ar` 加入 rustup 的 `llvm-tools` 元件）。

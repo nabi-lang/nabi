@@ -1,0 +1,343 @@
+//! raytracer: a small path tracer. Spheres on a checkered ground plane,
+//! diffuse, metal and glass materials, many samples per pixel, gamma
+//! correction. Rows are rendered by one OS thread per CPU and the image
+//! is written as a binary PPM.
+//!
+//!     nabi run --release -- [WIDTH] [OUT.ppm]
+
+use std::env;
+use std::fs;
+use std::random::{Rng, Xoshiro256PlusPlus};
+use std::thread;
+
+/// Rays traced per pixel.
+const SAMPLES: usize = 100;
+
+/// Bounces before a path is cut off.
+const DEPTH: usize = 12;
+
+/// Postfix `°`: degrees to radians, so a field of view reads `30.0°`.
+trait Degrees {
+    #[postfix("°", like = "?")]
+    fn degrees(self) -> f64;
+}
+
+impl Degrees for f64 {
+    fn degrees(self) -> f64 { self.to_radians() }
+}
+
+/// A point, a direction or a linear RGB color.
+struct Vec3 {
+    x: f64;
+    y: f64;
+    z: f64;
+}
+
+fn vec3(x: f64, y: f64, z: f64) -> Vec3 { Vec3 { x: x, y: y, z: z } }
+
+impl ops::Add for Vec3 {
+    type Output = Vec3;
+    fn add(self, o: Vec3) -> Vec3 { vec3(self.x + o.x, self.y + o.y, self.z + o.z) }
+}
+
+impl ops::Sub for Vec3 {
+    type Output = Vec3;
+    fn sub(self, o: Vec3) -> Vec3 { vec3(self.x - o.x, self.y - o.y, self.z - o.z) }
+}
+
+impl ops::Neg for Vec3 {
+    type Output = Vec3;
+    fn neg(self) -> Vec3 { vec3(-self.x, -self.y, -self.z) }
+}
+
+impl ops::Mul<f64> for Vec3 {
+    type Output = Vec3;
+    fn mul(self, k: f64) -> Vec3 { vec3(self.x * k, self.y * k, self.z * k) }
+}
+
+impl ops::Mul<Vec3> for f64 {
+    type Output = Vec3;
+    fn mul(self, v: Vec3) -> Vec3 { v * self }
+}
+
+impl ops::Div<f64> for Vec3 {
+    type Output = Vec3;
+    fn div(self, k: f64) -> Vec3 { self * (1.0 / k) }
+}
+
+/// `a .* b`: component-wise product, how a surface tints light.
+impl ops::DotMul for Vec3 {
+    type Output = Vec3;
+    fn dot_mul(self, o: Vec3) -> Vec3 { vec3(self.x * o.x, self.y * o.y, self.z * o.z) }
+}
+
+/// `a ⋅ b`: dot product.
+impl ops::Dot for Vec3 {
+    type Output = f64;
+    fn dot(self, o: Vec3) -> f64 { self.x * o.x + self.y * o.y + self.z * o.z }
+}
+
+/// `a × b`: cross product.
+impl ops::Cross for Vec3 {
+    type Output = Vec3;
+    fn cross(self, o: Vec3) -> Vec3 {
+        vec3(self.y * o.z - self.z * o.y, self.z * o.x - self.x * o.z, self.x * o.y - self.y * o.x)
+    }
+}
+
+impl Vec3 {
+    fn len(self) -> f64 { √(self ⋅ self) }
+
+    fn unit(self) -> Vec3 { self / self.len() }
+
+    /// Mirror `self` about the plane with normal `n`.
+    fn reflect(self, n: Vec3) -> Vec3 { self - 2.0 * (self ⋅ n) * n }
+}
+
+/// A uniformly random point inside the unit sphere.
+fn in_sphere(ref g: Xoshiro256PlusPlus) -> Vec3 {
+    loop {
+        let p = vec3(g.uniform(-1.0, 1.0), g.uniform(-1.0, 1.0), g.uniform(-1.0, 1.0));
+        if p ⋅ p < 1.0 { return p; }
+    }
+}
+
+struct Ray {
+    from: Vec3;
+    dir: Vec3;
+}
+
+impl Ray {
+    fn at(self, t: f64) -> Vec3 { self.from + t * self.dir }
+}
+
+/// How a surface sends light on.
+enum Material {
+    /// Scatters around the normal (Lambertian), tinted by an albedo.
+    Diffuse(Vec3),
+    /// Diffuse in two colors, alternating on a one-unit grid.
+    Checker(Vec3, Vec3),
+    /// Reflects, blurred by a fuzz radius.
+    Metal(Vec3, f64),
+    /// Refracts with an index of refraction, or reflects (Fresnel).
+    Glass(f64),
+}
+
+enum Shape {
+    Sphere(Vec3, f64),
+    /// An infinite plane: a point on it and its unit normal.
+    Plane(Vec3, Vec3),
+}
+
+struct Object {
+    shape: Shape;
+    material: Material;
+}
+
+/// Where a ray met a surface.
+struct Hit {
+    p: Vec3;
+    /// Faces the incoming ray.
+    normal: Vec3;
+    /// The ray came from outside the surface.
+    front: bool;
+    material: Material;
+}
+
+/// Nearest `t` in `(lo, hi)` where `r` meets `s`, with the outward normal.
+fn intersect(s: Shape, r: Ray, lo: f64, hi: f64) -> (f64, Vec3) | none {
+    match s {
+        Shape::Sphere(c, radius) => {
+            let oc = r.from - c;
+            let a = r.dir ⋅ r.dir;
+            let b = oc ⋅ r.dir;
+            let disc = b * b - a * (oc ⋅ oc - radius * radius);
+            if disc < 0.0 { return none; }
+            for t in [(-b - √disc) / a, (-b + √disc) / a] {
+                if t > lo && t < hi { return (t, (r.at(t) - c) / radius); }
+            }
+            none
+        }
+        Shape::Plane(p, n) => {
+            let d = r.dir ⋅ n;
+            if d.abs() < 1e-9 { return none; }
+            let t = (p - r.from) ⋅ n / d;
+            if t > lo && t < hi { (t, n) } else { none }
+        }
+    }
+}
+
+/// The closest hit of `r` in `scene`, or `none` when it escapes.
+fn trace(scene: FrozenList<Object>, r: Ray) -> Hit | none {
+    let best: Hit | none = none;
+    let hi = f64::INFINITY;
+    for o in scene {
+        let (t, n) = intersect(o.shape, r, 1e-4, hi) else { continue; };
+        let front = r.dir ⋅ n < 0.0;
+        hi = t;
+        let normal = if front { n } else { -n };
+        best = Hit { p: r.at(t), normal: normal, front: front, material: o.material };
+    }
+    best
+}
+
+/// Schlick's approximation of how much light glass reflects.
+fn schlick(cos: f64, ior: f64) -> f64 {
+    let r0 = ((1.0 - ior) / (1.0 + ior)) ** 2.0;
+    r0 + (1.0 - r0) * (1.0 - cos) ** 5.0
+}
+
+/// The ray `h` sends on and its attenuation, or `none` when absorbed.
+fn scatter(r: Ray, h: Hit, ref g: Xoshiro256PlusPlus) -> (Ray, Vec3) | none {
+    let d = r.dir.unit();
+    match h.material {
+        Material::Diffuse(albedo) => (Ray { from: h.p, dir: h.normal + in_sphere(ref g).unit() }, albedo),
+        Material::Checker(a, b) => {
+            let odd = (h.p.x.floor() + h.p.z.floor()) as i64 % 2 != 0;
+            (Ray { from: h.p, dir: h.normal + in_sphere(ref g).unit() }, if odd { a } else { b })
+        }
+        Material::Metal(albedo, fuzz) => {
+            let out = d.reflect(h.normal) + fuzz * in_sphere(ref g);
+            if out ⋅ h.normal <= 0.0 { return none; }
+            (Ray { from: h.p, dir: out }, albedo)
+        }
+        Material::Glass(ior) => {
+            let eta = if h.front { 1.0 / ior } else { ior };
+            let cos = (-d ⋅ h.normal).min(1.0);
+            let sin = √(1.0 - cos * cos);
+            let dir = if eta * sin > 1.0 || schlick(cos, eta) > g.f64() {
+                d.reflect(h.normal)
+            } else {
+                let perp = eta * (d + cos * h.normal);
+                perp - √(1.0 - perp ⋅ perp).abs() * h.normal
+            };
+            (Ray { from: h.p, dir: dir }, vec3(1.0, 1.0, 1.0))
+        }
+    }
+}
+
+/// Light gathered along `r`: bounce until absorbed, escaped or `DEPTH`.
+fn radiance(scene: FrozenList<Object>, r: Ray, ref g: Xoshiro256PlusPlus) -> Vec3 {
+    let tint = vec3(1.0, 1.0, 1.0);
+    let ray = r;
+    for _ in 0..DEPTH {
+        let h = trace(scene, ray) else {
+            // Sky: white at the horizon, blue overhead.
+            let k = 0.5 * (ray.dir.unit().y + 1.0);
+            return tint .* ((1.0 - k) * vec3(1.0, 1.0, 1.0) + k * vec3(0.5, 0.7, 1.0));
+        };
+        let (next, a) = scatter(ray, h, ref g) else { return vec3(0.0, 0.0, 0.0); };
+        tint = tint .* a;
+        ray = next;
+    }
+    vec3(0.0, 0.0, 0.0)
+}
+
+/// A pinhole camera: `corner + u * horiz + v * vert` spans the view.
+struct Camera {
+    eye: Vec3;
+    corner: Vec3;
+    horiz: Vec3;
+    vert: Vec3;
+}
+
+fn camera(eye: Vec3, at: Vec3, fov: f64, aspect: f64) -> Camera {
+    let h = 2.0 * (fov / 2.0).tan();
+    let w = (eye - at).unit();
+    let u = (vec3(0.0, 1.0, 0.0) × w).unit();
+    let v = w × u;
+    let horiz = h * aspect * u;
+    let vert = h * v;
+    Camera { eye: eye, corner: eye - horiz / 2.0 - vert / 2.0 - w, horiz: horiz, vert: vert }
+}
+
+fn diffuse(r: f64, g: f64, b: f64) -> Material { Material::Diffuse(vec3(r, g, b)) }
+
+fn sphere(x: f64, y: f64, z: f64, r: f64, m: Material) -> Object {
+    Object { shape: Shape::Sphere(vec3(x, y, z), r), material: m }
+}
+
+fn scene() -> List<Object> {
+    let ground = Material::Checker(vec3(0.15, 0.15, 0.18), vec3(0.85, 0.85, 0.8));
+    [
+        Object { shape: Shape::Plane(vec3(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)), material: ground },
+        sphere(0.0, 1.0, 0.0, 1.0, Material::Glass(1.5)),
+        sphere(0.0, 1.0, 0.0, -0.9, Material::Glass(1.5)),
+        sphere(-2.2, 1.0, -0.6, 1.0, diffuse(0.8, 0.25, 0.2)),
+        sphere(2.2, 1.0, -0.6, 1.0, Material::Metal(vec3(0.8, 0.7, 0.5), 0.05)),
+        sphere(-1.0, 0.35, 1.6, 0.35, diffuse(0.2, 0.5, 0.85)),
+        sphere(1.1, 0.3, 1.7, 0.3, Material::Metal(vec3(0.9, 0.9, 0.9), 0.3)),
+        sphere(0.1, 0.25, 2.3, 0.25, diffuse(0.3, 0.75, 0.3)),
+    ]
+}
+
+/// Render rows `first, first + step, ..` of a `w` x `h` image as RGB bytes.
+fn render(
+    scene: FrozenList<Object>,
+    cam: Camera,
+    w: usize,
+    h: usize,
+    first: usize,
+    step: usize,
+) -> List<List<u8>> {
+    let g = Xoshiro256PlusPlus::seed(first as u64 + 1);
+    let rows: List<List<u8>> = [];
+    for y in (first..h).step_by(step) {
+        let row: List<u8> = List::with_capacity(w * 3);
+        for x in 0..w {
+            let sum = vec3(0.0, 0.0, 0.0);
+            for _ in 0..SAMPLES {
+                let u = (x as f64 + g.f64()) / w as f64;
+                let v = 1.0 - (y as f64 + g.f64()) / h as f64;
+                let dir = cam.corner + u * cam.horiz + v * cam.vert - cam.eye;
+                sum = sum + radiance(scene, Ray { from: cam.eye, dir: dir }, ref g);
+            }
+            // Gamma 2: the square root of the mean.
+            let c = sum / SAMPLES as f64;
+            for k in [c.x, c.y, c.z] {
+                row.push((256.0 * √k).clamp(0.0, 255.0) as u8);
+            }
+        }
+        rows.push(row);
+    }
+    rows
+}
+
+fn main() -> i32 {
+    let args = env::args();
+    let w: usize = if args.len() > 1 {
+        try args[1].parse() catch _ {
+            eprintln(f"raytracer: width must be a whole number, not {args[1]:?}");
+            eprintln("usage: raytracer [WIDTH] [OUT.ppm]");
+            return 2;
+        }
+    } else {
+        400
+    };
+    let out = if args.len() > 2 { args[2] } else { "out.ppm" };
+    let h = (w * 9 / 16).max(1);
+
+    let cam = camera(vec3(0.0, 2.2, 7.5), vec3(0.0, 0.8, 0.0), 30.0°, w as f64 / h as f64);
+    let world = scene().freeze();
+    let n = task::cpu_count();
+
+    let start = Instant::now();
+    let workers: List<thread::JoinHandle<List<List<u8>>>> = [];
+    for k in 0..n {
+        workers.push(thread::spawn(|| render(world, cam, w, h, k, n)));
+    }
+    let parts: List<List<List<u8>>> = [];
+    for t in workers { parts.push(try! t.join()); }
+
+    // Interleave the workers' rows back into image order.
+    let ppm: List<u8> = List::with_capacity(w * h * 3 + 32);
+    ppm.extend(f"P6\n{w} {h}\n255\n".as_bytes());
+    for y in 0..h { ppm.extend(parts[y % n][y / n]); }
+    try fs::write(out, ppm) catch e {
+        eprintln(f"raytracer: {e}");
+        return 1;
+    };
+    let secs = start.elapsed().as_secs_f64();
+    println(f"{w}x{h}, {SAMPLES} samples, {n} threads: {secs:.2}s -> {out}");
+    0
+}

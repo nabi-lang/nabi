@@ -1,0 +1,84 @@
+//! The syntax tree. A node is a `Kind` plus its children: a struct cannot
+//! hold itself by value, so children live in a `List` (a GC reference).
+
+use pkg::error::Span;
+
+/// A binary operator.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Op { Add, Sub, Mul, Div, Rem, Eq, Ne, Lt, Le, Gt, Ge, And, Or }
+
+/// What a node is; the comment says what `kids` holds.
+#[derive(Clone, Debug)]
+pub enum Kind {
+    Num(f64),
+    Str(str),
+    Bool(bool),
+    Nil,
+    Var(str),
+    /// The items.
+    List,
+    /// `[operand]`.
+    Neg,
+    Not,
+    /// `[lhs, rhs]`.
+    Binary(Op),
+    /// `[value]`.
+    Assign(str),
+    /// `[list, index, value]`.
+    SetIndex,
+    /// `[list, index]`.
+    Index,
+    /// `[callee, args..]`.
+    Call,
+    /// `[value]`.
+    Let(str),
+    /// A function literal or declaration: name, parameters; `[body]`.
+    Fn(str | none, List<str>),
+    /// `[cond, then]` or `[cond, then, else]`.
+    If,
+    /// `[cond, body]`.
+    While,
+    /// The statements; the value is the last one's.
+    Block,
+    /// `[]` or `[value]`.
+    Return,
+}
+
+/// A syntax tree node.
+#[derive(Clone, Debug)]
+pub struct Node {
+    pub kind: Kind;
+    pub span: Span;
+    pub kids: List<Node>;
+}
+
+impl Node {
+    pub fn new(kind: Kind, span: Span, kids: List<Node>) -> Node { Node { kind, span, kids } }
+
+    /// A leaf.
+    pub fn leaf(kind: Kind, span: Span) -> Node { Node::new(kind, span, []) }
+
+    /// The tree as an S-expression, for tests and debugging.
+    pub fn sexp(self) -> str {
+        let head = match self.kind {
+            Kind::Num(n) => return f"{n}",
+            Kind::Str(s) => return f"{s:?}",
+            Kind::Bool(b) => return f"{b}",
+            Kind::Nil => return "nil",
+            Kind::Var(v) => return v,
+            Kind::Binary(op) => f"{op:?}",
+            Kind::Assign(v) => f"= {v}",
+            Kind::Let(v) => f"let {v}",
+            Kind::Fn(name, ps) => f"fn {name ?? "_"} ({ps.join(" ")})",
+            k => f"{k:?}",
+        };
+        let out = StrBuf::new();
+        out.push_str("(" + head);
+        for k in self.kids {
+            out.push(' ');
+            out.push_str(k.sexp());
+        }
+        out.push(')');
+        out.to_str()
+    }
+}

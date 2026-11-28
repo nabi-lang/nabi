@@ -1,0 +1,7 @@
+Package {
+    name: "todo-api",
+    version: "0.1.0",
+    nabi_version: "0.1.8",
+    toolchain: "0.1",
+    deps: { "http": Dep::version("^0.1.0"), "json": Dep::version("^0.1.0") },
+}

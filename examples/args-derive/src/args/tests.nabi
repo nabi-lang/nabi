@@ -1,0 +1,118 @@
+// Parser tests on a small option set.
+
+use pkg::args::{Args, ArgsError};
+
+#[derive(Args, Inspect)]
+struct T {
+    #[arg(short = "v", help = "say more")]
+    verbose: bool;
+    #[arg(short = "n", help = "how many")]
+    count: i64 = 3;
+    #[arg(help = "scale factor")]
+    scale: f64 = 1.0;
+    #[arg(help = "output name")]
+    out: str | none;
+    name: str = "x";
+    files: List<str>;
+}
+
+#[derive(Args)]
+struct Need {
+    target: str;
+}
+
+/// `T::parse` of `line`, split on spaces.
+fn parse(line: str) throws (ArgsError) -> T {
+    let argv: List<str> = ["prog"];
+    for w in line.split_whitespace() { argv.push(w); }
+    try T::parse(argv)
+}
+
+/// The error `line` gives.
+fn fails(line: str) -> ArgsError {
+    try parse(line) catch e { return e; };
+    panic(f"`{line}` parsed")
+}
+
+#[test]
+fn defaults() {
+    let t = try! parse("");
+    assert(!t.verbose);
+    assert_eq(t.count, 3);
+    assert_eq(t.scale, 1.0);
+    assert(t.out is none);
+    assert_eq(t.name, "x");
+    assert(t.files.is_empty());
+}
+
+#[test]
+fn flags_and_options() {
+    let t = try! parse("-v a -n 7 --scale=0.5 --out o.txt b -- -c");
+    assert(t.verbose);
+    assert_eq(t.count, 7);
+    assert_eq(t.scale, 0.5);
+    assert_eq(t.out ?? "", "o.txt");
+    assert_eq(t.files, ["a", "b", "-c"]);
+}
+
+#[test]
+fn last_value_wins() {
+    assert_eq((try! parse("-n 1 --count 2")).count, 2);
+}
+
+#[test]
+fn missing_value() {
+    assert_eq(fails("a -n").message, "missing value for -n");
+    assert_eq(fails("--out").message, "missing value for --out");
+}
+
+#[test]
+fn required_given() {
+    assert_eq((try! Need::parse(["prog", "--target", "t"])).target, "t");
+}
+
+#[test]
+fn required() {
+    try Need::parse(["prog"]) catch e {
+        assert_eq(e.message, "missing required option --target");
+        return;
+    };
+    panic("parsed without --target");
+}
+
+#[test]
+fn bad_values() {
+    assert_eq(fails("-n many").message, "--count wants a whole number, not `many`");
+    assert_eq(fails("--scale x").message, "--scale wants a number, not `x`");
+    assert_eq(fails("--verbose=yes").message, "--verbose takes no value");
+}
+
+#[test]
+fn unknown_option() {
+    assert_eq(fails("--cuont 2").message, "unknown option --cuont; did you mean --count?");
+    assert_eq(fails("--zzzzzz").message, "unknown option --zzzzzz");
+    assert_eq(fails("-q").message, "unknown option -q");
+}
+
+#[test]
+fn help() {
+    let e = fails("a --help");
+    assert(e.help);
+    assert_eq(e.message, T::help());
+    let h = T::help();
+    assert(h.contains("[options] [files..]"), h);
+    assert(h.contains("  -v, --verbose      say more\n"), h);
+    assert(h.contains("  -n, --count <i64>  how many (default 3)\n"), h);
+    assert(h.contains("      --out <str>    output name\n"), h);
+    assert(h.contains("      --name <str>   (default \"x\")\n"), h);
+    assert(h.contains("  -h, --help         print this help\n"), h);
+}
+
+#[test]
+fn specs_follow_fields() {
+    // The derive's table and `Inspect`'s agree on names and order.
+    let names: List<str> = T::specs().iter().map(|s| s.name).collect();
+    assert_eq(names, T::field_names());
+    let hints: List<str> = T::specs().iter().map(|s| s.hint).collect();
+    assert_eq(hints, ["bool", "i64", "f64", "str", "str", "str"]);
+}

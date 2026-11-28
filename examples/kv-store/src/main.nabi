@@ -1,0 +1,113 @@
+//! `kv-store <db> <command>`: one command, or none to read commands
+//! from standard input, one per line.
+
+// `pub`: the test build of this executable compiles `tests/` against
+// this root too.
+pub use kv_store::{Store, StoreError};
+
+use core::io::input;
+
+const USAGE: str = "commands: set <key> <value> | get <key> | del <key> | list | compact | stats";
+
+/// What a command did, for the exit code.
+enum Outcome {
+    Done,
+    Missing,
+    Usage,
+}
+
+/// Run one command split into `words`.
+fn exec(ref db: Store, words: List<str>) throws (StoreError) -> Outcome {
+    let cmd = words.first() ?? { return Outcome::Usage; };
+    match (cmd, words.len()) {
+        ("set", 3) => {
+            // The rest of the line is the value, so it may hold spaces.
+            try db.set(words[1], words[2]);
+            println("ok");
+        },
+        ("get", 2) => {
+            let v = try db.get(words[1]) ?? { return Outcome::Missing; };
+            println(v);
+        },
+        ("del", 2) => {
+            if !try db.del(words[1]) { return Outcome::Missing; }
+            println("ok");
+        },
+        ("list", 1) => {
+            for k in db.keys() { println(f"{k} = {try db.get(k) ?? ""}"); }
+        },
+        ("compact", 1) => {
+            let before = db.stats().bytes;
+            try db.compact();
+            println(f"compacted {before} -> {db.stats().bytes} bytes");
+        },
+        ("stats", 1) => {
+            let s = db.stats();
+            println(f"keys {s.keys}, records {s.records}, bytes {s.bytes}, recovered {s.recovered}");
+        },
+        _ => return Outcome::Usage,
+    }
+    Outcome::Done
+}
+
+/// `line` as words: the command, a key, and for `set` the rest as value.
+fn split(line: str) -> List<str> {
+    let out: List<str> = List::new();
+    let rest = line.trim();
+    while !rest.is_empty() && out.len() < 2 {
+        let (w, tail) = rest.split_once(" ") ?? (rest, "");
+        out.push(w);
+        rest = tail.trim_start();
+    }
+    if !rest.is_empty() { out.push(rest); }
+    out
+}
+
+/// Report `o`; the exit code it maps to.
+fn report(o: Outcome) -> i32 {
+    match o {
+        Outcome::Done => 0,
+        Outcome::Missing => {
+            eprintln("not found");
+            1
+        },
+        Outcome::Usage => {
+            eprintln(USAGE);
+            2
+        },
+    }
+}
+
+/// Read commands until end of input or `quit`.
+fn interactive(ref db: Store) throws (StoreError) {
+    loop {
+        let line = (try input("kv> ") catch _ { none }) ?? break;
+        if line.trim() == "quit" { break; }
+        if line.trim().is_empty() { continue; }
+        _ = report(try exec(ref db, split(line)));
+    }
+}
+
+fn main() {
+    let args = std::env::args();
+    if args.len() < 2 {
+        eprintln(f"usage: kv-store <db> [command]\n{USAGE}");
+        std::process::exit(2);
+    }
+    let code = try {
+        using db = try Store::open(args[1]) {
+            let st = db.stats();
+            if st.recovered > 0u64 { eprintln(f"recovered: cut {st.recovered} bytes of torn tail"); }
+            if args.len() == 2 {
+                try interactive(ref db);
+                0
+            } else {
+                report(try exec(ref db, split(args[2:args.len()].to_list().join(" "))))
+            }
+        }
+    } catch e: StoreError {
+        eprintln(f"kv-store: {e}");
+        1
+    };
+    std::process::exit(code);
+}

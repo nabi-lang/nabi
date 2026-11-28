@@ -1,0 +1,45 @@
+//! Nabi calls a C ring buffer, C calls back into Nabi, and both agree
+//! on a checksum.
+
+mod ring;
+
+use ring::{Ring, RingError};
+
+/// FNV-1a over each value's four bytes, little-endian: the pure-Nabi
+/// twin of `ring_fnv1a` in c/ring.c.
+fn fnv1a(values: List<u32>) -> u32 {
+    let h = 2166136261u32;
+    for v in values {
+        for b in 0u32..4u32 {
+            h = (h ^ ((v >> (8u32 * b)) & 0xffu32)).wrapping_mul(16777619u32);
+        }
+    }
+    h
+}
+
+fn main() throws {
+    using r = try Ring::new(4) {
+        for v in [10u32, 20u32, 30u32, 40u32] {
+            try r.push(v);
+        }
+        // A C error code arrives as a typed Nabi error.
+        try r.push(50u32) catch e: RingError {
+            println(f"push 50: {e}");
+        };
+        println(f"pop: {try r.pop()}");
+        try r.push(50u32);
+        try r.push(60u32) catch e: RingError {
+            println(f"push 60: {e}");
+        };
+
+        let values = r.to_list();
+        let c = r.checksum();
+        let n = fnv1a(values);
+        println(f"len: {r.len()}, values: {values:?}");
+        println(f"fnv1a: c {c:#010x}, nabi {n:#010x}, match: {c == n}");
+    }
+
+    try Ring::new(0) catch e: RingError {
+        println(f"new(0): {e}");
+    };
+}

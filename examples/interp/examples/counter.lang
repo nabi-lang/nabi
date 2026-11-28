@@ -1,0 +1,18 @@
+# Closures keep the scope they were made in.
+fn counter(start, step) {
+    let n = start
+    fn() {
+        n = n + step
+        n
+    }
+}
+
+let a = counter(0, 1)
+let b = counter(100, 10)
+a(); a()
+print("a:", a(), "b:", b(), b())
+
+# Functions are values.
+fn twice(f) { fn(x) { f(f(x)) } }
+let add3 = fn(x) { x + 3 }
+print("twice(add3)(1) =", twice(add3)(1))

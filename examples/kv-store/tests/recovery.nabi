@@ -1,0 +1,119 @@
+//! The store on a real file: reopen, torn tails, compaction.
+
+use pkg::{Store, StoreError};
+use std::fs::File;
+use std::path::Path;
+
+/// A fresh log path, unique to this test and process.
+fn scratch(name: str) -> str {
+    let p = std::env::temp_dir().join(Path::new(f"kv-store-{name}-{std::process::id()}.log")).as_str();
+    try std::fs::remove_file(p) catch _ {};
+    p
+}
+
+fn size(path: str) -> u64 {
+    (try! std::fs::metadata(path)).len()
+}
+
+/// Cut the last `n` bytes off `path`, as a crash mid-write would.
+fn tear(path: str, n: u64) {
+    using f = try! File::open(path, std::fs::Access::WriteOnly) {
+        try! f.set_len(size(path) - n);
+    }
+}
+
+#[test]
+fn survives_reopen() throws (StoreError) {
+    let p = scratch("reopen");
+    using db = try Store::open(p) {
+        try db.set("a", "1");
+        try db.set("b", "2");
+        try db.set("a", "3");
+        assert(try db.del("b"));
+        assert(!try db.del("b"));
+    }
+    using db = try Store::open(p) {
+        assert_eq(try db.get("a"), "3");
+        assert(try db.get("b") is none);
+        assert_eq(db.keys(), ["a"]);
+        assert_eq(db.stats().records, 4);
+        assert_eq(db.stats().recovered, 0u64);
+    }
+}
+
+#[test]
+fn cuts_torn_tail() throws (StoreError) {
+    let p = scratch("torn");
+    using db = try Store::open(p) {
+        try db.set("kept", "yes");
+        try db.set("torn", "this record loses its last bytes");
+    }
+    let whole = size(p);
+    tear(p, 5u64);
+    using db = try Store::open(p) {
+        assert_eq(try db.get("kept"), "yes");
+        assert(try db.get("torn") is none);
+        let s = db.stats();
+        assert_eq(s.records, 1);
+        // The whole torn record goes, not just the missing bytes.
+        assert_eq(s.recovered + 5u64, whole - s.bytes);
+        assert_eq(size(p), s.bytes);
+        // New records land right after the last good one.
+        try db.set("after", "crash");
+    }
+    using db = try Store::open(p) {
+        assert_eq(db.keys(), ["after", "kept"]);
+        assert_eq(db.stats().recovered, 0u64);
+    }
+}
+
+#[test]
+fn cuts_header_only_tail() throws (StoreError) {
+    let p = scratch("header");
+    using db = try Store::open(p) {
+        try db.set("k", "v");
+        try db.set("k2", "v2");
+    }
+    // Leave 3 bytes of the second record: not even a whole header.
+    tear(p, 14u64);
+    using db = try Store::open(p) {
+        assert_eq(db.keys(), ["k"]);
+        assert_eq(db.stats().recovered, 3u64);
+    }
+}
+
+#[test]
+fn compacts_to_live_keys() throws (StoreError) {
+    let p = scratch("compact");
+    using db = try Store::open(p) {
+        for i in 0..50 { try db.set("counter", f"{i}"); }
+        try db.set("gone", "soon");
+        _ = try db.del("gone");
+        try db.set("name", "nabi");
+        let before = db.stats().bytes;
+        try db.compact();
+        let s = db.stats();
+        assert_eq(s.records, 2);
+        assert(s.bytes < before);
+        assert_eq(size(p), s.bytes);
+        assert_eq(try db.get("counter"), "49");
+        // The store stays usable on the new log.
+        try db.set("more", "after compaction");
+    }
+    using db = try Store::open(p) {
+        assert_eq(db.keys(), ["counter", "more", "name"]);
+        assert_eq(try db.get("more"), "after compaction");
+        assert_eq(db.stats().records, 3);
+    }
+}
+
+#[test]
+fn rejects_empty_key() throws (StoreError) {
+    let p = scratch("badkey");
+    using db = try Store::open(p) {
+        let rejected = false;
+        try db.set("", "x") catch StoreError::BadKey(_) { rejected = true; };
+        assert(rejected);
+        assert_eq(db.stats().records, 0);
+    }
+}

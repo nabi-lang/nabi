@@ -1,0 +1,17 @@
+//! CRC-32 (IEEE 802.3, the zlib / PNG one).
+
+/// The reflected polynomial.
+const POLY: u32 = 0xEDB88320u32;
+
+/// The CRC-32 of `data`.
+pub fn crc32(data: Slice<u8>) -> u32 {
+    let c = 0xFFFFFFFFu32;
+    for b in data {
+        c ^= b as u32;
+        // Bit at a time: slow, but short and table-free.
+        for _ in 0..8 {
+            c = if (c & 1u32) != 0u32 { (c >> 1) ^ POLY } else { c >> 1 };
+        }
+    }
+    c ^ 0xFFFFFFFFu32
+}

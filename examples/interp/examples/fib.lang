@@ -1,0 +1,10 @@
+# Recursion and loops.
+fn fib(n) {
+    if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+let i = 0
+while i <= 20 {
+    if i % 5 == 0 { print("fib(" + i + ") =", fib(i)) }
+    i = i + 1
+}

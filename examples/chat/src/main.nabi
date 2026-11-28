@@ -1,0 +1,223 @@
+//! chat: a line-based TCP chat room. Every connection runs as its own
+//! task; one hub task owns the room, and connections talk to it over a
+//! channel, so no state is shared between tasks.
+
+use core::io::{AsyncBufRead, BufReader, IoError};
+use std::env;
+use std::net::{ReadHalf, TcpListener, TcpStream, WriteHalf};
+
+/// Lines a client may have queued before it starts missing them.
+const BACKLOG: usize = 64;
+
+/// Longest nickname accepted, in bytes.
+const NICK_MAX: usize = 16;
+
+/// A line from a client.
+enum Command {
+    Say(str),
+    Who,
+    Nick(str),
+    Quit,
+    Unknown(str),
+}
+
+/// What a connection tells the hub.
+enum Event {
+    Join(u64, str, Sender<str>),
+    Say(u64, str),
+    Who(u64),
+    Nick(u64, str),
+    Leave(u64),
+}
+
+/// A member of the room, as the hub sees it.
+struct Member {
+    nick: str;
+    out: Sender<str>;
+}
+
+impl Member {
+    /// Queue `line` for this member. A member too slow to keep up loses
+    /// the line instead of stalling the room.
+    fn tell(self, line: str) {
+        try self.out.try_send(f"{line}\n") catch _ {};
+    }
+}
+
+/// One connection's handles to the hub and to its own writer. Dropping
+/// it, however the connection ends, tells the hub it left.
+struct Session {
+    id: u64;
+    hub: Sender<Event>;
+    out: Sender<str>;
+}
+
+impl Session {
+    /// Hand `ev` to the hub. Its channel is unbounded and outlives every
+    /// connection, so this never blocks or fails.
+    fn post(self, ev: Event) {
+        try self.hub.send(ev) catch _ {};
+    }
+
+    /// Queue `line` for this client only.
+    fn reply(self, line: str) {
+        try self.out.try_send(f"{line}\n") catch _ {};
+    }
+}
+
+impl Drop for Session {
+    fn drop(ref self) {
+        self.post(Event::Leave(self.id));
+        self.out.close();
+    }
+}
+
+/// Parse a line: a leading `/` names a command, anything else is said.
+fn parse(line: str) -> Command {
+    if !line.starts_with("/") {
+        return Command::Say(line);
+    }
+    let (name, arg) = line.split_once(" ") ?? (line, "");
+    match name {
+        "/who" => Command::Who,
+        "/nick" => Command::Nick(arg.trim()),
+        "/quit" => Command::Quit,
+        _ => Command::Unknown(name),
+    }
+}
+
+/// Whether `nick` can be a nickname.
+fn valid(nick: str) -> bool {
+    !nick.is_empty() && nick.len() <= NICK_MAX && !nick.contains(" ")
+}
+
+/// Queue `line` for every member but `skip`.
+fn broadcast(room: Dict<u64, Member>, skip: u64, line: str) {
+    for (id, m) in room {
+        if id != skip { m.tell(line); }
+    }
+}
+
+/// Whether some member other than `id` is called `nick`.
+fn taken(room: Dict<u64, Member>, id: u64, nick: str) -> bool {
+    for (other, m) in room {
+        if other != id && m.nick == nick { return true; }
+    }
+    false
+}
+
+/// The hub: owns the room and applies events in arrival order.
+async fn hub(events: Receiver<Event>) {
+    let room: Dict<u64, Member> = Dict::new();
+    for await ev in events {
+        match ev {
+            Event::Join(id, nick, out) => {
+                // A taken nickname gets the connection number appended.
+                let name = if taken(room, id, nick) { f"{nick}{id}" } else { nick };
+                room.insert(id, Member { nick: name, out: out });
+                room[id].tell(f"* welcome, {name}; {room.len()} here. /who /nick NAME /quit");
+                broadcast(room, id, f"* {name} joined");
+                eprintln(f"join  #{id} {name}");
+            }
+            Event::Say(id, text) => {
+                let m: Member = room.get(id) else { continue; };
+                broadcast(room, id, f"<{m.nick}> {text}");
+            }
+            Event::Who(id) => {
+                let names: List<str> = [];
+                for (_, m) in room { names.push(m.nick); }
+                room[id].tell(f"* here: {names.join(", ")}");
+            }
+            Event::Nick(id, nick) => {
+                let old = room[id].nick;
+                if !valid(nick) {
+                    room[id].tell(f"* a nickname is 1 to {NICK_MAX} bytes, no spaces");
+                } else if taken(room, id, nick) {
+                    room[id].tell(f"* {nick} is taken");
+                } else {
+                    room[id].nick = nick;
+                    room[id].tell(f"* you are now {nick}");
+                    broadcast(room, id, f"* {old} is now {nick}");
+                    eprintln(f"nick  #{id} {old} -> {nick}");
+                }
+            }
+            Event::Leave(id) => {
+                let m: Member = room.remove(id) else { continue; };
+                m.out.close();
+                broadcast(room, id, f"* {m.nick} left");
+                eprintln(f"leave #{id} {m.nick}");
+            }
+        }
+    }
+}
+
+/// Write queued lines to the client until the queue closes or the
+/// client stops reading.
+async fn writer(half: WriteHalf<TcpStream>, inbox: Receiver<str>) {
+    using w = half {
+        try {
+            for await line in inbox {
+                try await w.write_all_async(line);
+            }
+        } catch _: IoError {
+            // Gone mid-write: the reader sees the same and leaves.
+        };
+    }
+}
+
+/// The next whole line, or `none` at end of stream. A line cut off by
+/// a disconnect is dropped rather than half-delivered.
+async fn next_line(r: BufReader<ReadHalf<TcpStream>>) throws (IoError) -> str | none {
+    let buf: List<u8> = List::new();
+    _ = try await r.read_until_async(10u8, buf);
+    if buf.is_empty() || buf[buf.len() - 1] != 10u8 {
+        return none;
+    }
+    str::from_utf8_lossy(buf).trim()
+}
+
+/// Serve one client: ask its nickname, then relay its lines to the hub.
+async fn serve(conn: TcpStream, id: u64, hub: Sender<Event>) throws (IoError) {
+    let (rh, wh) = conn.split();
+    let (out, inbox) = channel_bounded::<str>(BACKLOG);
+    let w = task::spawn(writer(wh, inbox));
+    using r = BufReader::new(rh), s = (Session { id: id, hub: hub, out: out }) {
+        s.reply("nickname?");
+        let nick: str = try await next_line(r) else { return; };
+        let nick = if valid(nick) { nick } else { f"guest{id}" };
+        s.post(Event::Join(id, nick, s.out.clone()));
+        loop {
+            let line: str = try await next_line(r) else { break; };
+            match parse(line) {
+                Command::Say(text) => if !text.is_empty() { s.post(Event::Say(id, text)); },
+                Command::Who => s.post(Event::Who(id)),
+                Command::Nick(name) => s.post(Event::Nick(id, name)),
+                Command::Quit => break,
+                Command::Unknown(name) => s.reply(f"* unknown command {name}"),
+            }
+        }
+    }
+    // Both senders are closed now: the writer drains what is queued.
+    await w;
+}
+
+let args = env::args();
+let addr = if args.len() > 1 { args[1] } else { "127.0.0.1:7000" };
+let listener = try TcpListener::bind(addr);
+eprintln(f"listening on {try listener.local_addr()}");
+
+let (events, inbox) = channel::<Event>();
+_ = task::spawn(hub(inbox));
+let next: u64 = 0;
+loop {
+    let (conn, peer) = try await listener.accept_async();
+    next += 1;
+    let id = next;
+    let hub = events.clone();
+    eprintln(f"conn  #{id} {peer}");
+    _ = task::spawn(async {
+        try await serve(conn, id, hub) catch e: IoError {
+            eprintln(f"error #{id} {e}");
+        };
+    });
+}

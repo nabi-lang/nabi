@@ -1,0 +1,56 @@
+// `interp FILE` runs a script; with no argument, a REPL on stdin.
+
+// `pub` only so that tests/, which `nabi test` 0.1.8 also builds against
+// this executable, finds the same names through `pkg::` as in the library.
+pub use interp::{parser, Interp, LangError, Value};
+
+use core::io;
+use std::{env, fs, process, thread};
+
+const STACK: usize = 256 << 20;
+
+/// Run the script at `path`; exit 1 on an error.
+fn run_file(path: str) {
+    let src = try fs::read_to_str(path) catch e {
+        eprintln(f"error: {e}");
+        process::exit(1);
+    };
+    let it = Interp::new(|line| println(line));
+    try it.run(src) catch e {
+        eprintln(e.render(src, path));
+        process::exit(1);
+    };
+}
+
+/// Read and run one line at a time, printing each non-nil result.
+fn repl() {
+    let it = Interp::new(|line| println(line));
+    // Every line read so far: a function defined earlier can fail later,
+    // and its error points into the line that defined it.
+    let session = StrBuf::new();
+    let n = 0usize;
+    loop {
+        let next = try io::input("> ") catch _ { break; };
+        let line = next ?? break;
+        session.push_str(line + "\n");
+        n += 1;
+        let v = try it.run(line, n) catch e {
+            eprintln(e.render(session.to_str(), "<stdin>"));
+            continue;
+        };
+        match v {
+            Value::Nil => {}
+            _ => println(v.show(true)),
+        }
+    }
+}
+
+// Script calls nest native calls several frames deep; give them a big
+// stack rather than the main thread's.
+let path = env::args().get(1);
+let main = || match path {
+    p: str => run_file(p),
+    none => repl(),
+};
+let t = try! thread::Builder::new().stack_size(STACK).spawn(main);
+try! t.join();

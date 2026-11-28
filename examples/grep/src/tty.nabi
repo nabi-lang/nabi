@@ -1,0 +1,21 @@
+// Whether to color stdout. std has no terminal query yet, so this asks
+// the C runtime: isatty on Unix, _isatty in the Windows CRT.
+
+use std::env;
+
+/// True when stdout is a terminal and `NO_COLOR` is not set.
+pub fn color() -> bool {
+    if (try? env::var("NO_COLOR")) is str { return false; }
+    unsafe { isatty(1) != 0 }
+}
+
+#[cfg(not(target_os = "windows"))]
+extern "C" {
+    fn isatty(fd: i32) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+extern "C" {
+    #[link_name = "_isatty"]
+    fn isatty(fd: i32) -> i32;
+}

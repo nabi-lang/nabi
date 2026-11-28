@@ -1,0 +1,115 @@
+//! A safe wrapper over the C ring buffer in `c/ring.c`.
+//!
+//! Every `unsafe` block in the package is in this file. Each one calls
+//! C with a handle that `Ring` owns and keeps valid, so callers of the
+//! API below cannot break C's invariants: no null or freed handle, no
+//! double free, no callback that outlives its context.
+
+use bare::ffi::Handle;
+use bare::ptr::{CPtr, Ptr, addr_of};
+
+// Mirrors c/ring.h. The compiler checks the types are C types; that
+// they match the header is ours to keep.
+extern "C" {
+    fn ring_new(cap: usize, out: Ptr<CPtr<c_void>>) -> c_int;
+    fn ring_free(r: CPtr<c_void>);
+    fn ring_push(r: CPtr<c_void>, value: u32) -> c_int;
+    fn ring_pop(r: CPtr<c_void>, out: Ptr<u32>) -> c_int;
+    fn ring_len(r: CPtr<c_void>) -> usize;
+    fn ring_for_each(r: CPtr<c_void>, f: extern "C" fn(u32, CPtr<c_void>), ctx: CPtr<c_void>);
+    fn ring_fnv1a(r: CPtr<c_void>) -> u32;
+}
+
+/// A failing `RING_E*` code from C.
+#[derive(Debug, Error, PartialEq)]
+pub enum RingError {
+    #[display("capacity must be between 1 and SIZE_MAX / 4")]
+    Invalid,
+    #[display("out of memory")]
+    NoMemory,
+    #[display("ring is full")]
+    Full,
+    #[display("ring is empty")]
+    Empty,
+    #[display("unknown ring error {_0}")]
+    Other(i32),
+}
+
+/// `RING_OK` passes; any other code becomes its `RingError`.
+fn check(rc: c_int) throws (RingError) {
+    match rc {
+        0 => {},
+        -1 => throw RingError::Invalid,
+        -2 => throw RingError::NoMemory,
+        -3 => throw RingError::Full,
+        -4 => throw RingError::Empty,
+        _ => throw RingError::Other(rc),
+    }
+}
+
+/// A fixed-capacity FIFO of `u32`, stored in C memory. `Drop` frees it.
+pub struct Ring {
+    raw: CPtr<c_void>;
+}
+
+impl Ring {
+    /// An empty ring holding up to `cap` values.
+    pub fn new(cap: usize) throws (RingError) -> Ring {
+        let raw: CPtr<c_void> = CPtr::null();
+        // ring_new writes `raw` only on success; addr_of(raw) is valid
+        // for the call because `raw` is a live local.
+        try check(unsafe { ring_new(cap, addr_of(raw)) });
+        Ring { raw }
+    }
+
+    /// Append `value`; throws `Full` at capacity.
+    pub fn push(self, value: u32) throws (RingError) {
+        // raw came from ring_new and is freed only by drop.
+        try check(unsafe { ring_push(self.raw, value) });
+    }
+
+    /// Remove and return the oldest value; throws `Empty`.
+    pub fn pop(self) throws (RingError) -> u32 {
+        let v = 0u32;
+        try check(unsafe { ring_pop(self.raw, addr_of(v)) });
+        v
+    }
+
+    /// The number of values held.
+    pub fn len(self) -> usize {
+        unsafe { ring_len(self.raw) }
+    }
+
+    /// The values, oldest first, gathered by a C loop calling back
+    /// into `collect` once per value.
+    pub fn to_list(self) -> List<u32> {
+        let out: List<u32> = [];
+        // A C callback cannot capture, so `out` travels as the void*
+        // context. The handle roots it until `release`, and C uses the
+        // pointer only during this call.
+        let h = Handle::new(out);
+        unsafe { ring_for_each(self.raw, collect, h.as_ptr()) };
+        h.release();
+        out
+    }
+
+    /// FNV-1a of the contents, computed in C.
+    pub fn checksum(self) -> u32 {
+        unsafe { ring_fnv1a(self.raw) }
+    }
+}
+
+impl Drop for Ring {
+    fn drop(ref self) {
+        // The only free: Ring is affine, so drop runs once.
+        unsafe { ring_free(self.raw) };
+    }
+}
+
+/// Called by C's `ring_for_each`. `ctx` is the handle `to_list` made.
+extern "C" fn collect(value: u32, ctx: CPtr<c_void>) {
+    // from_ptr trusts that ctx is a live Handle<List<u32>>; only
+    // to_list passes this callback, and it passes such a handle.
+    let out = unsafe { Handle::<List<u32>>::from_ptr(ctx) }.get();
+    out.push(value);
+}
