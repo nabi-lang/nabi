@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.7 (2026-11-28)
+
+<!-- begin summary -->
+Summary: Operators can bind `->`, so unit conversions read `bag -> g` with no Unicode arrow to type.
+<!-- end summary -->
+
+### Added
+
+- `#[infix("->", like = "|")]` binds `->` between two values, so `bag -> g` converts; a return type keeps `->` (#65)
+
+<!-- silent: #62 #63 #64 -->
+
 ## 0.1.6 (2026-11-27)
 
 <!-- begin summary -->
